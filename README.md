@@ -2,6 +2,12 @@
 
 Single-page task prioritization app with a daily time view and ChatGPT-assisted priorities. Uses HTML, TypeScript, CSS, and PHP with SQLite.
 
+## Roadmap
+
+- **SSO login** — Single sign-on (planned).
+- **AI Chat box** — In-app AI chat for priorities and suggestions (planned).
+- **Mobile support** — Touch-friendly layout, swipe navigation, and schedule view (in progress).
+
 **No npm on the server.** The app runs on PHP only. You deploy by uploading files (e.g. via SFTP).
 
 ## Deploy (no npm required)
