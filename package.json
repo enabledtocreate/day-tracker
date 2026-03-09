@@ -1,0 +1,42 @@
+{
+  "name": "day-tracker",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:php": "php -c php.ini vendor/bin/phpunit --configuration phpunit.xml.dist",
+    "test:e2e": "playwright test",
+    "test:e2e:smoke": "playwright test e2e/login.spec.ts -g \"shows login form\"",
+    "dev": "vite",
+    "dev:next": "next dev",
+    "build": "next build && node scripts/pack-next.cjs",
+    "build:vite": "tsc && vite build && node scripts/pack.cjs",
+    "build:next": "next build",
+    "preview": "vite preview",
+    "pack": "node scripts/pack.cjs",
+    "pack:next": "node scripts/pack-next.cjs",
+    "deploy": "npm run build",
+    "deploy:vite": "npm run build:vite"
+  },
+  "dependencies": {
+    "@use-gesture/react": "^10.3.1",
+    "next": "^14.2.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.11.0",
+    "@playwright/test": "^1.40.0",
+    "@testing-library/jest-dom": "^6.4.0",
+    "@testing-library/react": "^14.2.0",
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "jsdom": "^24.0.0",
+    "typescript": "^5.3.3",
+    "vite": "^5.0.10",
+    "vitest": "^1.2.0"
+  }
+}

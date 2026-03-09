@@ -1,0 +1,8 @@
+node_modules/
+dist/
+data/
+config.php
+*.sqlite
+private_documentation/
+php.ini
+composer.phar

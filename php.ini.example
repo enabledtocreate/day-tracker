@@ -1,0 +1,7 @@
+; Copy to php.ini and set extension_dir to your PHP ext folder (e.g. WinGet PHP path).
+; Required for: composer install, and PHPUnit (openssl, mbstring, zip, pdo_sqlite).
+extension_dir = "C:\path\to\php\ext"
+extension=openssl
+extension=mbstring
+extension=zip
+extension=pdo_sqlite

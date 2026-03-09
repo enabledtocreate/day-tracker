@@ -1,0 +1,261 @@
+<?php
+/**
+ * SQLite DB helper. Master DB (users, app settings, SSO); user DB path from session.
+ */
+require_once __DIR__ . '/logger.php';
+
+function getConfig(): array {
+    if (getenv('DAYTRACKER_TEST') === '1') {
+        $dataDir = getenv('DAYTRACKER_TEST_DATA_DIR');
+        if ($dataDir === false || $dataDir === '') {
+            throw new RuntimeException('DAYTRACKER_TEST_DATA_DIR must be set when running tests.');
+        }
+        return [
+            'data_dir' => $dataDir,
+            'master_db_path' => $dataDir . DIRECTORY_SEPARATOR . 'daytracker_master.sqlite',
+        ];
+    }
+    $path = dirname(__DIR__) . '/config.php';
+    if (!is_file($path)) {
+        throw new RuntimeException('config.php not found. Run install.php first.');
+    }
+    $config = require $path;
+    return is_array($config) ? $config : [];
+}
+
+function getDataDir(): string {
+    $config = getConfig();
+    return $config['data_dir'] ?? dirname(__DIR__) . '/data';
+}
+
+function getMasterDbPath(): string {
+    $config = getConfig();
+    return $config['master_db_path'] ?? getDataDir() . '/daytracker_master.sqlite';
+}
+
+/** Legacy: default user DB path (used by install before multi-user). */
+function getDbPath(): string {
+    $config = getConfig();
+    return $config['db_path'] ?? getDataDir() . '/daytracker.sqlite';
+}
+
+function getMasterPdo(): PDO {
+    static $pdo = null;
+    if ($pdo !== null) return $pdo;
+    $path = getMasterDbPath();
+    $dir = dirname($path);
+    if (!is_dir($dir)) throw new RuntimeException('Data directory does not exist: ' . $dir);
+    $pdo = new PDO('sqlite:' . $path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    return $pdo;
+}
+
+/**
+ * Current user's DB path. Requires getCurrentUser() from auth.php (session).
+ */
+function getCurrentUserDbPath(): string {
+    if (!function_exists('getCurrentUser')) {
+        throw new RuntimeException('Auth not loaded.');
+    }
+    $user = getCurrentUser();
+    if (!$user) throw new RuntimeException('Not logged in.');
+    return getDataDir() . '/' . $user['db_name'];
+}
+
+function getPdo(): PDO {
+    static $pdo = null;
+    if ($pdo !== null) return $pdo;
+    $path = getCurrentUserDbPath();
+    $dir = dirname($path);
+    if (!is_dir($dir)) throw new RuntimeException('Data directory does not exist: ' . $dir);
+    if (!is_file($path)) throw new RuntimeException('User database not found.');
+    $pdo = new PDO('sqlite:' . $path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    runMigrationsIn($pdo, dirname(__DIR__) . '/migrations');
+    return $pdo;
+}
+
+
+/** Last list of migration filenames applied by runMigrationsIn (for migrate.php to return). */
+function getLastAppliedMigrations(): array {
+    return $GLOBALS['_daytracker_last_applied_migrations'] ?? [];
+}
+
+/**
+ * Run pending migrations from a migrations folder.
+ * Logs: "Begin migration", then one line per file run, then "migration completed".
+ * Always records each run migration in schema_migrations (PDO::exec may only run first statement).
+ * @return list of filenames that were applied this run
+ */
+function runMigrationsIn(PDO $pdo, string $migrationsDir): array {
+    $applied = [];
+    $GLOBALS['_daytracker_last_applied_migrations'] = $applied;
+    if (!is_dir($migrationsDir)) return $applied;
+    logMessage('INFO', 'Begin migration');
+    $pdo->exec("CREATE TABLE IF NOT EXISTS schema_migrations (filename TEXT PRIMARY KEY)");
+    $files = glob($migrationsDir . '/*.sql');
+    sort($files);
+    foreach ($files as $file) {
+        $filename = basename($file);
+        $stmt = $pdo->query("SELECT 1 FROM schema_migrations WHERE filename = " . $pdo->quote($filename));
+        if ($stmt && $stmt->fetch()) continue;
+        $sql = file_get_contents($file);
+        if ($sql === false) throw new RuntimeException('Could not read migration: ' . $file);
+        try {
+            $pdo->exec($sql);
+            logMessage('INFO', 'migration file: ' . $filename);
+            $applied[] = $filename;
+            // Always record so multi-statement files (e.g. 005) get recorded even if only first statement ran
+            $pdo->exec("INSERT OR IGNORE INTO schema_migrations (filename) VALUES (" . $pdo->quote($filename) . ")");
+        } catch (Throwable $e) {
+            // Migration 006 can fail with "duplicate column name" if it ran once but wasn't recorded
+            if (strpos($e->getMessage(), 'duplicate column name') !== false) {
+                $pdo->exec("INSERT OR IGNORE INTO schema_migrations (filename) VALUES (" . $pdo->quote($filename) . ")");
+                logMessage('INFO', 'migration recorded (duplicate column, already applied): ' . $filename);
+                $applied[] = $filename;
+                continue;
+            }
+            throw $e;
+        }
+    }
+    logMessage('INFO', 'migration completed');
+    $GLOBALS['_daytracker_last_applied_migrations'] = $applied;
+    return $applied;
+}
+
+/** Run user DB migrations (tasks, slots, etc.). */
+function runMigrations(PDO $pdo = null): void {
+    $pdo = $pdo ?? getPdo();
+    runMigrationsIn($pdo, dirname(__DIR__) . '/migrations');
+}
+
+function ensureMigrationsTable(PDO $pdo): void {
+    $pdo->exec("CREATE TABLE IF NOT EXISTS schema_migrations (filename TEXT PRIMARY KEY)");
+}
+
+/** iCal feed fetch timeout in seconds (from app_settings). Default 60, clamped 5–300. */
+function getIcalFetchTimeout(): int {
+    try {
+        $master = getMasterPdo();
+        $stmt = $master->query("SELECT value FROM app_settings WHERE key = 'ical_fetch_timeout'");
+        $row = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : false;
+        $v = $row ? (int) $row['value'] : 60;
+        return max(5, min(300, $v));
+    } catch (Throwable $e) {
+        return 60;
+    }
+}
+
+/** iCal fetch method: always curl if available, else fopen (no admin setting). */
+function getIcalFetchMethod(): string {
+    return function_exists('curl_init') ? 'curl' : 'fopen';
+}
+
+/**
+ * Directory path for saving iCal fetch files. Always under app data dir (local path only).
+ * Stored value is a relative subpath (e.g. "ical_fetches"); default "ical_fetches".
+ */
+function getIcalSaveFolder(): string {
+    try {
+        $dataDir = rtrim(str_replace(['/', '\\'], DIRECTORY_SEPARATOR, getDataDir()), DIRECTORY_SEPARATOR);
+        $master = getMasterPdo();
+        $stmt = $master->query("SELECT value FROM app_settings WHERE key = 'ical_save_folder'");
+        $row = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : false;
+        $v = $row ? trim((string) $row['value']) : '';
+        if ($v !== '' && strpos($v, '..') === false && $v[0] !== '/' && $v[0] !== '\\') {
+            $sub = trim(preg_replace('#[/\\\\]+#', DIRECTORY_SEPARATOR, $v), DIRECTORY_SEPARATOR);
+            if ($sub !== '') {
+                $dir = $dataDir . DIRECTORY_SEPARATOR . $sub;
+                if (!is_dir($dir)) {
+                    @mkdir($dir, 0755, true);
+                }
+                $realDir = realpath($dir);
+                $realData = realpath($dataDir);
+                if ($realDir !== false && $realData !== false && strpos($realDir, $realData . DIRECTORY_SEPARATOR) === 0) {
+                    return $realDir;
+                }
+            }
+        }
+        $dir = $dataDir . DIRECTORY_SEPARATOR . 'ical_fetches';
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
+        return $dir;
+    } catch (Throwable $e) {
+        $dir = getDataDir() . DIRECTORY_SEPARATOR . 'ical_fetches';
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
+        return $dir;
+    }
+}
+
+/** Whether to keep the last-fetch file after parsing (for debugging). When false, file is deleted after parse. */
+function getIcalSaveLastFetch(): bool {
+    try {
+        $master = getMasterPdo();
+        $stmt = $master->query("SELECT value FROM app_settings WHERE key = 'ical_save_last_fetch'");
+        $row = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : false;
+        return $row && $row['value'] === '1';
+    } catch (Throwable $e) {
+        return false;
+    }
+}
+
+/** Minutes after last_synced_at before a subscription is considered stale. From app_settings ical_sync_stale_minutes; default 15. */
+function getIcalSyncStaleMinutes(): int {
+    try {
+        $master = getMasterPdo();
+        $stmt = $master->query("SELECT value FROM app_settings WHERE key = 'ical_sync_stale_minutes'");
+        $row = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : false;
+        $v = $row ? (int) $row['value'] : 15;
+        return max(1, min(1440, $v));
+    } catch (Throwable $e) {
+        return 15;
+    }
+}
+
+/** Days ahead from today to sync and show iCal events (schedule/calendar). From app_settings ical_event_range_days; default 365. */
+function getIcalEventRangeDays(): int {
+    try {
+        $master = getMasterPdo();
+        $stmt = $master->query("SELECT value FROM app_settings WHERE key = 'ical_event_range_days'");
+        $row = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : false;
+        $v = $row ? (int) $row['value'] : 365;
+        return max(1, min(366 * 2, $v));
+    } catch (Throwable $e) {
+        return 365;
+    }
+}
+
+/**
+ * iCal event UIDs to omit from API responses (hidden from schedule/calendar).
+ * Stored in app_settings ical_omit_uids: newline- or comma-separated list. Flexible for future (e.g. patterns).
+ * @return string[] List of UIDs to exclude (trimmed, non-empty).
+ */
+function getIcalOmitUids(): array {
+    try {
+        $master = getMasterPdo();
+        $stmt = $master->query("SELECT value FROM app_settings WHERE key = 'ical_omit_uids'");
+        $row = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : false;
+        $raw = $row ? trim((string) $row['value']) : '';
+        if ($raw === '') {
+            return [];
+        }
+        $uids = preg_split('/[\r\n,]+/', $raw, -1, PREG_SPLIT_NO_EMPTY);
+        return array_values(array_filter(array_map('trim', $uids)));
+    } catch (Throwable $e) {
+        return [];
+    }
+}
+
+/** Whether to run periodic iCal fetch on the Today tab (interval). When false, fetch only on page load/refresh. From app_settings ical_interval_fetch; default true. */
+function getIcalIntervalFetchEnabled(): bool {
+    try {
+        $master = getMasterPdo();
+        $stmt = $master->query("SELECT value FROM app_settings WHERE key = 'ical_interval_fetch'");
+        $row = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : false;
+        $v = $row ? trim((string) $row['value']) : '1';
+        return $v !== '0' && $v !== '';
+    } catch (Throwable $e) {
+        return true;
+    }
+}

@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Day Tracker</title>
+  <link rel="icon" href="/favicon.ico" type="image/x-icon" />
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="app-bar" id="app-bar" hidden aria-hidden="true">
+      <div class="app-bar-left">
+        <img src="./favicon.ico" alt="" class="app-bar-favicon" />
+        <h1 class="app-bar-title">Day Tracker</h1>
+      </div>
+      <div class="app-bar-right">
+        <button type="button" id="app-bar-admin" class="app-bar-icon" title="Admin settings" aria-label="Admin settings" style="display:none">⚙</button>
+        <button type="button" id="app-bar-user" class="app-bar-icon" title="User settings" aria-label="User settings">👤</button>
+      </div>
+    </header>
+    <div id="login-screen" class="login-screen" aria-hidden="false">
+      <div class="login-card">
+        <h2>Day Tracker</h2>
+        <p id="login-message" class="login-message"></p>
+        <form id="login-form" class="login-form">
+          <label>Username <input type="text" id="login-username" autocomplete="username" required /></label>
+          <label>Password <input type="password" id="login-password" autocomplete="current-password" required /></label>
+          <div class="login-form-actions">
+            <button type="submit">Log in</button>
+            <button type="button" id="login-toggle-register">Create account</button>
+          </div>
+        </form>
+        <form id="register-form" class="login-form" style="display:none">
+          <label>Username <input type="text" id="register-username" autocomplete="username" required /></label>
+          <label>Password <input type="password" id="register-password" autocomplete="new-password" minlength="6" required /></label>
+          <div class="login-form-actions">
+            <button type="submit">Create account</button>
+            <button type="button" id="register-toggle-login">Back to login</button>
+          </div>
+        </form>
+        <div class="login-sso">
+          <p>Or sign in with:</p>
+          <a href="#" id="sso-google" class="login-sso-btn">Google</a>
+          <a href="#" id="sso-outlook" class="login-sso-btn">Outlook</a>
+        </div>
+      </div>
+    </div>
+    <div id="user-settings-view" class="settings-view" hidden aria-hidden="true">
+      <div class="settings-inner">
+        <div class="settings-view-header">
+          <h2>User settings</h2>
+          <button type="button" id="user-settings-close" class="settings-close" aria-label="Close" title="Close">×</button>
+        </div>
+        <div id="user-settings-content"></div>
+      </div>
+    </div>
+    <div id="admin-settings-view" class="settings-view" hidden aria-hidden="true">
+      <div class="settings-inner">
+        <div class="settings-view-header">
+          <h2>Admin settings</h2>
+          <button type="button" id="admin-settings-close" class="settings-close" aria-label="Close" title="Close">×</button>
+        </div>
+        <div id="admin-settings-content"></div>
+      </div>
+    </div>
+    <div class="panels" id="main-panels" style="display: none;">
+      <!-- Panel 1: Completed tasks (desktop: narrow strip + slide; mobile: full slide) -->
+      <div class="panel-slide panel-slide-completed">
+        <button type="button" id="completed-tab-btn" class="completed-tab-btn" title="Completed tasks by day">Completed Tasks</button>
+        <div id="completed-panel" class="completed-panel" aria-hidden="true">
+          <div class="completed-panel-header">
+            <h3>Completed Tasks</h3>
+            <button type="button" id="completed-panel-close" class="completed-panel-close" aria-label="Close">×</button>
+          </div>
+          <div id="completed-list" class="completed-list"></div>
+        </div>
+      </div>
+      <!-- Panel 2: Tasks + Schedule (desktop: flex; mobile: full slide) -->
+      <div class="panel-slide panel-slide-tasks">
+        <div class="left-main">
+          <div class="left-top panel-section">
+            <header class="section-header">
+              <h2>Tasks</h2>
+            </header>
+            <div class="add-task-row">
+              <input type="text" id="new-task-input" placeholder="Add a task..." aria-label="New task title" />
+              <button type="button" id="new-task-add-btn" class="add-task-btn" title="Add">Add</button>
+            </div>
+            <div class="task-list-sort-row">
+              <label>Sort: <select id="task-list-sort" aria-label="Sort tasks by">
+                <option value="id">Added order</option>
+                <option value="priority">Priority</option>
+                <option value="alphabetical">Alphabetical</option>
+                <option value="date_added">Date added</option>
+              </select></label>
+            </div>
+            <div class="task-list-sections-mobile-nav" id="task-list-sections-mobile-nav" aria-hidden="true" role="tablist">
+              <button type="button" role="tab" data-task-slide="0" aria-label="Unassigned" aria-selected="true">Unassigned</button>
+              <button type="button" role="tab" data-task-slide="1" aria-label="Pending" aria-selected="false">Pending</button>
+              <button type="button" role="tab" data-task-slide="2" aria-label="Incomplete" aria-selected="false">Incomplete</button>
+            </div>
+            <div class="task-list-sections" id="task-list-sections">
+              <section class="task-list-section" data-drop-zone="unassigned">
+                <h3 class="task-list-section-title">Unassigned</h3>
+                <div class="task-list-scroll">
+                  <ul id="task-list-unassigned" class="task-list" aria-label="Unassigned tasks"></ul>
+                </div>
+                <div id="task-list-unassign-zone" class="task-list-drop-zone" aria-hidden="true">Drag here to unassign</div>
+              </section>
+              <section class="task-list-section" data-drop-zone="pending">
+                <h3 class="task-list-section-title">Pending</h3>
+                <div class="task-list-scroll">
+                  <ul id="task-list-pending" class="task-list" aria-label="Pending tasks"></ul>
+                </div>
+                <div class="task-list-drop-zone task-list-drop-zone-pending" aria-hidden="true">Drag here for pending</div>
+              </section>
+              <section class="task-list-section" data-drop-zone="incomplete">
+                <h3 class="task-list-section-title">Incomplete</h3>
+                <div class="task-list-scroll">
+                  <ul id="task-list-incomplete" class="task-list" aria-label="Incomplete tasks"></ul>
+                </div>
+                <div class="task-list-drop-zone task-list-drop-zone-incomplete" aria-hidden="true">Drag here (partially completed only)</div>
+              </section>
+            </div>
+        </div>
+        <div id="task-schedule-resize" class="left-main-resize" aria-label="Resize task and schedule"></div>
+        <div class="left-bottom panel-section">
+          <div class="schedule-tabs">
+            <button type="button" id="tab-today" class="schedule-tab active">Today</button>
+            <button type="button" id="tab-calendar" class="schedule-tab">Calendar</button>
+          </div>
+          <header class="section-header schedule-header">
+            <h2>Schedule <span id="schedule-date" class="schedule-date"></span></h2>
+            <div class="day-nav">
+              <button type="button" id="day-prev" class="day-nav-btn" title="Previous day" aria-label="Previous day">◀</button>
+              <button type="button" id="day-next" class="day-nav-btn" title="Next day" aria-label="Next day">▶</button>
+              <button type="button" id="day-go-today" class="day-nav-btn day-go-today" title="Return to today" aria-label="Return to today" style="display:none">Today</button>
+            </div>
+            <div class="time-settings">
+              <label>Start <select id="time-start"></select></label>
+              <label>End <select id="time-end"></select></label>
+              <label>Increment <input type="number" id="time-increment" min="1" value="15" /> <select id="time-increment-unit"><option value="min">min</option><option value="hr">hr</option></select></label>
+            </div>
+            <div id="schedule-feed-loading" class="schedule-feed-loading" aria-hidden="true" title="Loading calendar feeds…"><span class="schedule-feed-spinner" aria-hidden="true"></span></div>
+          </header>
+          <div id="schedule-content">
+            <div id="schedule-untimed-feed" class="schedule-untimed-feed" aria-label="All-day and untimed calendar events"></div>
+            <div id="time-view" class="time-view" aria-label="Daily schedule"></div>
+            <div id="calendar-view" class="calendar-view" aria-hidden="true"></div>
+          </div>
+        </div>
+        </div>
+      </div>
+      <!-- Resize handle between tasks and AI (desktop only) -->
+      <div id="resize-handle" class="resize-handle" aria-label="Resize panels"></div>
+      <!-- Panel 3: AI -->
+      <div class="panel-slide panel-slide-ai right-panel">
+        <button type="button" id="chat-toggle" class="chat-toggle-float" aria-expanded="true" aria-controls="chat-panel" title="Toggle AI panel">Hide AI</button>
+        <details class="debug-panel" id="debug-panel">
+          <summary>⚙ Debug</summary>
+          <div class="debug-content">
+            <label class="debug-row"><input type="checkbox" id="debug-mode-checkbox" /> Debug mode</label>
+            <div id="debug-date-row" class="debug-row" style="display:none">
+              <label>Date: <input type="date" id="debug-date" title="Override current date for testing" /></label>
+            </div>
+            <div class="debug-actions">
+              <button type="button" id="debug-clear-tasks">Clear all tasks</button>
+              <button type="button" id="debug-reset-all">Reset everything</button>
+            </div>
+          </div>
+        </details>
+        <div class="right-top panel-section">
+          <header class="section-header"><h2>Priorities</h2></header>
+          <div class="chat-area" id="chat-panel">
+            <textarea id="chat-input" placeholder="How should I prioritize today? e.g. I need to focus on applying to jobs..." rows="3"></textarea>
+            <button type="button" id="chat-send">Send</button>
+            <div id="chat-advice" class="chat-advice" aria-live="polite"></div>
+          </div>
+        </div>
+        <div class="right-bottom panel-section">
+          <header class="section-header"><h2>Suggested tasks</h2></header>
+          <div id="suggested-tasks" class="suggested-tasks" aria-label="Suggested tasks from ChatGPT"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- Date picker for schedule (calendar button) -->
+  <dialog id="date-picker-modal" class="link-modal" aria-label="Choose date">
+    <h3>Schedule for date</h3>
+    <label>Date <input type="date" id="date-picker-input" /></label>
+    <div class="modal-actions">
+      <button type="button" id="date-picker-cancel">Cancel</button>
+      <button type="button" id="date-picker-ok">OK</button>
+    </div>
+  </dialog>
+  <!-- Task edit modal (calendar view) -->
+  <dialog id="task-edit-modal" class="link-modal" aria-label="Edit task">
+    <h3>Edit task</h3>
+    <input type="hidden" id="task-edit-id" />
+    <label>Title <input type="text" id="task-edit-title" /></label>
+    <label>Priority <select id="task-edit-priority"><option value="commitment">Commitment ★</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label>
+    <label><input type="checkbox" id="task-edit-recurring" /> Recurring</label>
+    <div class="modal-actions">
+      <button type="button" id="task-edit-cancel">Cancel</button>
+      <button type="button" id="task-edit-save">Save</button>
+    </div>
+  </dialog>
+  <!-- Unschedule partially complete: OK / Cancel / Orphan -->
+  <dialog id="unschedule-partial-modal" class="link-modal" aria-label="Partially completed task">
+    <h3>Remove from schedule?</h3>
+    <p id="unschedule-partial-message">All finished subtasks will be reset. Remove this task from the schedule?</p>
+    <div class="modal-actions">
+      <button type="button" id="unschedule-partial-cancel">Cancel</button>
+      <button type="button" id="unschedule-partial-orphan">Orphan completed</button>
+      <button type="button" id="unschedule-partial-ok">OK</button>
+    </div>
+  </dialog>
+  <!-- Link modal -->
+  <dialog id="link-modal" class="link-modal" aria-label="Add link">
+    <h3 id="link-modal-title">Add Link</h3>
+    <div id="link-list-in-modal" class="link-list-in-modal"></div>
+    <form id="link-form">
+      <input type="hidden" id="link-edit-id" value="" />
+      <label>URL <input type="url" id="link-url" required /></label>
+      <label>Description <input type="text" id="link-desc" placeholder="Short description" /></label>
+      <div class="modal-actions">
+        <button type="button" id="link-cancel">Cancel</button>
+        <button type="submit" id="link-add">Add</button>
+      </div>
+    </form>
+  </dialog>
+  <!-- Feed contents: raw iCal only (User settings → Subscribed calendars) -->
+  <dialog id="feed-contents-modal" class="link-modal admin-logs-modal" aria-label="Feed contents">
+    <h3>Feed contents (raw iCal)</h3>
+    <p class="feed-modal-download-row"><a id="feed-contents-download" href="#" download="feed.ics" style="display:none;">Download .ics</a></p>
+    <pre id="feed-contents-body" class="admin-logs-content"></pre>
+    <div class="modal-actions">
+      <button type="button" id="feed-contents-close">Close</button>
+    </div>
+  </dialog>
+  <!-- Parsed events + date list (User settings → Subscribed calendars) -->
+  <dialog id="feed-parsed-modal" class="link-modal admin-logs-modal" aria-label="Parsed events">
+    <h3>Parsed events</h3>
+    <p class="feed-modal-download-row"><a id="feed-parsed-download" href="#" download="feed.ics" style="display:none;">Download .ics</a></p>
+    <p id="feed-parsed-range" class="feed-parsed-range" style="font-size:0.9rem;color:var(--text-muted);margin:0.25rem 0;"></p>
+    <pre id="feed-parsed-body" class="admin-logs-content"></pre>
+    <div class="modal-actions">
+      <button type="button" id="feed-parsed-date-list-btn" style="display:none;">Show date list</button>
+      <button type="button" id="feed-parsed-close">Close</button>
+    </div>
+  </dialog>
+  <!-- Debug: iCal stream (when ical_stream_debug is on) -->
+  <dialog id="feed-stream-debug-modal" class="link-modal admin-logs-modal" aria-label="iCal stream debug">
+    <h3>iCal stream (debug)</h3>
+    <pre id="feed-stream-debug-body" class="admin-logs-content" style="white-space:pre-wrap;word-break:break-all;"></pre>
+    <div class="modal-actions">
+      <button type="button" id="feed-stream-debug-parse">Parse dates/titles</button>
+      <button type="button" id="feed-stream-debug-close">Close</button>
+    </div>
+  </dialog>
+  <!-- Admin error log modal -->
+  <dialog id="admin-logs-modal" class="link-modal admin-logs-modal" aria-label="Error log">
+    <h3>Error log</h3>
+    <pre id="admin-logs-content" class="admin-logs-content"></pre>
+    <div class="modal-actions">
+      <button type="button" id="admin-logs-refresh">Refresh</button>
+      <button type="button" id="admin-logs-close">Close</button>
+    </div>
+  </dialog>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

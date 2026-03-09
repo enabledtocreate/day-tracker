@@ -1,0 +1,14 @@
+---
+description: Run full project build after making code changes
+alwaysApply: true
+---
+
+# Rebuild After Changes
+
+After editing source files in this project (especially under `src/` or config), run the full build so `dist/` and `release/` are up to date:
+
+```bash
+npm run build
+```
+
+Run the build after completing code changes in a turn, unless the user says otherwise.
