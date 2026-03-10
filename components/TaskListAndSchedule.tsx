@@ -2567,35 +2567,11 @@ export function TaskListAndSchedule({
                                       onDoubleClick={(e) => {
                                         e.preventDefault();
                                         e.stopPropagation();
-                                        if (editingScheduleTaskId === slot.task_id) return;
                                         if (parentCompleteLocked || (slot.is_recurring_occurrence && viewDate > today())) return;
-                                        const newCompleted = slot.completed ? 0 : 1;
-                                        if (newCompleted !== 1) {
-                                          const updates = [api.slots.update({ id: slot.id, completed: false })];
-                                          childSlots.forEach((c) => updates.push(api.slots.update({ id: c.id, completed: false })));
-                                          Promise.all(updates).then(loadData).catch((err) => { setError(err instanceof Error ? err.message : String(err)); loadData(); });
-                                          return;
-                                        }
-                                        if (slot.is_recurring_occurrence && slot.id < 0) {
-                                          api.slots.completeOccurrence(slot.task_id, viewDate).then(loadData).catch((err) => {
-                                            setError(err instanceof Error ? err.message : String(err));
-                                            loadData();
-                                          });
-                                          return;
-                                        }
-                                        if (slot.recurring && slot.id > 0) {
-                                          setRecurringActionModal({ type: 'complete', slot, childSlots });
-                                          return;
-                                        }
-                                        if (viewDate > today()) {
-                                          setFutureCompleteModal({ slot });
-                                          return;
-                                        }
-                                        const updates = [api.slots.update({ id: slot.id, completed: true })];
-                                        childSlots.forEach((c) => updates.push(api.slots.update({ id: c.id, completed: true })));
-                                        Promise.all(updates).then(loadData).catch((err) => { setError(err instanceof Error ? err.message : String(err)); loadData(); });
+                                        setEditingScheduleTaskId(slot.task_id);
+                                        setEditingScheduleTitle(slot.title ?? 'Task');
                                       }}
-                                      title="Double-tap to toggle completion"
+                                      title="Double-click to edit title"
                                     >
                                       {slot.title ?? 'Task'}
                                     </div>
