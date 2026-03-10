@@ -20,6 +20,8 @@ type Props = {
   isMobile?: boolean;
   mainSlideIndex?: number;
   onMainSlideChange?: (index: number) => void;
+  /** Optional ref to register a refetch-organization callback so other panels (e.g. settings) can refresh this view's org list */
+  refetchOrganizationRef?: React.MutableRefObject<(() => void) | null>;
 };
 
 function today(): string {
@@ -124,6 +126,7 @@ export function TaskListAndSchedule({
   isMobile = false,
   mainSlideIndex = 1,
   onMainSlideChange,
+  refetchOrganizationRef,
 }: Props) {
   const [viewDate, setViewDate] = useState(today());
   const [adminDebug, setAdminDebug] = useState(false);
@@ -136,6 +139,7 @@ export function TaskListAndSchedule({
   const [slots, setSlots] = useState<ScheduledSlot[]>([]);
   const [feedErrors, setFeedErrors] = useState<Array<{ feed_url: string; message: string }>>([]);
   const [icalIntervalFetch, setIcalIntervalFetch] = useState(true);
+  const [icalSyncIntervalMinutes, setIcalSyncIntervalMinutes] = useState(15);
   type IcalSyncPhase = 'idle' | 'downloading' | 'parsing' | 'saving' | 'loading' | 'synced';
   const [icalSyncPhase, setIcalSyncPhase] = useState<IcalSyncPhase>('idle');
   const icalPhaseTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
@@ -214,6 +218,11 @@ export function TaskListAndSchedule({
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<number>>(new Set());
   const [taskLinksByTaskId, setTaskLinksByTaskId] = useState<Record<number, TaskLink[]>>({});
   const [taskListItemsByTaskId, setTaskListItemsByTaskId] = useState<Record<number, TaskListItem[]>>({});
+  const [taskSearchQuery, setTaskSearchQuery] = useState('');
+  const [organizationCategories, setOrganizationCategories] = useState<Array<{ id: number; name: string; color?: string | null }>>([]);
+  const [organizationSubcategories, setOrganizationSubcategories] = useState<Array<{ id: number; category_id: number; name: string }>>([]);
+  const [organizationTags, setOrganizationTags] = useState<Array<{ id: number; name: string; color?: string | null }>>([]);
+  const [organizationModalTaskId, setOrganizationModalTaskId] = useState<number | null>(null);
   const [hoverDropTaskId, setHoverDropTaskId] = useState<number | null>(null);
   const [dropZoneHighlight, setDropZoneHighlight] = useState<'unassigned' | 'pending' | 'incomplete' | null>(null);
   const [scheduleDropGhostMin, setScheduleDropGhostMin] = useState<number | null>(null);
@@ -244,6 +253,12 @@ export function TaskListAndSchedule({
     lastDayOfMonth: boolean;
     count?: number;
     startDate?: string;
+  } | null>(null);
+  const [recurringResizeModal, setRecurringResizeModal] = useState<{
+    slot: ScheduledSlot;
+    childSlots: ScheduledSlot[];
+    newStartTime?: string;
+    newEndTime?: string;
   } | null>(null);
 
   const dragStateRef = useRef<{ taskId: number; taskIds: number[]; source: 'unassigned' | 'pending' | 'incomplete' | 'schedule' } | null>(null);
@@ -291,6 +306,7 @@ export function TaskListAndSchedule({
     setError(null);
     const run = async () => {
       try {
+        await api.dataIntegrity.ensure().catch(() => {});
         const isToday = viewDate === today();
         if (isToday) await api.rollover(viewDate);
         const day = await api.day.getOrCreate(viewDate);
@@ -299,6 +315,7 @@ export function TaskListAndSchedule({
         future.setFullYear(future.getFullYear() + 1);
         const futureStr = future.toISOString().slice(0, 10);
 
+        const withExt = 'links,list_items,organization';
         const [
           allTasksRes,
           unassignedRes,
@@ -308,20 +325,25 @@ export function TaskListAndSchedule({
           slotRes,
           scheduledRangeRes,
           settingsRes,
+          organizationRes,
         ] = await Promise.all([
-          api.tasks.list(),
-          api.tasks.list({ list_state: 'unassigned', with: 'links,list_items' }),
-          api.tasks.list({ list_state: 'pending', with: 'links,list_items' }),
-          api.tasks.list({ view: 'incomplete', day: viewDate, with: 'links,list_items' }),
+          api.tasks.list({ with: 'organization' }),
+          api.tasks.list({ list_state: 'unassigned', with: withExt }),
+          api.tasks.list({ list_state: 'pending', with: withExt }),
+          api.tasks.list({ view: 'incomplete', day: viewDate, with: withExt }),
           api.accomplished.listAll({ with: 'links,list_items' }),
           api.slots.list(day.id, { with: 'links,list_items' }),
           api.slots.listByDateRange(todayStr, futureStr),
           api.settings.get(),
+          api.organization.list().catch(() => ({ categories: [], subcategories: [], tags: [] })),
         ]);
 
         setTasks(allTasksRes.tasks ?? []);
         setSlots(slotRes.slots);
         setSettings(settingsRes);
+        setOrganizationCategories(organizationRes.categories ?? []);
+        setOrganizationSubcategories(organizationRes.subcategories ?? []);
+        setOrganizationTags(organizationRes.tags ?? []);
 
         const linksByTaskId: Record<number, TaskLink[]> = {};
         const listItemsByTaskId: Record<number, TaskListItem[]> = {};
@@ -412,6 +434,21 @@ export function TaskListAndSchedule({
     else loadData();
   }, [refetchTaskContent, loadData]);
 
+  const refetchOrganization = useCallback(() => {
+    api.organization.list().then((r) => {
+      setOrganizationCategories(r.categories ?? []);
+      setOrganizationSubcategories(r.subcategories ?? []);
+      setOrganizationTags(r.tags ?? []);
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (refetchOrganizationRef) refetchOrganizationRef.current = refetchOrganization;
+    return () => {
+      if (refetchOrganizationRef) refetchOrganizationRef.current = null;
+    };
+  }, [refetchOrganizationRef, refetchOrganization]);
+
   const handleToggleTaskComplete = useCallback(
     (taskId: number) => {
       const todayStr = today();
@@ -438,9 +475,11 @@ export function TaskListAndSchedule({
       .getConfig()
       .then((r) => {
         setIcalIntervalFetch(r.interval_fetch !== false);
+        setIcalSyncIntervalMinutes(r.interval_minutes ?? 15);
       })
       .catch(() => {
         setIcalIntervalFetch(true);
+        setIcalSyncIntervalMinutes(15);
       });
   }, []);
 
@@ -523,7 +562,7 @@ export function TaskListAndSchedule({
   // Periodic iCal sync while Today tab is active (every 15 min, sync-if-stale), only when interval fetch is enabled
   useEffect(() => {
     if (scheduleTab !== 'today' || !icalIntervalFetch) return;
-    const intervalMs = 15 * 60 * 1000;
+    const intervalMs = Math.max(60000, (icalSyncIntervalMinutes ?? 15) * 60 * 1000);
     const id = setInterval(() => {
       const { from: monthFrom, to: monthTo } = getMonthRange(viewDate);
       runIcalFetchWithPhase(monthFrom, monthTo, { sync_if_stale: true })
@@ -541,7 +580,7 @@ export function TaskListAndSchedule({
         .catch(() => {});
     }, intervalMs);
     return () => clearInterval(id);
-  }, [scheduleTab, viewDate, icalIntervalFetch, settings.timezone]);
+  }, [scheduleTab, viewDate, icalIntervalFetch, icalSyncIntervalMinutes, settings.timezone]);
 
   const refetchIcalForScheduleView = useCallback(() => {
     const { from, to } = getMonthRange(viewDate);
@@ -722,6 +761,23 @@ export function TaskListAndSchedule({
         !scheduledTaskIdsFromTodayOnward.has(t.id)
     )
   );
+
+  const taskMatchesSearch = useCallback(
+    (task: Task, q: string): boolean => {
+      if (!q.trim()) return true;
+      const lower = q.trim().toLowerCase();
+      if (task.title.toLowerCase().includes(lower)) return true;
+      const links = taskLinksByTaskId[task.id] ?? [];
+      if (links.some((l) => (l.description || l.url || '').toLowerCase().includes(lower))) return true;
+      const items = taskListItemsByTaskId[task.id] ?? [];
+      if (items.some((i) => (i.content || '').toLowerCase().includes(lower))) return true;
+      return false;
+    },
+    [taskLinksByTaskId, taskListItemsByTaskId]
+  );
+  const unassignedFiltered = taskSearchQuery.trim() ? unassigned.filter((t) => taskMatchesSearch(t, taskSearchQuery)) : unassigned;
+  const pendingFiltered = taskSearchQuery.trim() ? pending.filter((t) => taskMatchesSearch(t, taskSearchQuery)) : pending;
+  const incompleteFiltered = taskSearchQuery.trim() ? incomplete.filter((t) => taskMatchesSearch(t, taskSearchQuery)) : incomplete;
 
   const getChildTaskIds = (taskId: number): number[] => {
     const children = tasks.filter((t) => t.parent_id === taskId);
@@ -1012,7 +1068,7 @@ export function TaskListAndSchedule({
           return;
         }
         if (zone === 'incomplete') {
-          const fromScheduleIncomplete =
+          const fromSchedulePartiallyComplete =
             source === 'schedule' &&
             taskIds.some((rootTaskId) => {
               const rootSlot = slots.find(
@@ -1020,10 +1076,11 @@ export function TaskListAndSchedule({
               );
               if (!rootSlot) return false;
               const children = slots.filter((c) => c.parent_id === rootTaskId);
-              if (children.length === 0) return rootSlot.completed !== 1;
-              return !(rootSlot.completed === 1 && children.every((c) => c.completed === 1));
+              const someCompleted = rootSlot.completed === 1 || children.some((c) => c.completed === 1);
+              const someIncomplete = rootSlot.completed !== 1 || children.some((c) => c.completed !== 1);
+              return someCompleted && someIncomplete;
             });
-          if (source === 'unassigned' || source === 'pending' || fromScheduleIncomplete) {
+          if (fromSchedulePartiallyComplete) {
             handleDropOnListZone('pending', taskIds, source);
             return;
           }
@@ -1415,16 +1472,25 @@ export function TaskListAndSchedule({
     const children = slots.filter((c) => c.parent_id === s.task_id);
     if (children.length) childSlotsByParent.set(s.task_id, children);
   });
+  const timedFeedForOverlap = feedEvents
+    .filter((e) => !e.allDay && icalEventLocalStartDate(e.start, false, settings.timezone) === viewDate)
+    .map((e) => {
+      const local = icalEventToLocal(e.start, e.end, false, settings.timezone);
+      return { key: 'feed-' + (e.id ?? e.uid + e.start), startMin: local.localStartMinutes, endMin: local.localEndMinutes };
+    });
+  const allBlocks = [
+    ...timedRootSlots.map((slot) => ({ key: slot.id as number, startMin: timeToMinutes(slot.start_time), endMin: timeToMinutes(slot.end_time) })),
+    ...timedFeedForOverlap,
+  ];
   const slotOverlapInfo = new Map<number, { col: number; total: number }>();
-  timedRootSlots.forEach((slot) => {
-    const startMin = timeToMinutes(slot.start_time);
-    const endMin = timeToMinutes(slot.end_time);
-    const overlapping = timedRootSlots.filter(
-      (o) => timeToMinutes(o.start_time) < endMin && timeToMinutes(o.end_time) > startMin
-    );
-    const sorted = [...overlapping].sort((a, b) => timeToMinutes(a.start_time) - timeToMinutes(b.start_time));
-    const col = sorted.findIndex((o) => o.id === slot.id);
-    slotOverlapInfo.set(slot.id, { col: col >= 0 ? col : 0, total: sorted.length });
+  const feedOverlapInfo = new Map<string, { col: number; total: number }>();
+  allBlocks.forEach((block) => {
+    const overlapping = allBlocks.filter((o) => o.startMin < block.endMin && o.endMin > block.startMin);
+    const sorted = [...overlapping].sort((a, b) => a.startMin - b.startMin);
+    const col = sorted.findIndex((o) => o.key === block.key);
+    const info = { col: col >= 0 ? col : 0, total: sorted.length };
+    if (typeof block.key === 'number') slotOverlapInfo.set(block.key, info);
+    else feedOverlapInfo.set(block.key, info);
   });
 
   const untimedFeedEvents = feedEvents.filter(
@@ -1657,6 +1723,22 @@ export function TaskListAndSchedule({
                 : { height: taskViewHeightPx, flex: `0 0 ${taskViewHeightPx}px`, minHeight: TASK_VIEW_MIN_PX }
             }
           >
+            <div className="task-search-row" style={{ marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+              <span className="task-search-icon" aria-hidden style={{ opacity: 0.7 }}>🔍</span>
+              <input
+                type="text"
+                placeholder="Search tasks, links, list items…"
+                value={taskSearchQuery}
+                onChange={(e) => setTaskSearchQuery(e.target.value)}
+                className="task-search-input"
+                style={{ flex: 1, padding: '0.35rem 0.5rem', fontSize: '0.9rem' }}
+              />
+              {taskSearchQuery.trim() && (
+                <button type="button" className="add-task-btn" style={{ flex: '0 0 auto' }} onClick={() => setTaskSearchQuery('')}>
+                  Clear
+                </button>
+              )}
+            </div>
             <div className="add-task-row" style={{ marginBottom: '0.35rem' }}>
               <input
                 type="text"
@@ -1728,7 +1810,7 @@ export function TaskListAndSchedule({
                             : (tasks.find((t) => t.id === dragState!.taskId)?.title ?? slots.find((s) => s.task_id === dragState!.taskId)?.title ?? 'Drop here')}
                         </li>
                       )}
-                      {unassigned.map((t) => (
+                      {unassignedFiltered.map((t) => (
                         <TaskCard
                           key={t.id}
                           task={t}
@@ -1790,7 +1872,7 @@ export function TaskListAndSchedule({
                             setLinkModalTaskId(id);
                             setLinkModalInitialUrl(initialUrl ?? '');
                           }}
-                          onOpenList={(id) => setListModalTaskId(id)}
+                          onOpenList={(id) => { if (isMobile) setListModalTaskId(id); }}
                           onRefresh={handleRefresh}
                           highlightBlink={newTaskIdToBlink === t.id}
                           isUrlDragOver={urlDragOverTaskId === t.id}
@@ -1800,6 +1882,11 @@ export function TaskListAndSchedule({
                           taskListItemsByTaskId={taskListItemsByTaskId}
                           isMobile={isMobile}
                           onToggleComplete={handleToggleTaskComplete}
+                          organizationCategories={organizationCategories}
+                          organizationSubcategories={organizationSubcategories}
+                          organizationTags={organizationTags}
+                          onOpenOrganization={(id) => setOrganizationModalTaskId(id)}
+                          onTaskUpdate={loadData}
                         />
                       ))}
                     </ul>
@@ -1821,7 +1908,7 @@ export function TaskListAndSchedule({
                             : (tasks.find((t) => t.id === dragState!.taskId)?.title ?? slots.find((s) => s.task_id === dragState!.taskId)?.title ?? 'Drop here')}
                         </li>
                       )}
-                      {pending.map((t) => (
+                      {pendingFiltered.map((t) => (
                         <TaskCard
                           key={t.id}
                           task={t}
@@ -1882,7 +1969,7 @@ export function TaskListAndSchedule({
                             setLinkModalTaskId(id);
                             setLinkModalInitialUrl(initialUrl ?? '');
                           }}
-                          onOpenList={(id) => setListModalTaskId(id)}
+                          onOpenList={(id) => { if (isMobile) setListModalTaskId(id); }}
                           onRefresh={handleRefresh}
                           highlightBlink={newTaskIdToBlink === t.id}
                           isUrlDragOver={urlDragOverTaskId === t.id}
@@ -1892,6 +1979,11 @@ export function TaskListAndSchedule({
                           taskListItemsByTaskId={taskListItemsByTaskId}
                           isMobile={isMobile}
                           onToggleComplete={handleToggleTaskComplete}
+                          organizationCategories={organizationCategories}
+                          organizationSubcategories={organizationSubcategories}
+                          organizationTags={organizationTags}
+                          onOpenOrganization={(id) => setOrganizationModalTaskId(id)}
+                          onTaskUpdate={loadData}
                         />
                       ))}
                     </ul>
@@ -1910,7 +2002,7 @@ export function TaskListAndSchedule({
                             : (tasks.find((t) => t.id === dragState!.taskId)?.title ?? 'Drop here')}
                         </li>
                       )}
-                      {incomplete.map((t) => (
+                      {incompleteFiltered.map((t) => (
                         <TaskCard
                           key={t.id}
                           task={t}
@@ -1955,7 +2047,7 @@ export function TaskListAndSchedule({
                           onMoveToUnassigned={(id) => api.tasks.update({ id, list_state: 'unassigned' }).then(loadData)}
                           onScheduleDate={(id) => { setScheduleDateTaskId(id); setScheduleDateValue(viewDate); setScheduleSlotIdToReplace(null); setScheduleDateOpen(true); }}
                           onOpenLinks={(id, initialUrl) => { setLinkModalTaskId(id); setLinkModalInitialUrl(initialUrl ?? ''); }}
-                          onOpenList={(id) => setListModalTaskId(id)}
+                          onOpenList={(id) => { if (isMobile) setListModalTaskId(id); }}
                           onDelete={(id) => { if (confirm('Delete this task?')) api.tasks.delete(id).then(loadData); }}
                           onRefresh={handleRefresh}
                           highlightBlink={newTaskIdToBlink === t.id}
@@ -1966,6 +2058,11 @@ export function TaskListAndSchedule({
                           taskListItemsByTaskId={taskListItemsByTaskId}
                           isMobile={isMobile}
                           onToggleComplete={handleToggleTaskComplete}
+                          organizationCategories={organizationCategories}
+                          organizationSubcategories={organizationSubcategories}
+                          organizationTags={organizationTags}
+                          onOpenOrganization={(id) => setOrganizationModalTaskId(id)}
+                          onTaskUpdate={loadData}
                         />
                       ))}
                     </ul>
@@ -2030,6 +2127,35 @@ export function TaskListAndSchedule({
                   )}
                 </div>
               )}
+              {scheduleTab === 'calendar' && (
+                <div className="schedule-header-day-row calendar-month-nav-header" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                  <button
+                    type="button"
+                    className="day-nav-btn calendar-month-prev"
+                    onClick={() => {
+                      const d = new Date(calendarMonth + 'T00:00:00');
+                      d.setMonth(d.getMonth() - 1);
+                      setCalendarMonth(d.toISOString().slice(0, 10));
+                    }}
+                  >
+                    Prev
+                  </button>
+                  <span className="calendar-month-label" style={{ fontSize: '0.85rem' }}>
+                    {new Date(calendarMonth + 'T00:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+                  </span>
+                  <button
+                    type="button"
+                    className="day-nav-btn calendar-month-next"
+                    onClick={() => {
+                      const d = new Date(calendarMonth + 'T00:00:00');
+                      d.setMonth(d.getMonth() + 1);
+                      setCalendarMonth(d.toISOString().slice(0, 10));
+                    }}
+                  >
+                    Next
+                  </button>
+                </div>
+              )}
               {scheduleTab === 'today' && (
                 <div className="time-settings time-settings-top-right schedule-header-time-settings" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', fontSize: '0.85rem' }}>
                   <div className="schedule-header-start-end" style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
@@ -2066,51 +2192,6 @@ export function TaskListAndSchedule({
                     </select>
                   </label>
                   </div>
-                  <label className="time-settings-label schedule-header-increment">
-                    Increment
-                    <input
-                      type="number"
-                      min={1}
-                      max={60}
-                      value={settings.increment_value}
-                      onChange={(e) => {
-                        const v = Math.max(1, Math.min(60, parseInt(e.target.value, 10) || 15));
-                        api.settings.update({ increment_value: v }).then(() => setSettings((s) => ({ ...s, increment_value: v }))).catch(alert);
-                      }}
-                      style={{ width: '3rem', padding: '0.2rem 0.4rem' }}
-                    />
-                    <select
-                      className="time-settings-select"
-                      value={settings.increment_unit}
-                      onChange={(e) => {
-                        const v = e.target.value as 'min' | 'hr';
-                        api.settings.update({ increment_unit: v }).then(() => setSettings((s) => ({ ...s, increment_unit: v }))).catch(alert);
-                      }}
-                    >
-                      <option value="min">min</option>
-                      <option value="hr">hr</option>
-                    </select>
-                  </label>
-                  <label className="time-settings-label schedule-header-timezone" title="IANA timezone for iCal event times (e.g. America/Los_Angeles). Empty = browser timezone.">
-                    Time zone
-                    <input
-                      type="text"
-                      list="schedule-timezone-suggestions"
-                      value={settings.timezone ?? ''}
-                      onChange={(e) => setSettings((s) => ({ ...s, timezone: e.target.value }))}
-                      onBlur={(e) => {
-                        const v = e.target.value.trim();
-                        api.settings.update({ timezone: v }).then(() => setSettings((s) => ({ ...s, timezone: v }))).catch(alert);
-                      }}
-                      placeholder="Browser"
-                      style={{ width: '12rem', padding: '0.2rem 0.4rem', marginLeft: '0.25rem' }}
-                    />
-                    <datalist id="schedule-timezone-suggestions">
-                      {['America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles', 'America/Phoenix', 'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Asia/Tokyo', 'Australia/Sydney', 'UTC'].map((tz) => (
-                        <option key={tz} value={tz} />
-                      ))}
-                    </datalist>
-                  </label>
                 </div>
               )}
               {scheduleTab === 'today' && (
@@ -2173,7 +2254,7 @@ export function TaskListAndSchedule({
                         const canMarkCompleted = isToday && e.id != null;
                         return (
                           <div key={e.id ?? e.uid + e.start} className="schedule-untimed-feed-chip schedule-untimed-feed-chip-with-check">
-                            <span style={e.user_completed ? { textDecoration: 'line-through' } : undefined}>{e.title || 'Event'}</span>
+                            <span style={e.user_completed ? { color: 'var(--text-muted)', textDecoration: 'line-through' } : undefined}>{e.title || 'Event'}</span>
                             {canMarkCompleted && (
                               <button
                                 type="button"
@@ -2183,6 +2264,19 @@ export function TaskListAndSchedule({
                                 onClick={() => api.icalEvents.setCompleted(e.id!, !e.user_completed).then(() => refetchIcalForScheduleView()).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
                               >
                                 ✓
+                              </button>
+                            )}
+                            {e.uid && (
+                              <button
+                                type="button"
+                                className="time-block-exclude-ical"
+                                title="Hide this event from calendar (add to excluded list)"
+                                aria-label="Exclude from calendar"
+                                onClick={() => {
+                                  api.icalExcluded.add(e.uid, e.title || 'Event').then(() => refetchIcalForScheduleView()).catch((err) => setError(err instanceof Error ? err.message : String(err)));
+                                }}
+                              >
+                                ⊖
                               </button>
                             )}
                           </div>
@@ -2300,6 +2394,15 @@ export function TaskListAndSchedule({
                           const childSlots = childSlotsByParent.get(slot.task_id) ?? [];
                           const allChildrenComplete = childSlots.length > 0 && childSlots.every((c) => c.completed);
                           const parentCompleteLocked = slot.completed === 1 && allChildrenComplete;
+                          const slotTask = tasks.find((t) => t.id === slot.task_id);
+                          const slotCategory = slotTask?.category_id != null ? organizationCategories.find((c) => c.id === slotTask.category_id) : null;
+                          const slotSubcategory = slotTask?.subcategory_id != null ? organizationSubcategories.find((s) => s.id === slotTask.subcategory_id) : null;
+                          const slotTagList = (slotTask?.tag_ids ?? []).map((tid) => organizationTags.find((t) => t.id === tid)).filter(Boolean) as Array<{ id: number; name: string; color?: string | null }>;
+                          const slotBgColor = slotCategory?.color
+                            ? (slotCategory.color.startsWith('hsl')
+                              ? slotCategory.color.replace(/\)$/, ', 0.25)').replace(/^hsl\(/, 'hsla(')
+                              : slotCategory.color + '40')
+                            : 'rgba(220, 220, 220, 0.45)';
                           return (
                             <div
                               key={slot.id}
@@ -2309,6 +2412,7 @@ export function TaskListAndSchedule({
                                 height: height + 'px',
                                 left: leftPct + '%',
                                 width: (widthPctSlot > 0 ? widthPctSlot - 0.5 : 99.5) + '%',
+                                backgroundColor: slotBgColor,
                               }}
                               onDragOver={(e) => {
                                 if (e.dataTransfer.types.includes('text/uri-list') || e.dataTransfer.types.includes('text/plain')) {
@@ -2383,12 +2487,16 @@ export function TaskListAndSchedule({
                                           return s;
                                         })
                                       );
-                                      api.slots.update({ id: slot.id, start_time: newStartTime, end_time: slot.end_time })
-                                        .then(() => refetchSlotsForViewDay())
-                                        .catch((err) => {
-                                          setError(err instanceof Error ? err.message : String(err));
-                                          loadData();
-                                        });
+                                      if (slot.recurring || slot.is_recurring_occurrence) {
+                                        setRecurringResizeModal({ slot, childSlots, newStartTime, newEndTime: slot.end_time ?? undefined });
+                                      } else {
+                                        api.slots.update({ id: slot.id, start_time: newStartTime, end_time: slot.end_time })
+                                          .then(() => refetchSlotsForViewDay())
+                                          .catch((err) => {
+                                            setError(err instanceof Error ? err.message : String(err));
+                                            loadData();
+                                          });
+                                      }
                                     }
                                   };
                                   window.addEventListener('pointermove', move);
@@ -2455,7 +2563,7 @@ export function TaskListAndSchedule({
                                   ) : (
                                     <div
                                       className="time-block-title"
-                                      style={slot.completed ? { textDecoration: 'line-through' } : undefined}
+                                      style={slot.completed ? { color: 'var(--text-muted)', textDecoration: 'line-through' } : undefined}
                                       onDoubleClick={(e) => {
                                         e.preventDefault();
                                         e.stopPropagation();
@@ -2504,6 +2612,27 @@ export function TaskListAndSchedule({
                                       🔗
                                     </a>
                                   ))}
+                                  {slotTagList.length > 0 && (
+                                    <span className="time-block-tags">
+                                      {slotTagList.map((t) => (
+                                        <span
+                                          key={t.id}
+                                          className="time-block-tag-pill"
+                                          style={{
+                                            backgroundColor: t.color ?? 'var(--surface)',
+                                            color: t.color ? (t.color.startsWith('hsl') && t.color.includes('65%') ? '#fff' : '#000') : 'var(--text)',
+                                          }}
+                                        >
+                                          {t.name}
+                                        </span>
+                                      ))}
+                                    </span>
+                                  )}
+                                  {(slotCategory != null || slotSubcategory != null) && (
+                                    <div className="time-block-category-sub" style={{ fontSize: '0.7em', opacity: 0.9, marginTop: '0.1rem' }}>
+                                      {slotCategory?.name}{slotSubcategory != null ? ` › ${slotSubcategory.name}` : ''}
+                                    </div>
+                                  )}
                                 </div>
                                 <span className="time-block-desktop-actions">
                                   <button type="button" className="time-block-link" title="Add link" onClick={() => { setLinkModalTaskId(slot.task_id); setLinkModalInitialUrl(''); }}>
@@ -2511,6 +2640,9 @@ export function TaskListAndSchedule({
                                   </button>
                                   <button type="button" className="time-block-link" title="List items" onClick={() => setListModalTaskId(slot.task_id)}>
                                     <span className="time-block-link-icon">📋<sup>+</sup></span>
+                                  </button>
+                                  <button type="button" className="time-block-link task-list-add-btn" title="Category & tags" onClick={() => setOrganizationModalTaskId(slot.task_id)}>
+                                    <span className="time-block-link-icon">📁<sup className="task-list-add-plus">+</sup></span>
                                   </button>
                                   <button
                                     type="button"
@@ -2621,7 +2753,7 @@ export function TaskListAndSchedule({
                                     aria-expanded={openScheduleDrawerSlotId === slot.id}
                                     onClick={(e) => { e.stopPropagation(); setOpenScheduleDrawerSlotId((id) => (id === slot.id ? null : slot.id)); }}
                                   >
-                                    {openScheduleDrawerSlotId === slot.id ? '>' : '<'}
+                                    {openScheduleDrawerSlotId === slot.id ? '▶' : '◀'}
                                   </button>
                                   {openScheduleDrawerSlotId === slot.id && (
                                     <div className="time-block-actions-drawer">
@@ -2630,6 +2762,8 @@ export function TaskListAndSchedule({
                                       <button type="button" title="Add link" onClick={(e) => { e.stopPropagation(); setLinkModalTaskId(slot.task_id); setLinkModalInitialUrl(''); setOpenScheduleDrawerSlotId(null); }}>🔗</button>
                                       <span className="task-card-drawer-divider" aria-hidden>|</span>
                                       <button type="button" title="List items" onClick={(e) => { e.stopPropagation(); setListModalTaskId(slot.task_id); setOpenScheduleDrawerSlotId(null); }}>📋</button>
+                                      <span className="task-card-drawer-divider" aria-hidden>|</span>
+                                      <button type="button" title="Category & tags" onClick={(e) => { e.stopPropagation(); setOrganizationModalTaskId(slot.task_id); setOpenScheduleDrawerSlotId(null); }}>📁</button>
                                       <span className="task-card-drawer-divider" aria-hidden>|</span>
                                       <button type="button" title="Change date" onClick={(e) => {
                                         e.stopPropagation();
@@ -2735,7 +2869,7 @@ export function TaskListAndSchedule({
                                     <div className="time-block-children">
                                       {childSlots.map((c) => (
                                         <div key={c.id} className="time-block-child time-block-child-header">
-                                          <span className="time-block-child-title" style={c.completed ? { textDecoration: 'line-through' } : undefined}>
+                                          <span className="time-block-child-title" style={c.completed ? { color: 'var(--text-muted)', textDecoration: 'line-through' } : undefined}>
                                             {c.title ?? 'Subtask'}
                                           </span>
                                           <button
@@ -2797,15 +2931,20 @@ export function TaskListAndSchedule({
                                     blockEl.style.height = '';
                                     if (lastEnd !== endMin) {
                                       const newEndTime = minutesToTime(lastEnd);
+                                      const childSlots = childSlotsByParent.get(slot.task_id) ?? [];
                                       setSlots((prev) =>
                                         prev.map((s) => (s.id === slot.id ? { ...s, end_time: newEndTime } : s))
                                       );
-                                      api.slots.update({ id: slot.id, start_time: slot.start_time, end_time: newEndTime })
-                                        .then(() => refetchSlotsForViewDay())
-                                        .catch((err) => {
-                                          setError(err instanceof Error ? err.message : String(err));
-                                          loadData();
-                                        });
+                                      if (slot.recurring || slot.is_recurring_occurrence) {
+                                        setRecurringResizeModal({ slot, childSlots, newStartTime: slot.start_time ?? undefined, newEndTime });
+                                      } else {
+                                        api.slots.update({ id: slot.id, start_time: slot.start_time, end_time: newEndTime })
+                                          .then(() => refetchSlotsForViewDay())
+                                          .catch((err) => {
+                                            setError(err instanceof Error ? err.message : String(err));
+                                            loadData();
+                                          });
+                                      }
                                     }
                                   };
                                   window.addEventListener('pointermove', move);
@@ -2826,6 +2965,10 @@ export function TaskListAndSchedule({
                             const height = ((endMin - startMin) / slotDurationMinutes) * ROW_HEIGHT;
                             const isToday = viewDate === today();
                             const canMarkCompleted = isToday && e.id != null;
+                            const feedKey = 'feed-' + (e.id ?? e.uid + e.start);
+                            const overlap = feedOverlapInfo.get(feedKey) ?? { col: 0, total: 1 };
+                            const widthPct = overlap.total > 0 ? 100 / overlap.total : 100;
+                            const leftPct = overlap.col * widthPct;
                             return (
                               <div
                                 key={e.id ?? e.uid + e.start}
@@ -2833,13 +2976,13 @@ export function TaskListAndSchedule({
                                 style={{
                                   top: top + 'px',
                                   height: Math.max(height, 20) + 'px',
-                                  left: '2%',
-                                  width: '96%',
+                                  left: leftPct + '%',
+                                  width: (widthPct > 0 ? widthPct - 0.5 : 99.5) + '%',
                                 }}
                               >
                                 <div className="time-block-header">
                                   <div className="time-block-title-wrap">
-                                    <div className="time-block-title" style={e.user_completed ? { textDecoration: 'line-through' } : undefined}>
+                                    <div className="time-block-title" style={e.user_completed ? { color: 'var(--text-muted)', textDecoration: 'line-through' } : undefined}>
                                       {local.localStartTime} – {local.localEndTime} {e.title}
                                     </div>
                                   </div>
@@ -2857,6 +3000,20 @@ export function TaskListAndSchedule({
                                       ✓
                                     </button>
                                   )}
+                                  {e.uid && (
+                                    <button
+                                      type="button"
+                                      className="time-block-exclude-ical"
+                                      title="Hide this event from calendar (add to excluded list)"
+                                      aria-label="Exclude from calendar"
+                                      onClick={(ev) => {
+                                        ev.stopPropagation();
+                                        api.icalExcluded.add(e.uid, e.title || 'Event').then(() => refetchIcalForScheduleView()).catch((err) => setError(err instanceof Error ? err.message : String(err)));
+                                      }}
+                                    >
+                                      ⊖
+                                    </button>
+                                  )}
                                 </div>
                               </div>
                             );
@@ -2869,33 +3026,6 @@ export function TaskListAndSchedule({
             )}
             {scheduleTab === 'calendar' && (
               <div className="calendar-view visible">
-                <div className="calendar-month-nav">
-                  <button
-                    type="button"
-                    className="calendar-month-prev"
-                    onClick={() => {
-                      const d = new Date(calendarMonth + 'T00:00:00');
-                      d.setMonth(d.getMonth() - 1);
-                      setCalendarMonth(d.toISOString().slice(0, 10));
-                    }}
-                  >
-                    Prev
-                  </button>
-                  <span className="calendar-month-label">
-                    {new Date(calendarMonth + 'T00:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
-                  </span>
-                  <button
-                    type="button"
-                    className="calendar-month-next"
-                    onClick={() => {
-                      const d = new Date(calendarMonth + 'T00:00:00');
-                      d.setMonth(d.getMonth() + 1);
-                      setCalendarMonth(d.toISOString().slice(0, 10));
-                    }}
-                  >
-                    Next
-                  </button>
-                </div>
                 <div className="calendar-grid">
                   {buildCalendarDays(calendarMonth).map((dateStr, i) => {
                     const daySlots = dateStr ? (calendarSlotsByDate[dateStr] ?? []) : [];
@@ -2955,7 +3085,7 @@ export function TaskListAndSchedule({
                                 <span className="calendar-task-icon" aria-hidden title={s.completed ? 'Completed' : s.recurring || s.is_recurring_occurrence ? 'Recurring' : undefined}>
                                   {s.completed ? '☑' : s.recurring || s.is_recurring_occurrence ? '↻' : '☐'}
                                 </span>
-                                <span className="calendar-task-desc" style={s.completed ? { textDecoration: 'line-through' } : undefined}>
+                                <span className="calendar-task-desc" style={s.completed ? { color: 'var(--text-muted)', textDecoration: 'line-through' } : undefined}>
                                   {s.title ?? 'Task'}
                                 </span>
                               </li>
@@ -3135,12 +3265,34 @@ export function TaskListAndSchedule({
       />
 
       <TaskListItemsModal
-        open={listModalTaskId != null}
+        open={listModalTaskId != null && !!isMobile}
         onClose={() => setListModalTaskId(null)}
         taskId={listModalTaskId}
         listStyle={tasks.find((t) => t.id === listModalTaskId)?.list_style ?? 'bullet'}
         onRefresh={() => { if (listModalTaskId != null) handleRefresh(listModalTaskId); }}
       />
+
+      {organizationModalTaskId != null && (() => {
+        const task = tasks.find((t) => t.id === organizationModalTaskId);
+        return task ? (
+          <OrganizationTaskModal
+            task={task}
+            categories={organizationCategories}
+            subcategories={organizationSubcategories}
+            tags={organizationTags}
+            onSave={(category_id, subcategory_id, tag_ids) => {
+              api.tasks.update({ id: organizationModalTaskId, category_id, subcategory_id, tag_ids }).then(loadData);
+              setOrganizationModalTaskId(null);
+            }}
+            onClose={() => setOrganizationModalTaskId(null)}
+            onRefreshTags={() => api.organization.list().then((r) => {
+              setOrganizationCategories(r.categories ?? []);
+              setOrganizationSubcategories(r.subcategories ?? []);
+              setOrganizationTags(r.tags ?? []);
+            })}
+          />
+        ) : null;
+      })()}
 
       {orphanModal && (
         <Modal
@@ -3290,6 +3442,98 @@ export function TaskListAndSchedule({
           <p style={{ marginTop: '0.25rem', fontSize: '0.9rem', color: 'var(--text-muted)' }}>
             <strong>All occurrences</strong> – Turn off recurring for this task so it won’t appear on future days.
           </p>
+        </Modal>
+      )}
+
+      {recurringResizeModal && (
+        <Modal
+          open
+          onClose={() => {
+            setRecurringResizeModal(null);
+            refetchSlotsForViewDay();
+          }}
+          title="Recurring task: change time"
+          actions={
+            <>
+              <Button
+                onClick={() => {
+                  const { slot, newStartTime, newEndTime } = recurringResizeModal;
+                  if (newStartTime == null || newEndTime == null) {
+                    setRecurringResizeModal(null);
+                    return;
+                  }
+                  api.slots.listByDateRange(
+                    new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+                    new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+                  ).then((res) => {
+                    const allSlotsForTask: number[] = [];
+                    Object.values(res.byDate ?? {}).forEach((arr: ScheduledSlot[]) => {
+                      arr.forEach((s) => {
+                        if (s.task_id === slot.task_id && s.id > 0) allSlotsForTask.push(s.id);
+                      });
+                    });
+                    return Promise.all(
+                      allSlotsForTask.map((id) => api.slots.update({ id, start_time: newStartTime, end_time: newEndTime }))
+                    );
+                  })
+                    .then(() => refetchSlotsForViewDay())
+                    .catch((err) => {
+                      setError(err instanceof Error ? err.message : String(err));
+                      loadData();
+                    });
+                  setRecurringResizeModal(null);
+                }}
+              >
+                Change time for all recurring tasks
+              </Button>
+              <Button
+                onClick={() => {
+                  const { slot, childSlots, newStartTime, newEndTime } = recurringResizeModal;
+                  if (newStartTime == null || newEndTime == null) {
+                    setRecurringResizeModal(null);
+                    return;
+                  }
+                  const task = tasks.find((t) => t.id === slot.task_id);
+                  api.tasks.create({
+                    title: task?.title ?? 'Task',
+                    priority: (task?.priority as Priority) ?? 'low',
+                    recurring: false,
+                  }).then((newTask) =>
+                    api.day.getOrCreate(viewDate).then((day) =>
+                      api.slots.create({
+                        day_record_id: day.id,
+                        task_id: newTask.id,
+                        start_time: newStartTime,
+                        end_time: newEndTime,
+                      }).then(() => {
+                        const toDelete = [slot.id, ...childSlots.map((c) => c.id)].filter((id) => id > 0);
+                        return Promise.all(toDelete.map((id) => api.slots.delete(id)));
+                      })
+                    )
+                  ).then(() => {
+                    loadData();
+                    refetchSlotsForViewDay();
+                  }).catch((err) => {
+                    setError(err instanceof Error ? err.message : String(err));
+                    loadData();
+                  });
+                  setRecurringResizeModal(null);
+                }}
+              >
+                This occurrence only (becomes one-off task)
+              </Button>
+              <Button
+                onClick={() => {
+                  setRecurringResizeModal(null);
+                  refetchSlotsForViewDay();
+                }}
+              >
+                Cancel
+              </Button>
+            </>
+          }
+        >
+          <p>This is a recurring task. Change the time for this occurrence only (creates a one-off task), or change time for all future and past occurrences?</p>
         </Modal>
       )}
 
@@ -3506,6 +3750,166 @@ function RecurringConfigModal({
   );
 }
 
+function OrganizationTaskModal({
+  task,
+  categories,
+  subcategories,
+  tags,
+  onSave,
+  onClose,
+  onRefreshTags,
+}: {
+  task: Task;
+  categories: Array<{ id: number; name: string; color?: string | null }>;
+  subcategories: Array<{ id: number; category_id: number; name: string }>;
+  tags: Array<{ id: number; name: string; color?: string | null }>;
+  onSave: (category_id: number | null, subcategory_id: number | null, tag_ids: number[]) => void;
+  onClose: () => void;
+  onRefreshTags: () => void;
+}) {
+  const [categoryId, setCategoryId] = useState<number | null>(task.category_id ?? null);
+  const [subcategoryId, setSubcategoryId] = useState<number | null>(task.subcategory_id ?? null);
+  const [tagIds, setTagIds] = useState<number[]>(task.tag_ids ?? []);
+  const [tagInput, setTagInput] = useState('');
+  const [tagSuggestOpen, setTagSuggestOpen] = useState(false);
+  const subcategoryOptions = subcategories.filter((s) => s.category_id === (categoryId ?? 0));
+  const tagSuggestions = tagInput.trim()
+    ? tags.filter((t) => t.name.toLowerCase().includes(tagInput.trim().toLowerCase()) && !tagIds.includes(t.id))
+    : tags.filter((t) => !tagIds.includes(t.id));
+
+  useEffect(() => {
+    setCategoryId(task.category_id ?? null);
+    setSubcategoryId(task.subcategory_id ?? null);
+    setTagIds(task.tag_ids ?? []);
+  }, [task.id, task.category_id, task.subcategory_id, task.tag_ids]);
+
+  useEffect(() => {
+    if (categoryId == null) setSubcategoryId(null);
+    else if (subcategoryId != null && !subcategoryOptions.some((s) => s.id === subcategoryId)) setSubcategoryId(null);
+  }, [categoryId, subcategoryId, subcategoryOptions]);
+
+  const addTag = (tag: { id: number; name: string }) => {
+    if (!tagIds.includes(tag.id)) setTagIds((prev) => [...prev, tag.id]);
+    setTagInput('');
+    setTagSuggestOpen(false);
+  };
+  const createAndAddTag = () => {
+    const name = tagInput.trim();
+    if (!name) return;
+    const existing = tags.find((t) => t.name.toLowerCase() === name.toLowerCase());
+    if (existing) {
+      addTag(existing);
+      return;
+    }
+    api.organization.createTag({ name }).then((created) => {
+      onRefreshTags();
+      setTagIds((prev) => [...prev, created.id]);
+      setTagInput('');
+      setTagSuggestOpen(false);
+    }).catch(() => {});
+  };
+  const removeTag = (id: number) => setTagIds((prev) => prev.filter((tid) => tid !== id));
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Category & tags"
+      actions={
+        <>
+          <Button onClick={() => onSave(categoryId, subcategoryId, tagIds)}>Save</Button>
+          <Button onClick={onClose}>Cancel</Button>
+        </>
+      }
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+          Category
+          <select
+            value={categoryId ?? ''}
+            onChange={(e) => setCategoryId(e.target.value === '' ? null : Number(e.target.value))}
+            style={{ padding: '0.35rem' }}
+          >
+            <option value="">— None —</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        </label>
+        {categoryId != null && (
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+            Subcategory
+            <select
+              value={subcategoryId ?? ''}
+              onChange={(e) => setSubcategoryId(e.target.value === '' ? null : Number(e.target.value))}
+              style={{ padding: '0.35rem' }}
+            >
+              <option value="">— None —</option>
+              {subcategoryOptions.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          </label>
+        )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+          <label>Tags</label>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', alignItems: 'center' }}>
+            {tagIds.map((tid) => {
+              const t = tags.find((x) => x.id === tid);
+              return t ? (
+                <span
+                  key={t.id}
+                  className="task-org-tag-chip"
+                  style={{
+                    padding: '0.2rem 0.5rem',
+                    borderRadius: '999px',
+                    fontSize: '0.85rem',
+                    backgroundColor: t.color ?? 'var(--surface)',
+                    color: t.color ? (t.color.startsWith('hsl') && t.color.includes('65%') ? '#fff' : '#000') : 'var(--text)',
+                  }}
+                >
+                  {t.name}
+                  <button type="button" aria-label="Remove tag" onClick={() => removeTag(t.id)} style={{ marginLeft: '0.35rem', background: 'none', border: 'none', cursor: 'pointer' }}>×</button>
+                </span>
+              ) : null;
+            })}
+            <div style={{ position: 'relative' }}>
+              <input
+                type="text"
+                placeholder="Add tag…"
+                value={tagInput}
+                onChange={(e) => { setTagInput(e.target.value); setTagSuggestOpen(true); }}
+                onFocus={() => setTagSuggestOpen(true)}
+                onBlur={() => setTimeout(() => setTagSuggestOpen(false), 150)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); createAndAddTag(); } }}
+                style={{ padding: '0.35rem 0.5rem', minWidth: '8rem' }}
+              />
+              {tagSuggestOpen && (tagSuggestions.length > 0 || tagInput.trim()) && (
+                <ul className="task-org-tag-suggest" style={{ position: 'absolute', top: '100%', left: 0, right: 0, margin: 0, padding: '0.25rem', listStyle: 'none', background: 'var(--surface-elevated)', border: '1px solid var(--border)', borderRadius: '0.35rem', zIndex: 10, maxHeight: '12rem', overflow: 'auto' }}>
+                  {tagSuggestions.slice(0, 10).map((t) => (
+                    <li key={t.id}>
+                      <button type="button" onClick={() => addTag(t)} style={{ width: '100%', textAlign: 'left', padding: '0.35rem', background: 'none', border: 'none', cursor: 'pointer' }}>
+                        {t.name}
+                      </button>
+                    </li>
+                  ))}
+                  {tagInput.trim() && !tags.some((t) => t.name.toLowerCase() === tagInput.trim().toLowerCase()) && (
+                    <li>
+                      <button type="button" onClick={createAndAddTag} style={{ width: '100%', textAlign: 'left', padding: '0.35rem', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--accent)' }}>
+                        Create &quot;{tagInput.trim()}&quot;
+                      </button>
+                    </li>
+                  )}
+                </ul>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function TaskCard({
   task,
   tasks,
@@ -3543,6 +3947,11 @@ function TaskCard({
   taskListItemsByTaskId,
   isMobile = false,
   onToggleComplete: _onToggleComplete,
+  organizationCategories,
+  organizationSubcategories,
+  organizationTags,
+  onOpenOrganization,
+  onTaskUpdate,
 }: {
   task: Task;
   tasks: Task[];
@@ -3580,7 +3989,18 @@ function TaskCard({
   taskListItemsByTaskId?: Record<number, TaskListItem[]>;
   isMobile?: boolean;
   onToggleComplete?: (taskId: number) => void;
+  organizationCategories?: Array<{ id: number; name: string; color?: string | null }>;
+  organizationSubcategories?: Array<{ id: number; category_id: number; name: string }>;
+  organizationTags?: Array<{ id: number; name: string; color?: string | null }>;
+  onOpenOrganization?: (taskId: number) => void;
+  onTaskUpdate?: () => void;
 }) {
+  const organizationCategoriesList = organizationCategories ?? [];
+  const organizationSubcategoriesList = organizationSubcategories ?? [];
+  const organizationTagsList = organizationTags ?? [];
+  const categoryName = task.category_id != null ? organizationCategoriesList.find((c) => c.id === task.category_id)?.name : null;
+  const subcategoryName = task.subcategory_id != null ? organizationSubcategoriesList.find((s) => s.id === task.subcategory_id)?.name : null;
+  const taskTags = (task.tag_ids ?? []).map((tid) => organizationTagsList.find((t) => t.id === tid)).filter(Boolean) as Array<{ id: number; name: string; color?: string | null }>;
   const [actionsDrawerOpen, setActionsDrawerOpen] = useState(false);
   const [priorityOpen, setPriorityOpen] = useState(false);
   const [editingLinkId, setEditingLinkId] = useState<number | null>(null);
@@ -3710,6 +4130,32 @@ function TaskCard({
                 {new Date(task.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
               </span>
             )}
+            {(categoryName != null || subcategoryName != null || taskTags.length > 0) && (
+              <span className="task-card-org-line" style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginLeft: '0.35rem' }}>
+                {categoryName != null && <span>{categoryName}</span>}
+                {subcategoryName != null && <span>{categoryName != null ? ' › ' : ''}{subcategoryName}</span>}
+                {taskTags.length > 0 && (
+                  <span style={{ marginLeft: '0.5rem' }}>
+                    {taskTags.map((t) => (
+                      <span
+                        key={t.id}
+                        className="task-card-tag-inline"
+                        style={{
+                          marginRight: '0.25rem',
+                          padding: '0.1rem 0.35rem',
+                          borderRadius: '999px',
+                          fontSize: '0.75rem',
+                          backgroundColor: t.color ?? 'var(--surface)',
+                          color: t.color ? (t.color.startsWith('hsl') && t.color.includes('65%') ? '#fff' : '#000') : 'var(--text)',
+                        }}
+                      >
+                        {t.name}
+                      </span>
+                    ))}
+                  </span>
+                )}
+              </span>
+            )}
           </span>
           <span className="task-row-desktop-actions">
             <button
@@ -3720,11 +4166,16 @@ function TaskCard({
             >
               ↻
             </button>
+            {onOpenOrganization && (
+              <button type="button" className="task-list-add-btn" title="Category & tags" onClick={() => onOpenOrganization(task.id)}>
+                📁<sup className="task-list-add-plus">+</sup>
+              </button>
+            )}
             <button type="button" className="links-btn" title="Add link" onClick={() => onOpenLinks(task.id)}>
               🔗<span className="link-plus">+</span>
             </button>
             <button type="button" className="task-list-add-btn" title="Add list / List items" onClick={() => onOpenList(task.id)}>
-              📋<sub>+</sub>
+              📋<sup className="task-list-add-plus">+</sup>
             </button>
             <button type="button" className="task-calendar-btn" title="Schedule on a date" onClick={() => onScheduleDate(task.id)}>
               📅
@@ -3741,10 +4192,16 @@ function TaskCard({
               aria-expanded={actionsDrawerOpen}
               onClick={() => setActionsDrawerOpen((o) => !o)}
             >
-              {actionsDrawerOpen ? '>' : '<'}
+              {actionsDrawerOpen ? '▶' : '◀'}
             </button>
             {actionsDrawerOpen && (
               <div className="task-card-actions-drawer">
+                {onOpenOrganization && (
+                  <>
+                    <button type="button" title="Category & tags" onClick={() => { onOpenOrganization(task.id); setActionsDrawerOpen(false); }}>📁</button>
+                    <span className="task-card-drawer-divider" aria-hidden>|</span>
+                  </>
+                )}
                 <button type="button" title="Add link" onClick={() => { onOpenLinks(task.id); setActionsDrawerOpen(false); }}>🔗</button>
                 <span className="task-card-drawer-divider" aria-hidden>|</span>
                 <button type="button" title="Add list / List items" onClick={() => { onOpenList(task.id); setActionsDrawerOpen(false); }}>📋</button>
@@ -3797,7 +4254,7 @@ function TaskCard({
                 </button>
                 {linksCollapsed ? (
                   <span className="task-card-details-label-inline">
-                    Links: {links.map((link) => (
+                    Links… {links.map((link) => (
                       <a
                         key={link.id}
                         href={link.url}
@@ -3812,44 +4269,41 @@ function TaskCard({
                     ))}
                   </span>
                 ) : (
-                  <>
-                    <span className="task-card-details-label">Links</span>
-                    <div className="task-card-links">
-                      {links.map((link) => (
-                        <span key={link.id} className="task-card-link-row">
-                          {editingLinkId === link.id ? (
-                            <>
-                              <input
-                                className="task-card-link-edit-input"
-                                value={editingLinkUrl}
-                                onChange={(e) => setEditingLinkUrl(e.target.value)}
-                                placeholder="URL"
-                              />
-                              <input
-                                className="task-card-link-edit-input"
-                                value={editingLinkDesc}
-                                onChange={(e) => setEditingLinkDesc(e.target.value)}
-                                placeholder="Description"
-                              />
-                              <button type="button" className="task-card-link-save" onClick={() => {
-                                api.links.update({ id: link.id, url: editingLinkUrl.trim(), description: editingLinkDesc.trim() }).then(() => { setEditingLinkId(null); onRefresh?.(task.id); });
-                              }}>Save</button>
-                              <button type="button" className="task-card-link-cancel" onClick={() => { setEditingLinkId(null); }}>Cancel</button>
-                            </>
-                          ) : (
-                            <>
-                              <a href={link.url} target="_blank" rel="noopener noreferrer" title={link.url}>
-                                {link.description?.trim() || link.url}
-                              </a>
-                              <button type="button" className="task-card-link-edit" title="Edit in place" onClick={() => { setEditingLinkId(link.id); setEditingLinkUrl(link.url); setEditingLinkDesc(link.description ?? ''); }}>✎</button>
-                              <button type="button" className="task-card-link-delete trash-btn" title="Remove link" onClick={() => api.links.delete(link.id).then(() => onRefresh?.(task.id))}>🗑</button>
-                            </>
-                          )}
-                        </span>
-                      ))}
-                      <button type="button" className="task-card-link-add" title="Add link" onClick={() => onOpenLinks(task.id)}>+ link</button>
-                    </div>
-                  </>
+                  <div className="task-card-links">
+                    {links.map((link) => (
+                      <span key={link.id} className="task-card-link-row">
+                        {editingLinkId === link.id ? (
+                          <>
+                            <input
+                              className="task-card-link-edit-input"
+                              value={editingLinkUrl}
+                              onChange={(e) => setEditingLinkUrl(e.target.value)}
+                              placeholder="URL"
+                            />
+                            <input
+                              className="task-card-link-edit-input"
+                              value={editingLinkDesc}
+                              onChange={(e) => setEditingLinkDesc(e.target.value)}
+                              placeholder="Description"
+                            />
+                            <button type="button" className="task-card-link-save" onClick={() => {
+                              api.links.update({ id: link.id, url: editingLinkUrl.trim(), description: editingLinkDesc.trim() }).then(() => { setEditingLinkId(null); onRefresh?.(task.id); });
+                            }}>Save</button>
+                            <button type="button" className="task-card-link-cancel" onClick={() => { setEditingLinkId(null); }}>Cancel</button>
+                          </>
+                        ) : (
+                          <>
+                            <a href={link.url} target="_blank" rel="noopener noreferrer" title={link.url}>
+                              {link.description?.trim() || link.url}
+                            </a>
+                            <button type="button" className="task-card-link-edit" title="Edit in place" onClick={() => { setEditingLinkId(link.id); setEditingLinkUrl(link.url); setEditingLinkDesc(link.description ?? ''); }}>✎</button>
+                            <button type="button" className="task-card-link-delete trash-btn" title="Remove link" onClick={() => api.links.delete(link.id).then(() => onRefresh?.(task.id))}>🗑</button>
+                          </>
+                        )}
+                      </span>
+                    ))}
+                    <button type="button" className="task-card-link-add" title="Add link" onClick={() => onOpenLinks(task.id)}>+ link</button>
+                  </div>
                 )}
               </div>
             </div>
@@ -3865,23 +4319,36 @@ function TaskCard({
                 >
                   {listCollapsed ? '▶' : '▼'}
                 </button>
-                {listCollapsed ? <span className="task-card-details-label">List…</span> : <span className="task-card-details-label">List</span>}
-              </div>
-              {!listCollapsed && (
-            <div className="task-card-list">
+                {listCollapsed ? (
+                  <span className="task-card-details-label-inline">Tasks…</span>
+                ) : (
+                  <div className="task-card-list-expanded-wrap">
+                    <span className="task-card-list-style-selector" role="group" aria-label="List style">
+                      <button
+                        type="button"
+                        className={'task-card-list-style-btn' + ((task.list_style ?? 'bullet') === 'bullet' ? ' active' : '')}
+                        title="Bullet list"
+                        onClick={() => api.tasks.update({ id: task.id, list_style: 'bullet' }).then(() => { onRefresh?.(task.id); onTaskUpdate?.(); })}
+                      >
+                        •
+                      </button>
+                      <button
+                        type="button"
+                        className={'task-card-list-style-btn' + ((task.list_style ?? 'bullet') === 'checklist' ? ' active' : '')}
+                        title="Checklist"
+                        onClick={() => api.tasks.update({ id: task.id, list_style: 'checklist' }).then(() => { onRefresh?.(task.id); onTaskUpdate?.(); })}
+                      >
+                        ☐
+                      </button>
+                    </span>
+                    <div className="task-card-list">
               {listItems.map((item) => (
                 <div key={item.id} className={'task-card-list-item' + ((task.list_style ?? 'bullet') === 'checklist' ? ' task-card-list-item-checklist' : '')}>
                   {(task.list_style ?? 'bullet') === 'bullet' && <span className="task-card-list-bullet" aria-hidden>•</span>}
                   {(task.list_style ?? 'bullet') === 'checklist' && (
-                    <button
-                      type="button"
-                      className="task-card-list-check"
-                      title={item.completed ? 'Mark incomplete' : 'Mark complete'}
-                      onClick={() => api.taskListItems.update({ id: item.id, completed: item.completed ? 0 : 1 }).then(() => onRefresh?.(task.id))}
-                      aria-pressed={!!item.completed}
-                    >
+                    <span className="task-card-list-check" aria-hidden>
                       {item.completed ? '☑' : '☐'}
-                    </button>
+                    </span>
                   )}
                   {editingListItemId === item.id ? (
                     <>
@@ -3902,7 +4369,7 @@ function TaskCard({
                   ) : (
                     <span
                       className="task-card-list-content"
-                      style={item.completed ? { textDecoration: 'line-through', opacity: 0.8 } : undefined}
+                      style={item.completed ? { color: 'var(--text-muted)', textDecoration: 'line-through' } : undefined}
                       onDoubleClick={() => { setEditingListItemId(item.id); setEditingListItemContent(item.content); }}
                     >
                       {item.content}
@@ -3926,7 +4393,9 @@ function TaskCard({
                 />
               </form>
             </div>
-              )}
+                  </div>
+                )}
+              </div>
             </div>
           )}
           {childTasks.length > 0 && (
@@ -3940,7 +4409,7 @@ function TaskCard({
                 >
                   {subtasksCollapsed ? '▶' : '▼'}
                 </button>
-                <span className="task-card-details-label">{subtasksCollapsed ? 'Subtasks…' : 'Subtasks'}</span>
+                {subtasksCollapsed ? <span className="task-card-details-label">Subtasks…</span> : null}
               </div>
               {!subtasksCollapsed && (
             <ul className="task-card-subtasks">
@@ -3967,7 +4436,7 @@ function TaskCard({
                       if (dragSource) onHoldStartSubtask?.(e, sub.id);
                     }}
                   >
-                    <div className="task-card-subtask-row">
+                    <div className="task-card-subtask-row task-card-subtask-row-like-parent">
                       {subHasDetails && (
                         <button
                           type="button"
@@ -3979,21 +4448,28 @@ function TaskCard({
                           {subDetailsExpanded ? '▼' : '▶'}
                         </button>
                       )}
-                      {subEditing ? (
-                        <input
-                          className="task-title-edit task-card-subtask-edit"
-                          value={editingTitle}
-                          onChange={(e) => onEditingTitleChange(e.target.value)}
-                          onBlur={() => onEditSave(sub.id, editingTitle.trim() || sub.title)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') onEditSave(sub.id, editingTitle.trim() || sub.title);
-                            if (e.key === 'Escape') onEditCancel();
-                          }}
-                          autoFocus
-                        />
-                      ) : (
-                        <span className="task-card-subtask-title" onDoubleClick={() => onEditStart(sub.id, sub.title)}>{sub.title}</span>
-                      )}
+                      <span className="task-card-subtask-title-wrap">
+                        {subEditing ? (
+                          <input
+                            className="task-title-edit task-card-subtask-edit"
+                            value={editingTitle}
+                            onChange={(e) => onEditingTitleChange(e.target.value)}
+                            onBlur={() => onEditSave(sub.id, editingTitle.trim() || sub.title)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') onEditSave(sub.id, editingTitle.trim() || sub.title);
+                              if (e.key === 'Escape') onEditCancel();
+                            }}
+                            autoFocus
+                          />
+                        ) : (
+                          <span className="task-card-subtask-title" onDoubleClick={() => onEditStart(sub.id, sub.title)}>{sub.title}</span>
+                        )}
+                        {sub.created_at && (
+                          <span className="task-card-subtask-date" style={{ flexShrink: 0, fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                            {new Date(sub.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                          </span>
+                        )}
+                      </span>
                       <div className="task-card-subtask-priority-wrap" onClick={(e) => e.stopPropagation()}>
                         <button type="button" className="task-card-subtask-btn priority" title="Priority" onClick={() => setSubPriorityOpenId((id) => id === sub.id ? null : sub.id)}>{priorityIcon(sub.priority)}</button>
                         {subPriorityOpenId === sub.id && (
@@ -4035,9 +4511,9 @@ function TaskCard({
                                 <div key={item.id} className={'task-card-list-item' + ((sub.list_style ?? 'bullet') === 'checklist' ? ' task-card-list-item-checklist' : '')}>
                                   {(sub.list_style ?? 'bullet') === 'bullet' && <span className="task-card-list-bullet" aria-hidden>•</span>}
                                   {(sub.list_style ?? 'bullet') === 'checklist' && (
-                                    <button type="button" className="task-card-list-check" title={item.completed ? 'Mark incomplete' : 'Mark complete'} onClick={() => api.taskListItems.update({ id: item.id, completed: item.completed ? 0 : 1 }).then(() => onRefresh?.(sub.id))} aria-pressed={!!item.completed}>{item.completed ? '☑' : '☐'}</button>
+                                    <span className="task-card-list-check" aria-hidden>{item.completed ? '☑' : '☐'}</span>
                                   )}
-                                  <span className="task-card-list-content" style={item.completed ? { textDecoration: 'line-through', opacity: 0.8 } : undefined}>{item.content}</span>
+                                  <span className="task-card-list-content" style={item.completed ? { color: 'var(--text-muted)', textDecoration: 'line-through' } : undefined}>{item.content}</span>
                                   <button type="button" className="task-card-list-item-delete trash-btn" title="Remove" onClick={() => api.taskListItems.delete(item.id).then(() => onRefresh?.(sub.id))}>🗑</button>
                                 </div>
                               ))}

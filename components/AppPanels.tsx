@@ -34,6 +34,7 @@ export function AppPanels({
 }: Props) {
   const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
   const [mainSlideIndex, setMainSlideIndex] = useState(1); // 0=Completed, 1=Tasks, 2=AI
+  const refetchOrganizationRef = useRef<(() => void) | null>(null);
 
   const applyMainSlide = useCallback(
     (index: number) => {
@@ -90,6 +91,7 @@ export function AppPanels({
           onClose={onCloseSettings}
           onLogout={onLogout}
           onUserUpdated={onUserUpdated}
+          onOrganizationChange={() => refetchOrganizationRef.current?.()}
         />
       </div>
       <div
@@ -112,6 +114,7 @@ export function AppPanels({
           isMobile={isMobile}
           mainSlideIndex={mainSlideIndex}
           onMainSlideChange={applyMainSlide}
+          refetchOrganizationRef={refetchOrganizationRef}
         />
       </div>
     </>

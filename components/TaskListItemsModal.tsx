@@ -169,7 +169,7 @@ export function TaskListItemsModal({ open, onClose, taskId, listStyle: initialLi
                       <>
                         <span
                           className="time-block-list-item-text"
-                          style={{ flex: 1, textDecoration: item.completed ? 'line-through' : undefined }}
+                          style={{ flex: 1, color: item.completed ? 'var(--text-muted)' : undefined, textDecoration: item.completed ? 'line-through' : undefined }}
                           onDoubleClick={() => {
                             setEditingId(item.id);
                             setEditingContent(item.content);

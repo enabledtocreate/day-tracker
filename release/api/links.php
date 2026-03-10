@@ -35,6 +35,13 @@ if ($method === 'POST') {
     $taskId = (int) $in['task_id'];
     $url = trim($in['url']);
     $description = isset($in['description']) ? trim($in['description']) : '';
+    $check = $pdo->prepare("SELECT 1 FROM task_links WHERE task_id = ? AND url = ?");
+    $check->execute([$taskId, $url]);
+    if ($check->fetchColumn()) {
+        logMessage('WARNING', 'links add duplicate url', ['task_id' => $taskId]);
+        jsonError('url previously added to task', 400);
+        exit;
+    }
     $stmt = $pdo->prepare("INSERT INTO task_links (task_id, url, description) VALUES (?, ?, ?)");
     $stmt->execute([$taskId, $url, $description]);
     $id = (int) $pdo->lastInsertId();
@@ -69,8 +76,21 @@ if ($method === 'PATCH') {
     $updates = [];
     $params = [];
     if (array_key_exists('url', $in)) {
+        $newUrl = trim($in['url']);
+        $row = $pdo->prepare("SELECT task_id FROM task_links WHERE id = ?");
+        $row->execute([$id]);
+        $link = $row->fetch(PDO::FETCH_ASSOC);
+        if ($link) {
+            $dup = $pdo->prepare("SELECT 1 FROM task_links WHERE task_id = ? AND url = ? AND id != ?");
+            $dup->execute([(int) $link['task_id'], $newUrl, $id]);
+            if ($dup->fetchColumn()) {
+                logMessage('WARNING', 'links update duplicate url', ['id' => $id]);
+                jsonError('url previously added to task', 400);
+                exit;
+            }
+        }
         $updates[] = 'url = ?';
-        $params[] = trim($in['url']);
+        $params[] = $newUrl;
     }
     if (array_key_exists('description', $in)) {
         $updates[] = 'description = ?';

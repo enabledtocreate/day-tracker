@@ -20,12 +20,14 @@ export function LinkModal({ open, onClose, taskId, initialUrl = '', onLinksChang
   const [description, setDescription] = useState('');
   const [editingId, setEditingId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (open && taskId != null) {
       setUrl(initialUrl);
       setDescription('');
       setEditingId(null);
+      setErrorMessage(null);
       setLoading(true);
       api.links
         .list(taskId)
@@ -35,9 +37,15 @@ export function LinkModal({ open, onClose, taskId, initialUrl = '', onLinksChang
     }
   }, [open, taskId, initialUrl]);
 
+  const setErrorFromResponse = (err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    setErrorMessage(msg || 'Something went wrong');
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (taskId == null || !url.trim()) return;
+    setErrorMessage(null);
     const u = url.trim();
     const d = description.trim();
     if (editingId) {
@@ -48,9 +56,10 @@ export function LinkModal({ open, onClose, taskId, initialUrl = '', onLinksChang
           setEditingId(null);
           setUrl('');
           setDescription('');
+          setErrorMessage(null);
           onLinksChange?.();
         })
-        .catch(alert);
+        .catch(setErrorFromResponse);
     } else {
       api.links
         .add({ task_id: taskId, url: u, description: d })
@@ -58,9 +67,10 @@ export function LinkModal({ open, onClose, taskId, initialUrl = '', onLinksChang
           setLinks((prev) => [...prev, { ...added, description: d }]);
           setUrl('');
           setDescription('');
+          setErrorMessage(null);
           onLinksChange?.();
         })
-        .catch(alert);
+        .catch(setErrorFromResponse);
     }
   };
 
@@ -77,11 +87,12 @@ export function LinkModal({ open, onClose, taskId, initialUrl = '', onLinksChang
   };
 
   const removeLink = (id: number) => {
+    setErrorMessage(null);
     api.links.delete(id).then(() => {
       setLinks((prev) => prev.filter((l) => l.id !== id));
       if (editingId === id) cancelEdit();
       onLinksChange?.();
-    }).catch(alert);
+    }).catch((err) => setErrorMessage(err instanceof Error ? err.message : String(err)));
   };
 
   return (
@@ -90,6 +101,9 @@ export function LinkModal({ open, onClose, taskId, initialUrl = '', onLinksChang
         <p>No task selected.</p>
       ) : (
         <>
+          {errorMessage && (
+            <p role="alert" style={{ color: 'var(--high)', marginBottom: '0.75rem', fontSize: '0.9rem' }}>{errorMessage}</p>
+          )}
           <form onSubmit={handleSubmit} className="link-form" style={{ marginBottom: '1rem' }}>
             <label style={{ display: 'block', marginBottom: '0.5rem' }}>
               URL

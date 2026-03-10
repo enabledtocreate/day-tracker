@@ -1138,7 +1138,7 @@ function render(): void {
 }
 
 function refresh(): void {
-  ensureDay().then(() => loadSettings().then(() => loadSlots()));
+  api.dataIntegrity.ensure().catch(() => {}).then(() => ensureDay().then(() => loadSettings().then(() => loadSlots())));
 }
 
 function moveSlotAndChildrenToDate(slotId: number, newDate: string): Promise<void> {

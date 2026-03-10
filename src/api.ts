@@ -184,6 +184,10 @@ export const api = {
     clearTasks: () => request<{ ok: boolean }>('api/debug.php', { method: 'POST', body: { action: 'clear_tasks' } }),
     resetAll: () => request<{ ok: boolean }>('api/debug.php', { method: 'POST', body: { action: 'reset_all' } }),
   },
+  dataIntegrity: {
+    ensure: () =>
+      request<{ ok: boolean; fixed: Record<string, Array<{ id: number; before: Record<string, string>; after: Record<string, string> }>> }>('api/data_integrity.php'),
+  },
   chat: {
     send: (message: string, taskContext: Record<string, unknown>) =>
       request<{ advice: string; suggestedTasks: Array<{ title: string; priority?: string; suggestedSlot?: string }> }>('api/chat.php', {

@@ -259,3 +259,16 @@ function getIcalIntervalFetchEnabled(): bool {
         return true;
     }
 }
+
+/** How often (in minutes) to sync iCal when interval fetch is on. From app_settings ical_sync_interval_minutes; default 15. */
+function getIcalSyncIntervalMinutes(): int {
+    try {
+        $master = getMasterPdo();
+        $stmt = $master->query("SELECT value FROM app_settings WHERE key = 'ical_sync_interval_minutes'");
+        $row = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : false;
+        $v = $row ? (int) $row['value'] : 15;
+        return max(1, min(120, $v > 0 ? $v : 15));
+    } catch (Throwable $e) {
+        return 15;
+    }
+}

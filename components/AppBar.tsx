@@ -35,8 +35,8 @@ export function AppBar({ user, onUserClick, onAdminClick, onLogout }: Props) {
       </div>
       <div className="app-bar-right" style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
         {user.is_admin && (
-          <button type="button" className="app-bar-icon" title="Admin settings" aria-label="Admin settings" onClick={onAdminClick}>
-            Settings
+          <button type="button" className="app-bar-icon app-bar-admin-icon" title="Admin settings" aria-label="Admin settings" onClick={onAdminClick}>
+            ⚙
           </button>
         )}
         <div ref={menuRef} style={{ position: 'relative' }}>

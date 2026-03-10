@@ -898,9 +898,31 @@ body {
   padding: 0.15rem 0;
 }
 
+.task-card-list-expanded-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.task-card-list-expanded-wrap .task-card-list {
+  margin-bottom: 0;
+}
 .task-card-list-check {
   flex-shrink: 0;
-  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  color: var(--text);
+  padding: 0;
+}
+.task-card-list-item-checklist .task-card-list-check,
+.task-card-list-item-checklist .task-card-list-content {
+  color: #fff;
+  background: transparent;
+}
+.task-card-list-item-checklist {
+  background: transparent;
+  color: #fff;
 }
 
 .task-card-list-content {
@@ -974,10 +996,18 @@ body {
   pointer-events: none;
 }
 
+.task-card-subtask-title-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
 .task-card-subtask-title {
   flex: 1;
   min-width: 0;
   cursor: pointer;
+  font-size: 0.85rem;
 }
 
 .task-card-subtask-edit {
@@ -1119,6 +1149,13 @@ body {
   min-width: 0;
 }
 
+.task-row-desktop-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
+  flex-shrink: 0;
+}
 .task-row-mobile-actions {
   display: none;
 }
@@ -1149,13 +1186,31 @@ body {
   gap: 0.35rem;
   flex-wrap: wrap;
 }
+.task-card-details-toggle {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  padding: 0.15rem 0.25rem;
+  font-size: 0.75rem;
+  line-height: 1;
+}
 .task-card-details-section-header .task-card-details-toggle {
   flex-shrink: 0;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  padding: 0.15rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.task-card-details-section-header .task-card-details-toggle:hover {
+  color: var(--accent);
 }
 .task-card-details-section-header .task-card-links {
-  flex-basis: 100%;
-  width: 100%;
-  margin-top: 0.25rem;
+  flex: 1;
+  min-width: 0;
+  margin-top: 0;
 }
 .task-card-details-label,
 .task-card-details-label-inline {
@@ -1169,6 +1224,8 @@ body {
 }
 .task-card-link-icon-inline {
   opacity: 0.9;
+  text-decoration: none;
+  color: inherit;
 }
 .task-card-link-icon-inline:hover {
   opacity: 1;
@@ -1267,7 +1324,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.61rem;
+  font-size: 0.85rem;
 }
 
 .task-row .task-date-added {
@@ -1344,6 +1401,35 @@ body {
   font-weight: bold;
   vertical-align: super;
   margin-left: -2px;
+}
+
+.task-list-add-plus {
+  color: #22c55e;
+  font-weight: bold;
+}
+
+.task-card-list-style-selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+.task-card-list-style-btn {
+  padding: 0.15rem 0.35rem;
+  font-size: 0.8rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.task-card-list-style-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.task-card-list-style-btn.active {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .schedule-all-btn {
@@ -1446,6 +1532,8 @@ body {
 .completed-item-title {
   font-weight: 500;
   min-width: 0;
+  color: var(--text-muted);
+  text-decoration: line-through;
 }
 
 .completed-item-duration {
@@ -1675,8 +1763,8 @@ body {
 }
 
 .calendar-view .calendar-day-task-completed .calendar-task-desc {
+  color: var(--text-muted);
   text-decoration: line-through;
-  opacity: 0.85;
 }
 
 .calendar-view .calendar-day-task-priority-commitment .calendar-task-desc { color: var(--commitment); }
@@ -1811,7 +1899,11 @@ body {
 
 .time-block.completed {
   background: var(--accent-completed-bg);
-  color: var(--text-dim);
+}
+
+.time-block.completed .time-block-title {
+  color: var(--text-muted);
+  text-decoration: line-through;
 }
 
 .time-block.time-block-recurring-occurrence {
@@ -1850,10 +1942,6 @@ body {
   box-shadow: 0 0 0 2px var(--accent);
 }
 
-.time-block.completed .time-block-title {
-  text-decoration: line-through;
-}
-
 .time-block-drag-to-list {
   flex-shrink: 0;
   cursor: grab;
@@ -1883,10 +1971,10 @@ body {
   background: rgba(0, 0, 0, 0.3);
 }
 
-/* Read-only iCal feed blocks: light gray, transparent, share space; not draggable */
+/* Read-only iCal feed blocks: light gray, transparent, solid orange border (recurring icon color); not draggable */
 .time-block.time-block-feed {
   background: rgba(128, 128, 128, 0.18);
-  border: 1px solid var(--border);
+  border: 2px solid rgba(255, 140, 0, 0.95);
   color: var(--text-muted);
   cursor: default;
   pointer-events: auto;
@@ -1981,9 +2069,28 @@ body {
   flex: 1;
   min-width: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  align-content: flex-start;
   gap: 0.2rem;
   overflow: hidden;
+}
+.time-block-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.2rem;
+  margin-left: auto;
+}
+.time-block-tag-pill {
+  padding: 0.1rem 0.35rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+.time-block-category-sub {
+  width: 100%;
+  flex-basis: 100%;
 }
 
 .time-block-title {
@@ -2173,8 +2280,8 @@ body {
   border-color: var(--accent);
 }
 .time-block-list-item-completed .time-block-list-item-text {
+  color: var(--text-muted);
   text-decoration: line-through;
-  opacity: 0.85;
 }
 
 .time-block-children {
@@ -2226,8 +2333,8 @@ body {
 }
 
 .time-block-child.child-completed .time-block-child-title {
+  color: var(--text-muted);
   text-decoration: line-through;
-  opacity: 0.7;
 }
 
 .time-block-child-header {
@@ -2322,8 +2429,10 @@ body {
   gap: 0.25rem;
 }
 .time-settings-select {
-  min-width: 7rem;
+  min-width: 8.5rem;
   padding: 0.2rem 0.4rem;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 /* Shared trash icon (schedule + task list) */
@@ -3038,6 +3147,7 @@ body {
   .task-row-mobile-actions {
     display: inline-flex !important;
     align-items: center;
+    justify-content: center;
     flex-shrink: 0;
   }
 
@@ -3059,9 +3169,10 @@ body {
   .task-card-actions-drawer,
   .time-block-actions-drawer {
     position: absolute;
-    top: 100%;
-    right: 0;
-    margin-top: 0.25rem;
+    right: 100%;
+    top: 50%;
+    transform: translateY(-50%);
+    margin-right: 0.25rem;
     padding: 0.25rem 0.35rem;
     background: var(--surface-elevated);
     border: 1px solid var(--border);
@@ -3072,7 +3183,7 @@ body {
     flex-wrap: nowrap;
     align-items: center;
     gap: 0;
-    z-index: 10;
+    z-index: 1000;
   }
   .task-card-drawer-divider {
     color: var(--text-muted);
@@ -3150,8 +3261,10 @@ body {
   }
   .time-block-mobile-drawer {
     display: inline-flex !important;
+    flex-direction: row-reverse;
     align-items: center;
     flex-shrink: 0;
+    position: relative;
   }
   .time-block-drawer-chevron {
     flex-shrink: 0;

@@ -19,7 +19,7 @@ if ($method === 'GET') {
     $action = $_GET['action'] ?? 'settings';
     if ($action === 'settings') {
         logMessage('INFO', 'admin action settings');
-        $stmt = $master->query("SELECT key, value FROM app_settings WHERE key IN ('debug', 'ai_enabled', 'ical_fetch_timeout', 'ical_subscriptions_enabled', 'ical_save_folder', 'ical_save_last_fetch', 'ical_interval_fetch', 'ical_event_range_days', 'ical_omit_uids')");
+        $stmt = $master->query("SELECT key, value FROM app_settings WHERE key IN ('debug', 'ai_enabled', 'ical_fetch_timeout', 'ical_subscriptions_enabled', 'ical_save_folder', 'ical_save_last_fetch', 'ical_interval_fetch', 'ical_sync_interval_minutes', 'ical_event_range_days', 'ical_omit_uids')");
         $settings = [
             'debug' => false,
             'ai_enabled' => true,
@@ -28,6 +28,7 @@ if ($method === 'GET') {
             'ical_save_folder' => '',
             'ical_save_last_fetch' => false,
             'ical_interval_fetch' => true,
+            'ical_sync_interval_minutes' => 15,
             'ical_event_range_days' => 365,
             'ical_omit_uids' => '',
         ];
@@ -47,6 +48,9 @@ if ($method === 'GET') {
                 $settings['ical_save_last_fetch'] = ($row['value'] === '1');
             } elseif ($row['key'] === 'ical_interval_fetch') {
                 $settings['ical_interval_fetch'] = ($row['value'] !== '0' && $row['value'] !== '');
+            } elseif ($row['key'] === 'ical_sync_interval_minutes') {
+                $v = (int) $row['value'];
+                $settings['ical_sync_interval_minutes'] = $v > 0 ? max(1, min(120, $v)) : 15;
             } elseif ($row['key'] === 'ical_event_range_days') {
                 $v = (int) $row['value'];
                 $settings['ical_event_range_days'] = $v > 0 ? max(1, min(732, $v)) : 365;
@@ -205,6 +209,13 @@ if ($method === 'PATCH' || $method === 'POST') {
         $v = ($in['ical_interval_fetch'] === true || $in['ical_interval_fetch'] === '1' || $in['ical_interval_fetch'] === 1) ? '1' : '0';
         $master->prepare('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)')->execute(['ical_interval_fetch', $v]);
         logMessage('INFO', 'admin PATCH ical_interval_fetch ok');
+        jsonResponse(['ok' => true]);
+        exit;
+    }
+    if (isset($in['ical_sync_interval_minutes']) && is_numeric($in['ical_sync_interval_minutes'])) {
+        $v = max(1, min(120, (int) $in['ical_sync_interval_minutes']));
+        $master->prepare('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)')->execute(['ical_sync_interval_minutes', (string) $v]);
+        logMessage('INFO', 'admin PATCH ical_sync_interval_minutes ok', ['value' => $v]);
         jsonResponse(['ok' => true]);
         exit;
     }

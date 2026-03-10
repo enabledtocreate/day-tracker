@@ -16,6 +16,7 @@ if ($method === 'GET') {
     $with = isset($_GET['with']) ? trim((string) $_GET['with']) : '';
     $withLinks = $with !== '' && in_array('links', array_map('trim', explode(',', $with)), true);
     $withListItems = $with !== '' && in_array('list_items', array_map('trim', explode(',', $with)), true);
+    $withOrganization = $with !== '' && in_array('organization', array_map('trim', explode(',', $with)), true);
 
     $taskIds = null;
     if ($view === 'incomplete' && $viewDay !== null) {
@@ -151,6 +152,42 @@ if ($method === 'GET') {
             $out['listItemsByTaskId'] = $listItemsByTaskId;
         }
     }
+    if ($withOrganization && count($rows) > 0) {
+        $check = $pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_category'");
+        if ($check && $check->fetchColumn()) {
+            $taskIds = array_column($rows, 'id');
+            $placeholders = implode(',', array_fill(0, count($taskIds), '?'));
+            $catStmt = $pdo->prepare("SELECT task_id, category_id FROM task_category WHERE task_id IN ({$placeholders})");
+            $catStmt->execute(array_values($taskIds));
+            $catByTask = [];
+            while ($r = $catStmt->fetch(PDO::FETCH_ASSOC)) {
+                $catByTask[(int) $r['task_id']] = (int) $r['category_id'];
+            }
+            $subStmt = $pdo->prepare("SELECT task_id, subcategory_id FROM task_subcategory WHERE task_id IN ({$placeholders})");
+            $subStmt->execute(array_values($taskIds));
+            $subByTask = [];
+            while ($r = $subStmt->fetch(PDO::FETCH_ASSOC)) {
+                $subByTask[(int) $r['task_id']] = (int) $r['subcategory_id'];
+            }
+            $tagStmt = $pdo->prepare("SELECT task_id, tag_id FROM task_tag WHERE task_id IN ({$placeholders}) ORDER BY task_id, tag_id");
+            $tagStmt->execute(array_values($taskIds));
+            $tagsByTask = [];
+            while ($r = $tagStmt->fetch(PDO::FETCH_ASSOC)) {
+                $tid = (int) $r['task_id'];
+                if (!isset($tagsByTask[$tid])) {
+                    $tagsByTask[$tid] = [];
+                }
+                $tagsByTask[$tid][] = (int) $r['tag_id'];
+            }
+            foreach ($out['tasks'] as &$t) {
+                $tid = (int) $t['id'];
+                $t['category_id'] = $catByTask[$tid] ?? null;
+                $t['subcategory_id'] = $subByTask[$tid] ?? null;
+                $t['tag_ids'] = $tagsByTask[$tid] ?? [];
+            }
+            unset($t);
+        }
+    }
     logMessage('INFO', 'tasks list ok', ['count' => count($rows), 'list_state' => $listState, 'with' => $with]);
     jsonResponse($out);
     exit;
@@ -237,22 +274,26 @@ if ($method === 'PATCH') {
         $updates[] = 'list_style = ?';
         $params[] = $in['list_style'];
     }
-    if (empty($updates)) {
+    $hasOrgTables = $pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_category'")->fetchColumn();
+    $hasOrgUpdates = $hasOrgTables && (array_key_exists('category_id', $in) || array_key_exists('subcategory_id', $in) || (array_key_exists('tag_ids', $in) && is_array($in['tag_ids'])));
+    if (empty($updates) && !$hasOrgUpdates) {
         logMessage('WARNING', 'tasks update no fields', ['id' => $id]);
         jsonError('No fields to update');
         exit;
     }
-    $params[] = $id;
-    $sql = "UPDATE tasks SET " . implode(', ', $updates) . " WHERE id = ?";
-    try {
-        $pdo->prepare($sql)->execute($params);
-    } catch (PDOException $e) {
-        $settingCommitment = array_key_exists('priority', $in) && ($in['priority'] ?? '') === 'commitment';
-        if ($settingCommitment) {
-            jsonError('Priority "commitment" requires a database update. Please run migrations (e.g. visit Settings or re-run install).', 400);
-            exit;
+    if (!empty($updates)) {
+        $params[] = $id;
+        $sql = "UPDATE tasks SET " . implode(', ', $updates) . " WHERE id = ?";
+        try {
+            $pdo->prepare($sql)->execute($params);
+        } catch (PDOException $e) {
+            $settingCommitment = array_key_exists('priority', $in) && ($in['priority'] ?? '') === 'commitment';
+            if ($settingCommitment) {
+                jsonError('Priority "commitment" requires a database update. Please run migrations (e.g. visit Settings or re-run install).', 400);
+                exit;
+            }
+            throw $e;
         }
-        throw $e;
     }
     $cols = 'id, title, priority, recurring, parent_id, created_at, list_state, list_style';
     $colStmt = $pdo->query("PRAGMA table_info(tasks)");
@@ -263,6 +304,27 @@ if ($method === 'PATCH') {
     $sel = $pdo->prepare("SELECT {$cols} FROM tasks WHERE id = ?");
     $sel->execute([$id]);
     $task = $sel->fetch(PDO::FETCH_ASSOC);
+
+    if ($hasOrgTables) {
+        if (array_key_exists('category_id', $in)) {
+            $cid = $in['category_id'] === null || $in['category_id'] === '' ? null : (int) $in['category_id'];
+            $pdo->prepare("INSERT OR REPLACE INTO task_category (task_id, category_id) VALUES (?, ?)")->execute([$id, $cid]);
+        }
+        if (array_key_exists('subcategory_id', $in)) {
+            $sid = $in['subcategory_id'] === null || $in['subcategory_id'] === '' ? null : (int) $in['subcategory_id'];
+            $pdo->prepare("INSERT OR REPLACE INTO task_subcategory (task_id, subcategory_id) VALUES (?, ?)")->execute([$id, $sid]);
+        }
+        if (array_key_exists('tag_ids', $in) && is_array($in['tag_ids'])) {
+            $pdo->prepare("DELETE FROM task_tag WHERE task_id = ?")->execute([$id]);
+            $tagIns = $pdo->prepare("INSERT INTO task_tag (task_id, tag_id) VALUES (?, ?)");
+            foreach (array_map('intval', $in['tag_ids']) as $tid) {
+                if ($tid > 0) {
+                    $tagIns->execute([$id, $tid]);
+                }
+            }
+        }
+    }
+
     logMessage('INFO', 'tasks update ok', ['id' => $id]);
     jsonResponse(['ok' => true, 'task' => $task]);
     exit;

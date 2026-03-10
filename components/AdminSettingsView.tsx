@@ -17,6 +17,7 @@ type AdminSettings = {
   ical_save_folder_local?: string;
   ical_save_last_fetch?: boolean;
   ical_interval_fetch?: boolean;
+  ical_sync_interval_minutes?: number;
   ical_event_range_days?: number;
   ical_omit_uids?: string;
 };
@@ -516,6 +517,25 @@ function AdminIcalFetchOptions({ settings, setSettings }: { settings: AdminSetti
           }}
         />
         Fetch iCal on interval (when on Today tab; when off, fetch only on page refresh)
+      </label>
+
+      <label style={{ display: 'block', marginTop: '0.5rem', marginLeft: '1.5rem' }}>
+        Sync interval (minutes):{' '}
+        <select
+          value={settings.ical_sync_interval_minutes ?? 15}
+          onChange={(e) => {
+            const v = Number(e.target.value);
+            setSettings((s) => (s ? { ...s, ical_sync_interval_minutes: v } : s));
+            api.admin.setIcalSyncIntervalMinutes(v).catch(alert);
+          }}
+          style={{ marginLeft: '0.25rem', padding: '0.3rem' }}
+        >
+          <option value={5}>5</option>
+          <option value={15}>15</option>
+          <option value={30}>30</option>
+          <option value={60}>60</option>
+        </select>
+        <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginLeft: '0.5rem' }}>How often to sync iCal when interval fetch is on.</span>
       </label>
 
       <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', marginTop: '0.5rem' }} htmlFor="admin-ical-subscriptions-enabled">

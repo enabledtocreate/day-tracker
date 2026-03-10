@@ -4,6 +4,7 @@
  */
 require_once __DIR__ . '/common.php';
 require_once __DIR__ . '/../lib/recurrence.php';
+require_once dirname(__DIR__) . '/lib/data_integrity.php';
 require_once dirname(__DIR__) . '/lib/logger.php';
 
 $pdo = getPdoSafe();
@@ -387,6 +388,7 @@ if ($method === 'POST') {
     $dayRecordId = (int) $in['day_record_id'];
     $startTime = isset($in['start_time']) && (string) $in['start_time'] !== '' ? (string) $in['start_time'] : null;
     $endTime = isset($in['end_time']) && (string) $in['end_time'] !== '' ? (string) $in['end_time'] : null;
+    [$startTime, $endTime] = dataIntegrityCoerceSlotTimeFramePair($pdo, $startTime, $endTime);
     $orderIndex = isset($in['order_index']) ? (int) $in['order_index'] : 0;
     $completed = !empty($in['completed']) ? 1 : 0;
     $stmt = $pdo->prepare("INSERT INTO scheduled_slots (day_record_id, task_id, start_time, end_time, completed, order_index) VALUES (?, ?, ?, ?, ?, ?)");
@@ -414,13 +416,23 @@ if ($method === 'PATCH') {
         $params[] = $completed;
         // Do not insert into accomplished — completed panel reads from scheduled_slots
     }
-    if (array_key_exists('start_time', $in)) {
+    if (array_key_exists('start_time', $in) && array_key_exists('end_time', $in)) {
+        $startVal = ($in['start_time'] === null || $in['start_time'] === '') ? null : $in['start_time'];
+        $endVal = ($in['end_time'] === null || $in['end_time'] === '') ? null : $in['end_time'];
+        [$startVal, $endVal] = dataIntegrityCoerceSlotTimeFramePair($pdo, $startVal, $endVal);
         $updates[] = 'start_time = ?';
-        $params[] = ($in['start_time'] === null || $in['start_time'] === '') ? null : $in['start_time'];
-    }
-    if (array_key_exists('end_time', $in)) {
+        $params[] = $startVal;
         $updates[] = 'end_time = ?';
-        $params[] = ($in['end_time'] === null || $in['end_time'] === '') ? null : $in['end_time'];
+        $params[] = $endVal;
+    } else {
+        if (array_key_exists('start_time', $in)) {
+            $updates[] = 'start_time = ?';
+            $params[] = ($in['start_time'] === null || $in['start_time'] === '') ? null : $in['start_time'];
+        }
+        if (array_key_exists('end_time', $in)) {
+            $updates[] = 'end_time = ?';
+            $params[] = ($in['end_time'] === null || $in['end_time'] === '') ? null : $in['end_time'];
+        }
     }
     if (array_key_exists('order_index', $in)) {
         $updates[] = 'order_index = ?';

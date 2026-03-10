@@ -325,7 +325,10 @@ if ($method !== 'GET') {
 $configOnly = isset($_GET['config']) && $_GET['config'] !== '' && $_GET['config'] !== '0';
 if ($configOnly) {
     logMessage('INFO', 'ical_events config');
-    jsonResponse(['interval_fetch' => getIcalIntervalFetchEnabled()]);
+    jsonResponse([
+        'interval_fetch' => getIcalIntervalFetchEnabled(),
+        'interval_minutes' => getIcalSyncIntervalMinutes(),
+    ]);
     exit;
 }
 

@@ -55,6 +55,9 @@ export interface Task {
   created_at: string;
   list_state?: 'unassigned' | 'pending';
   list_style?: ListStyle;
+  category_id?: number | null;
+  subcategory_id?: number | null;
+  tag_ids?: number[];
 }
 
 export interface TaskLink {
@@ -129,7 +132,7 @@ export const api = {
     },
     create: (data: { title: string; priority?: Priority; recurring?: boolean; parent_id?: number | null }) =>
       request<Task & { id: number }>('api/tasks.php', { method: 'POST', body: data }),
-    update: (data: { id: number; title?: string; priority?: Priority; recurring?: boolean; recurrence_rule?: string | null; parent_id?: number | null; list_state?: 'unassigned' | 'pending'; list_style?: ListStyle }) =>
+    update: (data: { id: number; title?: string; priority?: Priority; recurring?: boolean; recurrence_rule?: string | null; parent_id?: number | null; list_state?: 'unassigned' | 'pending'; list_style?: ListStyle; category_id?: number | null; subcategory_id?: number | null; tag_ids?: number[] }) =>
       request<{ ok: boolean; task?: Task }>('api/tasks.php', { method: 'PATCH', body: data }),
     delete: (id: number) => request<{ ok: boolean }>(`api/tasks.php?id=${id}`, { method: 'DELETE' }),
   },
@@ -209,6 +212,30 @@ export const api = {
     clearTasks: () => request<{ ok: boolean }>('api/debug.php', { method: 'POST', body: { action: 'clear_tasks' } }),
     resetAll: () => request<{ ok: boolean }>('api/debug.php', { method: 'POST', body: { action: 'reset_all' } }),
   },
+  dataIntegrity: {
+    /** Run verification/coercion rules on load; fixes invalid data (e.g. zero-duration slots). */
+    ensure: () =>
+      request<{ ok: boolean; fixed: Record<string, Array<{ id: number; before: Record<string, string>; after: Record<string, string> }>> }>('api/data_integrity.php'),
+  },
+  organization: {
+    list: () =>
+      request<{ categories: Array<{ id: number; name: string; color?: string | null }>; subcategories: Array<{ id: number; category_id: number; name: string }>; tags: Array<{ id: number; name: string; color?: string | null }> }>('api/organization.php'),
+    createCategory: (data: { name: string; color?: string | null }) =>
+      request<{ id: number; name: string; color?: string | null }>('api/organization.php', { method: 'POST', body: { type: 'category', ...data } }),
+    createSubcategory: (data: { category_id: number; name: string }) =>
+      request<{ id: number; category_id: number; name: string }>('api/organization.php', { method: 'POST', body: { type: 'subcategory', ...data } }),
+    createTag: (data: { name: string; color?: string | null }) =>
+      request<{ id: number; name: string; color?: string | null }>('api/organization.php', { method: 'POST', body: { type: 'tag', ...data } }),
+    updateCategory: (id: number, data: { name?: string; color?: string | null }) =>
+      request<{ ok: boolean }>('api/organization.php', { method: 'PATCH', body: { type: 'category', id, ...data } }),
+    updateSubcategory: (id: number, data: { name?: string; category_id?: number }) =>
+      request<{ ok: boolean }>('api/organization.php', { method: 'PATCH', body: { type: 'subcategory', id, ...data } }),
+    updateTag: (id: number, data: { name?: string; color?: string | null }) =>
+      request<{ ok: boolean }>('api/organization.php', { method: 'PATCH', body: { type: 'tag', id, ...data } }),
+    deleteCategory: (id: number) => request<{ ok: boolean }>(`api/organization.php?type=category&id=${id}`, { method: 'DELETE' }),
+    deleteSubcategory: (id: number) => request<{ ok: boolean }>(`api/organization.php?type=subcategory&id=${id}`, { method: 'DELETE' }),
+    deleteTag: (id: number) => request<{ ok: boolean }>(`api/organization.php?type=tag&id=${id}`, { method: 'DELETE' }),
+  },
   chat: {
     send: (message: string, taskContext: Record<string, unknown>) =>
       request<{ advice: string; suggestedTasks: Array<{ title: string; priority?: string; suggestedSlot?: string }> }>('api/chat.php', {
@@ -240,7 +267,7 @@ export const api = {
   },
   icalEvents: {
     getConfig: () =>
-      request<{ interval_fetch?: boolean }>('api/ical_events.php?config=1'),
+      request<{ interval_fetch?: boolean; interval_minutes?: number }>('api/ical_events.php?config=1'),
     get: (fromDate: string, toDate: string, options?: { force_sync?: boolean; sync_if_stale?: boolean }) => {
       const params = new URLSearchParams({ from_date: fromDate, to_date: toDate });
       if (options?.force_sync) params.set('force_sync', '1');
@@ -251,6 +278,14 @@ export const api = {
     },
     setCompleted: (id: number, userCompleted: boolean) =>
       request<{ ok: boolean }>('api/ical_events.php', { method: 'PATCH', body: { id, user_completed: userCompleted } }),
+  },
+  icalExcluded: {
+    list: () =>
+      request<{ excluded: Array<{ uid: string; title: string }> }>('api/ical_excluded.php'),
+    add: (uid: string, title: string) =>
+      request<{ ok: boolean }>('api/ical_excluded.php', { method: 'POST', body: { uid, title: title || 'Event' } }),
+    remove: (uid: string) =>
+      request<{ ok: boolean }>('api/ical_excluded.php', { method: 'PATCH', body: { remove_uid: uid } }),
   },
   user: {
     get: () => request<{ user: { id: number; username: string; db_name: string; is_admin: boolean; sso: Array<{ id?: number; provider: string; email: string }> } }>('api/user.php'),
@@ -269,6 +304,7 @@ export const api = {
         ical_save_folder_local?: string;
         ical_save_last_fetch?: boolean;
         ical_interval_fetch?: boolean;
+        ical_sync_interval_minutes?: number;
         ical_event_range_days?: number;
         ical_omit_uids?: string;
       }>('api/admin.php?action=settings'),
@@ -279,6 +315,7 @@ export const api = {
     setIcalSaveFolder: (folder: string) => request<{ ok: boolean }>('api/admin.php', { method: 'PATCH', body: { ical_save_folder: folder } }),
     setIcalSaveLastFetch: (on: boolean) => request<{ ok: boolean }>('api/admin.php', { method: 'PATCH', body: { ical_save_last_fetch: on } }),
     setIcalIntervalFetch: (on: boolean) => request<{ ok: boolean }>('api/admin.php', { method: 'PATCH', body: { ical_interval_fetch: on } }),
+    setIcalSyncIntervalMinutes: (minutes: number) => request<{ ok: boolean }>('api/admin.php', { method: 'PATCH', body: { ical_sync_interval_minutes: minutes } }),
     setIcalEventRangeDays: (days: number) => request<{ ok: boolean }>('api/admin.php', { method: 'PATCH', body: { ical_event_range_days: days } }),
     setIcalOmitUids: (value: string) => request<{ ok: boolean }>('api/admin.php', { method: 'PATCH', body: { ical_omit_uids: value } }),
     getIcalLastFetch: () =>
