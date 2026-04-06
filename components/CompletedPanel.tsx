@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
+import { CompletedSummaryModal } from '@/components/CompletedSummaryModal';
 
 type CompletedItem = {
   id: number;
@@ -33,6 +34,7 @@ export function CompletedPanel({ open: controlledOpen, onClose }: Props = {}) {
 
   const [byDate, setByDate] = useState<Record<string, CompletedItem[]>>({});
   const [loading, setLoading] = useState(false);
+  const [summaryOpen, setSummaryOpen] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -47,6 +49,7 @@ export function CompletedPanel({ open: controlledOpen, onClose }: Props = {}) {
   const dates = Object.keys(byDate).sort((a, b) => b.localeCompare(a));
 
   return (
+    <>
     <div className="panel-slide panel-slide-completed">
       <button
         type="button"
@@ -63,9 +66,14 @@ export function CompletedPanel({ open: controlledOpen, onClose }: Props = {}) {
       >
         <div className="completed-panel-header">
           <h3>Completed Tasks</h3>
-          <button type="button" className="completed-panel-close" aria-label="Close" onClick={() => (isControlled ? onClose() : setInternalOpen(false))}>
-            &#215;
-          </button>
+          <div className="completed-panel-header-actions">
+            <button type="button" className="completed-summary-open-btn" title="Summary by category and date" onClick={() => setSummaryOpen(true)}>
+              Summary
+            </button>
+            <button type="button" className="completed-panel-close" aria-label="Close" onClick={() => (isControlled ? onClose() : setInternalOpen(false))}>
+              &#215;
+            </button>
+          </div>
         </div>
         <div id="completed-list" className="completed-list">
           {loading && <p style={{ color: 'var(--text-muted)' }}>Loading…</p>}
@@ -103,5 +111,7 @@ export function CompletedPanel({ open: controlledOpen, onClose }: Props = {}) {
         </div>
       </div>
     </div>
+    <CompletedSummaryModal open={summaryOpen} onClose={() => setSummaryOpen(false)} />
+    </>
   );
 }

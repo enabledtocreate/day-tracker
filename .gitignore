@@ -1,5 +1,9 @@
 node_modules/
 dist/
+
+# AI / APM workspace (volatile scratch, local agent state)
+.apm/
+
 data/
 config.php
 *.sqlite

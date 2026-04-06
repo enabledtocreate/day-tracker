@@ -6,6 +6,7 @@
 require_once __DIR__ . '/common.php';
 require_once dirname(__DIR__) . '/lib/logger.php';
 require_once dirname(__DIR__) . '/lib/ical_parser.php';
+require_once dirname(__DIR__) . '/lib/ical_completion.php';
 require_once dirname(__DIR__) . '/lib/db.php';
 
 /** Browser-like User-Agent so Google Calendar returns the full iCal feed (server agents often get truncated). */
@@ -165,6 +166,7 @@ function ensureIcalFeedEventsTable(PDO $pdo): void {
         event_type TEXT NOT NULL DEFAULT 'event'
     )");
     $pdo->exec("CREATE INDEX IF NOT EXISTS idx_ical_feed_events_sub_start ON ical_feed_events (subscription_id, start_iso)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_ical_feed_events_sub_uid_start ON ical_feed_events (subscription_id, uid, start_iso)");
 }
 
 /**
@@ -231,6 +233,23 @@ function icalEventsSyncSubscription(PDO $pdo, array $sub, string $today, string 
 
     logMessage('INFO', 'ical sync step: saving to DB', ['subscription_id' => $subId]);
     try {
+        // Preserve completion markers for each individual occurrence.
+        // Completion is keyed by (subscription_id, uid, start_iso) so recurring feeds don't collapse occurrences together.
+        $existingCompletedByKey = [];
+        try {
+            $stmt = $pdo->prepare('SELECT uid, start_iso, user_completed FROM ical_feed_events WHERE subscription_id = ? AND date(start_iso) >= ?');
+            $stmt->execute([$subId, $today]);
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $key = icalCompletionKey((string) ($row['uid'] ?? ''), (string) ($row['start_iso'] ?? ''));
+                $existingCompletedByKey[$key] = ((int) ($row['user_completed'] ?? 0) === 1) ? 1 : 0;
+            }
+        } catch (Throwable $e) {
+            // If the table doesn't have the expected columns, fall back to defaults.
+        }
+        // §5.15: merge persistent marks (events removed from feed or rows deleted before re-insert).
+        $marksMap = icalLoadCompletionMarks($pdo, $subId);
+        $existingCompletedByKey = icalMergeCompletionWithMarks($existingCompletedByKey, $marksMap);
+
         $del = $pdo->prepare("DELETE FROM ical_feed_events WHERE subscription_id = ? AND date(start_iso) >= ?");
         $del->execute([$subId, $today]);
     } catch (Throwable $e) {
@@ -241,17 +260,24 @@ function icalEventsSyncSubscription(PDO $pdo, array $sub, string $today, string 
     }
 
     try {
-        $insert = $pdo->prepare("INSERT INTO ical_feed_events (subscription_id, uid, title, start_iso, end_iso, all_day, event_type) VALUES (?, ?, ?, ?, ?, ?, ?)");
+        $insert = $pdo->prepare("INSERT INTO ical_feed_events (subscription_id, uid, title, start_iso, end_iso, all_day, user_completed, event_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
         foreach ($parsed as $ev) {
+            $uid = (string) ($ev['uid'] ?? '');
+            $start = (string) ($ev['start'] ?? '');
+            $uc = icalGetUserCompletedFromMap($existingCompletedByKey ?? [], $uid, $start);
             $insert->execute([
                 $subId,
-                $ev['uid'] ?? '',
+                $uid,
                 $ev['title'] ?? 'Event',
-                $ev['start'] ?? '',
-                $ev['end'] ?? $ev['start'] ?? '',
+                $start,
+                $ev['end'] ?? $start,
                 isset($ev['allDay']) && $ev['allDay'] ? 1 : 0,
+                $uc,
                 $ev['event_type'] ?? 'event',
             ]);
+            if ($uc === 1) {
+                icalUpsertCompletionMark($pdo, $subId, $uid, $start, 1);
+            }
         }
     } catch (Throwable $e) {
         logError('WARNING', 'ical_feed_events insert failed', [
@@ -306,8 +332,20 @@ if ($method === 'PATCH') {
     }
     $pdo = getPdoSafe();
     try {
+        $rowStmt = $pdo->prepare('SELECT subscription_id, uid, start_iso FROM ical_feed_events WHERE id = ?');
+        $rowStmt->execute([$id]);
+        $evRow = $rowStmt->fetch(PDO::FETCH_ASSOC);
         $stmt = $pdo->prepare('UPDATE ical_feed_events SET user_completed = ? WHERE id = ?');
         $stmt->execute([$userCompleted ? 1 : 0, $id]);
+        if ($evRow && isset($evRow['subscription_id'], $evRow['uid'], $evRow['start_iso'])) {
+            icalUpsertCompletionMark(
+                $pdo,
+                (int) $evRow['subscription_id'],
+                (string) $evRow['uid'],
+                (string) $evRow['start_iso'],
+                $userCompleted ? 1 : 0
+            );
+        }
         logMessage('INFO', 'ical_feed_events user_completed updated', ['id' => $id, 'user_completed' => $userCompleted]);
         jsonResponse(['ok' => true]);
     } catch (Throwable $e) {

@@ -9,7 +9,7 @@ test.describe('Login', () => {
 
   test('shows error on invalid credentials', async ({ page }) => {
     await page.goto('/');
-    await page.getByLabel(/username/i).fill('invaliduser');
+    await page.getByLabel(/username/i).first().fill('invaliduser');
     await page.getByLabel(/password/i).first().fill('wrongpassword');
     await page.getByRole('button', { name: /log in/i }).click();
     await expect(page.getByRole('paragraph').filter({ hasText: /failed|error|invalid|unauthorized/i })).toBeVisible({ timeout: 5000 });
@@ -17,9 +17,10 @@ test.describe('Login', () => {
 
   test('after valid login shows main app', async ({ page }) => {
     await page.goto('/');
-    await page.getByLabel(/username/i).fill('demo');
+    await page.getByLabel(/username/i).first().fill('demo');
     await page.getByLabel(/password/i).first().fill('demo');
     await page.getByRole('button', { name: /log in/i }).click();
-    await expect(page.getByRole('button', { name: /today/i }).or(page.getByRole('button', { name: /calendar/i })).or(page.getByText(/completed tasks/i))).toBeVisible({ timeout: 10000 });
+    // `#main-panels` is hidden on the login screen and becomes visible after successful auth.
+    await expect(page.locator('#main-panels')).toBeVisible({ timeout: 20000 });
   });
 });

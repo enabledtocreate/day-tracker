@@ -8,10 +8,18 @@
  * When rule is null or empty, treat as daily (matches every date).
  */
 function recurrenceMatchesDate(?array $rule, string $date): bool {
+    // Ensure we only operate on explicit ISO date strings.
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+        return false;
+    }
     $ts = strtotime($date . ' 00:00:00');
     if ($ts === false) return false;
     if ($rule === null || $rule === []) {
         return true;
+    }
+    $omitDates = $rule['omitDates'] ?? null;
+    if (is_array($omitDates) && in_array($date, $omitDates, true)) {
+        return false;
     }
     $freq = $rule['freq'] ?? 'daily';
     if ($freq === 'daily') return true;

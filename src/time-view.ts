@@ -935,21 +935,21 @@ function render(): void {
         (block.closest('.left-bottom') as HTMLElement | null)?.classList.remove('schedule-drag-active');
         window.dispatchEvent(new Event('daytracker-slot-move-end'));
         const taskListArea = document.querySelector('.left-top');
-        let zone: 'unassigned' | 'pending' | 'incomplete' = 'unassigned';
+        let zone: 'unassigned' | 'pending' = 'unassigned';
         if (taskListArea) {
           const tlRect = taskListArea.getBoundingClientRect();
           if (e2.clientX >= tlRect.left && e2.clientX <= tlRect.right &&
               e2.clientY >= tlRect.top && e2.clientY <= tlRect.bottom) {
-            const zoneBySlide = ['unassigned', 'pending', 'incomplete'] as const;
+            const zoneBySlide = ['unassigned', 'pending'] as const;
             // Dragged block is under the pointer; hide it from hit-testing so we get the drop target underneath
             const prevPointerEvents = block.style.pointerEvents;
             block.style.pointerEvents = 'none';
             const section = document.elementFromPoint(e2.clientX, e2.clientY)?.closest('.task-list-section') as HTMLElement | null;
             block.style.pointerEvents = prevPointerEvents;
             const zoneFromPoint = section?.dataset.dropZone;
-            zone = (zoneFromPoint === 'unassigned' || zoneFromPoint === 'pending' || zoneFromPoint === 'incomplete')
+            zone = (zoneFromPoint === 'unassigned' || zoneFromPoint === 'pending')
               ? zoneFromPoint
-              : (isMobileView() ? zoneBySlide[getTaskSlideIndex()] : 'unassigned');
+              : (isMobileView() ? zoneBySlide[Math.min(getTaskSlideIndex(), 1)] : 'unassigned');
             const slotDeletes = [api.slots.delete(slot.id), ...childSlotIds.map(id => api.slots.delete(id))];
             Promise.all(slotDeletes).then(() => {
               if (zone === 'unassigned') {

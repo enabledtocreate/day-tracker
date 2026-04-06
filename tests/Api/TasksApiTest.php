@@ -91,4 +91,98 @@ final class TasksApiTest extends ApiTestCase
         }
         $this->assertTrue(true, 'Task with recurrence_rule listed (or column absent in old DB)');
     }
+
+    public function testGroupOrderAssignedOnParentChangeAndResetOnUngroup(): void
+    {
+        $rootA = $this->request('POST', 'tasks', [], ['title' => 'Root A', 'priority' => 'medium']);
+        $rootB = $this->request('POST', 'tasks', [], ['title' => 'Root B', 'priority' => 'medium']);
+        $child1 = $this->request('POST', 'tasks', [], ['title' => 'Child 1', 'priority' => 'medium']);
+        $child2 = $this->request('POST', 'tasks', [], ['title' => 'Child 2', 'priority' => 'medium']);
+
+        $rootAId = (int) $rootA['body']['id'];
+        $rootBId = (int) $rootB['body']['id'];
+        $child1Id = (int) $child1['body']['id'];
+        $child2Id = (int) $child2['body']['id'];
+
+        // Group child1 under rootA; expect first child => group_order=0
+        $patch1 = $this->request('PATCH', 'tasks', [], ['id' => $child1Id, 'parent_id' => $rootAId]);
+        $this->assertSame(200, $patch1['code']);
+        $this->assertSame(0, (int) ($patch1['body']['task']['group_order'] ?? -999));
+
+        // Group child2 under rootA; expect second child => group_order=1
+        $patch2 = $this->request('PATCH', 'tasks', [], ['id' => $child2Id, 'parent_id' => $rootAId]);
+        $this->assertSame(200, $patch2['code']);
+        $this->assertSame(1, (int) ($patch2['body']['task']['group_order'] ?? -999));
+
+        // Ungroup child1
+        $patch3 = $this->request('PATCH', 'tasks', [], ['id' => $child1Id, 'parent_id' => null]);
+        $this->assertSame(200, $patch3['code']);
+        $this->assertSame(0, (int) ($patch3['body']['task']['group_order'] ?? -999));
+
+        // Verify ordering of remaining children by inspecting GET list.
+        $res = $this->request('GET', 'tasks');
+        $this->assertSame(200, $res['code']);
+
+        $ordersForRootA = [];
+        $ordersForRootB = [];
+        foreach (($res['body']['tasks'] ?? []) as $t) {
+            $pid = $t['parent_id'] ?? null;
+            $go = $t['group_order'] ?? null;
+            if ((int) $pid === $rootAId) {
+                $ordersForRootA[] = (int) $go;
+            }
+            if ((int) $pid === $rootBId) {
+                $ordersForRootB[] = (int) $go;
+            }
+        }
+
+        // After ungrouping child1, only child2 remains under rootA with group_order=1
+        $this->assertSame([1], $ordersForRootA);
+        $this->assertSame([], $ordersForRootB);
+    }
+
+    public function testCommonTaskCreateListAndCopyFrom(): void
+    {
+        $this->request('POST', 'tasks', [], ['title' => 'Template A', 'is_common' => true]);
+        $list = $this->request('GET', 'tasks', ['common' => '1']);
+        $this->assertSame(200, $list['code']);
+        $this->assertCount(1, $list['body']['tasks']);
+        $tid = (int) $list['body']['tasks'][0]['id'];
+        $this->assertTrue((bool) ($list['body']['tasks'][0]['is_common'] ?? false));
+
+        $un = $this->request('GET', 'tasks', ['list_state' => 'unassigned']);
+        foreach ($un['body']['tasks'] ?? [] as $t) {
+            $this->assertNotSame($tid, (int) $t['id'], 'Common task must not appear in unassigned list');
+        }
+
+        $copy = $this->request('POST', 'tasks', [], ['copy_from' => $tid, 'list_state' => 'unassigned']);
+        $this->assertSame(200, $copy['code']);
+        $newId = (int) $copy['body']['id'];
+        $this->assertNotSame($tid, $newId);
+        $this->assertSame('Template A', $copy['body']['title']);
+        $this->assertFalse((bool) ($copy['body']['is_common'] ?? false));
+    }
+
+    public function testCopyFromPreservesChecklistStyleAndItemCompleted(): void
+    {
+        $r = $this->request('POST', 'tasks', [], ['title' => 'Check root', 'list_style' => 'checklist']);
+        $this->assertSame(200, $r['code']);
+        $tid = (int) $r['body']['id'];
+        $li = $this->request('POST', 'task_list_items', [], [
+            'task_id' => $tid,
+            'content' => 'Done item',
+            'order_index' => 0,
+            'completed' => 1,
+        ]);
+        $this->assertSame(200, $li['code']);
+        $copy = $this->request('POST', 'tasks', [], ['copy_from' => $tid, 'list_state' => 'unassigned']);
+        $this->assertSame(200, $copy['code']);
+        $newId = (int) $copy['body']['id'];
+        $this->assertSame('checklist', $copy['body']['list_style'] ?? '');
+        $items = $this->request('GET', 'task_list_items', ['task_id' => $newId]);
+        $this->assertSame(200, $items['code']);
+        $this->assertCount(1, $items['body']['items'] ?? []);
+        $this->assertSame(1, (int) ($items['body']['items'][0]['completed'] ?? 0));
+        $this->assertSame('Done item', $items['body']['items'][0]['content'] ?? '');
+    }
 }

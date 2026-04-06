@@ -60,6 +60,16 @@ function resetDemoUser(PDO $master, string $dataDir): void {
     } catch (Throwable $e) {
         // table may not exist in older DBs
     }
+    // Clear organization tables (migration 016); skip if tables don't exist
+    $hasOrg = $pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_categories'")->fetchColumn();
+    if ($hasOrg) {
+        $pdo->exec('DELETE FROM task_tag');
+        $pdo->exec('DELETE FROM task_subcategory');
+        $pdo->exec('DELETE FROM task_category');
+        $pdo->exec('DELETE FROM task_tags');
+        $pdo->exec('DELETE FROM task_subcategories');
+        $pdo->exec('DELETE FROM task_categories');
+    }
 
     // Day records: two weeks around today (7 past, today, 6 future)
     $dayDates = [];
@@ -88,7 +98,7 @@ function resetDemoUser(PDO $master, string $dataDir): void {
         ['Call with team', 'medium', 0, null, 'unassigned', 'bullet'],
         ['Read docs', 'low', 0, null, 'unassigned', 'bullet'],
         ['Fix bug #42', 'high', 0, null, 'unassigned', 'bullet'],
-        ['Subtasks for Alpha', 'medium', 0, null, 'unassigned', 'bullet'],
+        ['Design follow-up (group example)', 'medium', 0, null, 'unassigned', 'bullet'],
         ['Backup files', 'low', 1, null, 'unassigned', 'bullet'],
         ['Optional: learn new API', 'low', 0, null, 'pending', 'bullet'],
         // Evening and spread-across-calendar tasks
@@ -116,12 +126,6 @@ function resetDemoUser(PDO $master, string $dataDir): void {
             $weeklyPlanningId = (int) $pdo->lastInsertId();
         }
     }
-    if ($projectAlphaId) {
-        $subtaskId = $pdo->query("SELECT id FROM tasks WHERE title = 'Subtasks for Alpha'")->fetchColumn();
-        if ($subtaskId) {
-            $pdo->prepare('UPDATE tasks SET parent_id = ? WHERE id = ?')->execute([$projectAlphaId, $subtaskId]);
-        }
-    }
     if ($weeklyPlanningId) {
         foreach (['Weekly planning – review goals', 'Weekly planning – block focus time'] as $sub) {
             $sid = $pdo->query("SELECT id FROM tasks WHERE title = " . $pdo->quote($sub))->fetchColumn();
@@ -135,9 +139,9 @@ function resetDemoUser(PDO $master, string $dataDir): void {
     foreach ($taskIds as $t) {
         $idByTitle[$t['title']] = (int) $t['id'];
     }
-    $subtaskId = $idByTitle['Subtasks for Alpha'] ?? null;
-    if ($subtaskId && $projectAlphaId) {
-        $pdo->prepare('UPDATE tasks SET parent_id = ? WHERE id = ?')->execute([$projectAlphaId, $subtaskId]);
+    $groupExampleId = $idByTitle['Design follow-up (group example)'] ?? null;
+    if ($groupExampleId && $projectAlphaId) {
+        $pdo->prepare('UPDATE tasks SET parent_id = ? WHERE id = ?')->execute([$projectAlphaId, $groupExampleId]);
     }
 
     // Links: multiple tasks with links
@@ -227,6 +231,55 @@ function resetDemoUser(PDO $master, string $dataDir): void {
             $slotIns->execute($s);
         }
     }
+
+    // Organization: categories, subcategories, tags, and task assignments (demo showcases schedule/task category colors and tags)
+    if ($hasOrg) {
+        $pdo->prepare('INSERT INTO task_categories (name, color) VALUES (?, ?)')->execute(['Work', '#00c853']);
+        $catWork = (int) $pdo->lastInsertId();
+        $pdo->prepare('INSERT INTO task_categories (name, color) VALUES (?, ?)')->execute(['Personal', '#18b4e8']);
+        $catPersonal = (int) $pdo->lastInsertId();
+        $pdo->prepare('INSERT INTO task_categories (name, color) VALUES (?, ?)')->execute(['Health', '#ff6b6b']);
+        $catHealth = (int) $pdo->lastInsertId();
+
+        $pdo->prepare('INSERT INTO task_subcategories (category_id, name) VALUES (?, ?)')->execute([$catWork, 'Meetings']);
+        $subMeetings = (int) $pdo->lastInsertId();
+        $pdo->prepare('INSERT INTO task_subcategories (category_id, name) VALUES (?, ?)')->execute([$catWork, 'Deep work']);
+        $subDeepWork = (int) $pdo->lastInsertId();
+        $pdo->prepare('INSERT INTO task_subcategories (category_id, name) VALUES (?, ?)')->execute([$catPersonal, 'Chores']);
+        $subChores = (int) $pdo->lastInsertId();
+        $pdo->prepare('INSERT INTO task_subcategories (category_id, name) VALUES (?, ?)')->execute([$catHealth, 'Exercise']);
+        $subExercise = (int) $pdo->lastInsertId();
+
+        $pdo->prepare('INSERT INTO task_tags (name, color) VALUES (?, ?)')->execute(['urgent', 'hsl(0,65%,50%)']);
+        $tagUrgent = (int) $pdo->lastInsertId();
+        $pdo->prepare('INSERT INTO task_tags (name, color) VALUES (?, ?)')->execute(['this-week', 'hsl(200,65%,50%)']);
+        $tagThisWeek = (int) $pdo->lastInsertId();
+        $pdo->prepare('INSERT INTO task_tags (name, color) VALUES (?, ?)')->execute(['focus', null]);
+        $tagFocus = (int) $pdo->lastInsertId();
+
+        $taskCatStmt = $pdo->prepare('INSERT INTO task_category (task_id, category_id) VALUES (?, ?)');
+        $taskSubStmt = $pdo->prepare('INSERT INTO task_subcategory (task_id, subcategory_id) VALUES (?, ?)');
+        $taskTagStmt = $pdo->prepare('INSERT INTO task_tag (task_id, tag_id) VALUES (?, ?)');
+        $rid = fn ($t) => $idByTitle[$t] ?? null;
+        $assign = function (string $title, int $catId, ?int $subId, array $tagIds) use ($rid, $taskCatStmt, $taskSubStmt, $taskTagStmt) {
+            $tid = $rid($title);
+            if ($tid === null) return;
+            $taskCatStmt->execute([$tid, $catId]);
+            if ($subId !== null) $taskSubStmt->execute([$tid, $subId]);
+            foreach ($tagIds as $tagId) $taskTagStmt->execute([$tid, $tagId]);
+        };
+        $assign('Fix bug #42', $catWork, null, [$tagUrgent]);
+        $assign('Project Alpha – design', $catWork, $subDeepWork, [$tagThisWeek]);
+        $assign('Project Alpha – implement', $catWork, $subDeepWork, [$tagThisWeek]);
+        $assign('Call with team', $catWork, $subMeetings, []);
+        $assign('Sync with design', $catWork, $subMeetings, []);
+        $assign('Exercise', $catHealth, $subExercise, [$tagFocus]);
+        $assign('Dinner prep', $catPersonal, $subChores, []);
+        $assign('Deploy staging', $catWork, null, [$tagUrgent]);
+        $assign('Weekly planning', $catWork, $subDeepWork, [$tagThisWeek]);
+    }
+
+    // iCal subscriptions left unseeded; a dedicated demo feed URL could be added here later if desired.
 
     $master->exec("CREATE TABLE IF NOT EXISTS ical_feed_tokens (user_id INTEGER PRIMARY KEY, token TEXT NOT NULL)");
     $newToken = bin2hex(random_bytes(24));

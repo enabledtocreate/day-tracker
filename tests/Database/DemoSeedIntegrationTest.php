@@ -111,4 +111,19 @@ final class DemoSeedIntegrationTest extends TestCase
         $recurring = (int) $pdo->query('SELECT COUNT(*) FROM tasks WHERE recurring = 1')->fetchColumn();
         $this->assertGreaterThan(0, $recurring, 'Recurring tasks should be present');
     }
+
+    public function testResetDemoUserSeedsOrganizationDataWhenTablesExist(): void
+    {
+        resetDemoUser($this->master, $this->dataDir);
+        $row = $this->master->query("SELECT db_name FROM users WHERE username = 'demo'")->fetch(PDO::FETCH_ASSOC);
+        $pdo = new PDO('sqlite:' . $this->dataDir . '/' . $row['db_name'], null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+        $hasCategories = $pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_categories'")->fetchColumn();
+        if (!$hasCategories) {
+            $this->markTestSkipped('Organization tables (migration 016) not present');
+        }
+        $categories = (int) $pdo->query('SELECT COUNT(*) FROM task_categories')->fetchColumn();
+        $this->assertGreaterThanOrEqual(3, $categories, 'Demo should seed at least 3 categories (Work, Personal, Health)');
+        $taskCategoryRows = (int) $pdo->query('SELECT COUNT(*) FROM task_category')->fetchColumn();
+        $this->assertGreaterThan(0, $taskCategoryRows, 'At least one task should have a category assigned');
+    }
 }

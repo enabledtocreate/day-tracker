@@ -71,4 +71,14 @@ final class RecurrenceMatchesDateTest extends TestCase
         $this->assertFalse(recurrenceMatchesDate([], '2025-13-01'));
         $this->assertFalse(recurrenceMatchesDate(['freq' => 'daily'], ''));
     }
+
+    public function testOmitDatesPreventsMatchingDates(): void
+    {
+        $rule = [
+            'freq' => 'daily',
+            'omitDates' => ['2025-06-15'],
+        ];
+        $this->assertFalse(recurrenceMatchesDate($rule, '2025-06-15'));
+        $this->assertTrue(recurrenceMatchesDate($rule, '2025-06-16'));
+    }
 }

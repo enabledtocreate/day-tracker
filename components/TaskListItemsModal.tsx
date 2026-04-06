@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
-import type { TaskListItem as Item, ListStyle } from '@/lib/api';
+import type { Task, TaskListItem as Item, ListStyle } from '@/lib/api';
 import { Modal } from '@/components/Modal';
 import { Button } from '@/components/Button';
 
@@ -12,9 +12,10 @@ type Props = {
   taskId: number | null;
   listStyle: ListStyle;
   onRefresh: () => void;
+  onTaskPatched?: (task: Task) => void;
 };
 
-export function TaskListItemsModal({ open, onClose, taskId, listStyle: initialListStyle, onRefresh }: Props) {
+export function TaskListItemsModal({ open, onClose, taskId, listStyle: initialListStyle, onRefresh, onTaskPatched }: Props) {
   const [items, setItems] = useState<Item[]>([]);
   const [listStyle, setListStyle] = useState<ListStyle>(initialListStyle);
   const [newContent, setNewContent] = useState('');
@@ -85,8 +86,9 @@ export function TaskListItemsModal({ open, onClose, taskId, listStyle: initialLi
 
   const setStyle = (style: ListStyle) => {
     if (taskId == null) return;
-    api.tasks.update({ id: taskId, list_style: style }).then(() => {
+    api.tasks.update({ id: taskId, list_style: style }).then((res) => {
       setListStyle(style);
+      if (res?.task) onTaskPatched?.(res.task);
       onRefresh();
     }).catch(alert);
   };
@@ -97,20 +99,24 @@ export function TaskListItemsModal({ open, onClose, taskId, listStyle: initialLi
         <p>No task selected.</p>
       ) : (
         <>
-          <div className="time-block-list-style-toggle" style={{ marginBottom: '0.75rem', display: 'flex', gap: '0.35rem' }}>
+          <div className="time-block-list-style-toggle task-card-list-style-selector" style={{ marginBottom: '0.75rem', display: 'flex', gap: '0.35rem', alignItems: 'center' }}>
             <button
               type="button"
-              className={'time-block-list-style-btn' + (listStyle === 'bullet' ? ' active' : '')}
+              className={'task-card-list-style-btn time-block-list-style-btn' + (listStyle === 'bullet' ? ' active' : '')}
+              title="Bullet list"
               onClick={() => setStyle('bullet')}
+              aria-label="Bullet list"
             >
-              Bullet
+              •
             </button>
             <button
               type="button"
-              className={'time-block-list-style-btn' + (listStyle === 'checklist' ? ' active' : '')}
+              className={'task-card-list-style-btn time-block-list-style-btn' + (listStyle === 'checklist' ? ' active' : '')}
+              title="Checklist"
               onClick={() => setStyle('checklist')}
+              aria-label="Checklist"
             >
-              Checklist
+              ☐
             </button>
           </div>
           <form onSubmit={handleAdd} style={{ marginBottom: '0.75rem', display: 'flex', gap: '0.35rem' }}>

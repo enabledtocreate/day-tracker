@@ -52,9 +52,13 @@ export interface Task {
   recurring: boolean;
   recurrence_rule?: string | null;
   parent_id: number | null;
+  group_order?: number;
   created_at: string;
+  due_date?: string | null;
   list_state?: 'unassigned' | 'pending';
   list_style?: ListStyle;
+  /** True when task is a Common Tasks template (orange border); scheduling uses a copy. */
+  is_common?: boolean;
   category_id?: number | null;
   subcategory_id?: number | null;
   tag_ids?: number[];
@@ -121,18 +125,27 @@ export interface IcalFeedEvent {
 
 export const api = {
   tasks: {
-    list: (params?: { list_state?: 'unassigned' | 'pending'; view?: 'incomplete'; day?: string; with?: string }) => {
+    list: (params?: { list_state?: 'unassigned' | 'pending'; common?: boolean; view?: 'incomplete'; day?: string; with?: string }) => {
       const q = new URLSearchParams();
       if (params?.list_state) q.set('list_state', params.list_state);
+      if (params?.common) q.set('common', '1');
       if (params?.view) q.set('view', params.view);
       if (params?.day) q.set('day', params.day);
       if (params?.with) q.set('with', params.with);
       const suffix = q.toString() ? '?' + q.toString() : '';
       return request<{ tasks: Task[]; incompleteRootIds?: number[]; linksByTaskId?: Record<number, TaskLink[]>; listItemsByTaskId?: Record<number, TaskListItem[]> }>('api/tasks.php' + suffix);
     },
-    create: (data: { title: string; priority?: Priority; recurring?: boolean; parent_id?: number | null }) =>
-      request<Task & { id: number }>('api/tasks.php', { method: 'POST', body: data }),
-    update: (data: { id: number; title?: string; priority?: Priority; recurring?: boolean; recurrence_rule?: string | null; parent_id?: number | null; list_state?: 'unassigned' | 'pending'; list_style?: ListStyle; category_id?: number | null; subcategory_id?: number | null; tag_ids?: number[] }) =>
+    create: (data: {
+      title?: string;
+      priority?: Priority;
+      recurring?: boolean;
+      parent_id?: number | null;
+      list_style?: ListStyle;
+      is_common?: boolean;
+      copy_from?: number;
+      list_state?: 'unassigned' | 'pending';
+    }) => request<Task & { id: number }>('api/tasks.php', { method: 'POST', body: data }),
+    update: (data: { id: number; title?: string; priority?: Priority; recurring?: boolean; recurrence_rule?: string | null; parent_id?: number | null; group_order?: number; due_date?: string | null; list_state?: 'unassigned' | 'pending'; list_style?: ListStyle; is_common?: boolean; category_id?: number | null; subcategory_id?: number | null; tag_ids?: number[] }) =>
       request<{ ok: boolean; task?: Task }>('api/tasks.php', { method: 'PATCH', body: data }),
     delete: (id: number) => request<{ ok: boolean }>(`api/tasks.php?id=${id}`, { method: 'DELETE' }),
   },
@@ -207,6 +220,14 @@ export const api = {
       if (params?.with) q.set('with', params.with);
       return request<{ byDate: Record<string, Array<{ id: number; day_record_id: number; task_id: number; title: string; start_time?: string; completed_at: string; subtasks?: Array<{ id: number; task_id: number; title: string; start_time?: string; completed_at: string }> }>>; linksByTaskId?: Record<number, TaskLink[]>; listItemsByTaskId?: Record<number, TaskListItem[]> }>(`api/accomplished.php?${q.toString()}`);
     },
+    /** Per-day rollup of completed scheduled time by category / subcategory (from slot start/end). */
+    summaryByOrganization: () =>
+      request<{
+        days: Array<{
+          date: string;
+          rows: Array<{ category: string; subcategory: string | null; hours: number; titles: string[] }>;
+        }>;
+      }>('api/accomplished.php?summary_org=1'),
   },
   debug: {
     clearTasks: () => request<{ ok: boolean }>('api/debug.php', { method: 'POST', body: { action: 'clear_tasks' } }),

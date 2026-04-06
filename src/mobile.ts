@@ -1,5 +1,5 @@
 /**
- * Mobile: sliding panels (Completed | Tasks+Schedule | AI) and task subviews (Unassigned | Pending | Incomplete).
+ * Mobile: sliding panels (Completed | Tasks+Schedule | AI) and task subviews (Unassigned | Pending).
  * Swipe left/right to switch. Touch-friendly UX. When AI is disabled, only Completed and Tasks panels are slidable.
  */
 import { showCompletedPanelAndLoad } from './completed-panel';
@@ -13,7 +13,7 @@ const taskListSectionsEl = document.getElementById('task-list-sections');
 const mobileNavEl = document.getElementById('task-list-sections-mobile-nav');
 
 let mainSlideIndex = 1; // 0=Completed, 1=Tasks+Schedule, 2=AI (default: tasks)
-let taskSlideIndex = 0; // 0=Unassigned, 1=Pending, 2=Incomplete
+let taskSlideIndex = 0; // slide index into visible task sections (Unassigned | Pending)
 
 let touchStartX = 0;
 let touchStartY = 0;
@@ -33,9 +33,9 @@ function applyMainSlide(): void {
 
 function getVisibleTaskSlideIndices(): number[] {
   const raw = taskListSectionsEl?.getAttribute('data-visible-task-slides') ?? '';
-  if (!raw) return [0, 1, 2];
-  const indices = raw.split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => !Number.isNaN(n) && n >= 0 && n <= 2);
-  return indices.length > 0 ? indices : [0, 1, 2];
+  if (!raw) return [0, 1];
+  const indices = raw.split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => !Number.isNaN(n) && n >= 0 && n <= 1);
+  return indices.length > 0 ? indices : [0, 1];
 }
 
 function applyTaskSlide(): void {
@@ -46,13 +46,13 @@ function applyTaskSlide(): void {
   if (clamped !== taskSlideIndex) taskSlideIndex = clamped;
 
   taskListSectionsEl.classList.remove('mobile-task-slide-0', 'mobile-task-slide-1', 'mobile-task-slide-2');
-  const sectionIndex = visibleIndices[taskSlideIndex] ?? 0;
-  if (visibleIndices.length === 3) {
-    taskListSectionsEl.classList.add(`mobile-task-slide-${taskSlideIndex}`);
-    taskListSectionsEl.style.transform = '';
-  } else {
-    taskListSectionsEl.style.transform = `translateX(-${(sectionIndex / 3) * 100}%)`;
+  taskListSectionsEl.classList.remove('task-slides-1', 'task-slides-2', 'task-slides-3');
+  const n = visibleIndices.length;
+  if (n >= 1) {
+    taskListSectionsEl.classList.add(`task-slides-${Math.min(n, 2)}`);
   }
+  taskListSectionsEl.classList.add(`mobile-task-slide-${clamped}`);
+  taskListSectionsEl.style.transform = '';
 
   mobileNavEl?.querySelectorAll('button[data-task-slide]').forEach((btn) => {
     const slide = parseInt((btn as HTMLElement).dataset.taskSlide ?? '0', 10);
@@ -78,7 +78,7 @@ function setTaskSlide(index: number): void {
   applyTaskSlide();
 }
 
-/** Current task section index (0=Unassigned, 1=Pending, 2=Incomplete). Used when dropping from schedule on mobile. */
+/** Current task section index (0=Unassigned, 1=Pending). Used when dropping from schedule on mobile. */
 export function getTaskSlideIndex(): number {
   const visible = getVisibleTaskSlideIndices();
   return visible[taskSlideIndex] ?? 0;
@@ -245,7 +245,14 @@ function onResize(): void {
     if (mobileNavEl) mobileNavEl.setAttribute('aria-hidden', 'false');
   } else {
     panelsEl?.classList.remove('mobile-slide-0', 'mobile-slide-1', 'mobile-slide-2', 'mobile-ai-disabled');
-    taskListSectionsEl?.classList.remove('mobile-task-slide-0', 'mobile-task-slide-1', 'mobile-task-slide-2');
+    taskListSectionsEl?.classList.remove(
+      'mobile-task-slide-0',
+      'mobile-task-slide-1',
+      'mobile-task-slide-2',
+      'task-slides-1',
+      'task-slides-2',
+      'task-slides-3'
+    );
     if (mobileNavEl) mobileNavEl.setAttribute('aria-hidden', 'true');
   }
 }

@@ -1,0 +1,19 @@
+// APM Schema Sync
+// Intended Version: 0
+// Observed Version: 0
+// Sync Status: unverified
+// Drift Severity: low
+// Change Source: unknown
+// Pending Migration Status: comparison_required
+// Recommended Action: capture_or_compare
+
+// Action Summary: Capture an observed schema or define the intended schema to begin tracking drift.
+// Drift Summary: No schema comparison has been recorded yet.
+// Action Item Count: 0
+
+
+Project "Day Tracker" {
+  database_type: "Generic"
+}
+
+// No schema entities defined yet.

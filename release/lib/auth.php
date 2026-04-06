@@ -9,6 +9,13 @@ if (session_status() === PHP_SESSION_NONE) {
     $isSecure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
         || (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
     $cookieLifetime = 30 * 24 * 60 * 60; // 30 days
+
+    // Some PHP configs warn if session ini settings are modified after session_start().
+    // Apply them before starting the session to keep auth responses JSON-clean.
+    if (ini_get('session.gc_maxlifetime') < $cookieLifetime) {
+        ini_set('session.gc_maxlifetime', (string) $cookieLifetime);
+    }
+
     session_set_cookie_params([
         'lifetime' => $cookieLifetime,
         'path' => '/',
@@ -18,10 +25,6 @@ if (session_status() === PHP_SESSION_NONE) {
         'samesite' => 'Lax',
     ]);
     session_start();
-    // Keep session data as long as the cookie (so "remember me" works)
-    if (ini_get('session.gc_maxlifetime') < $cookieLifetime) {
-        ini_set('session.gc_maxlifetime', (string) $cookieLifetime);
-    }
 }
 
 function getCurrentUser(): ?array {

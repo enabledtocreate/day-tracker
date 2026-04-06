@@ -13,6 +13,7 @@ type Props = {
 
 export function Modal({ open, onClose, title, children, actions, 'aria-label': ariaLabel }: Props) {
   const ref = useRef<HTMLDialogElement>(null);
+  const mouseDownOnBackdropRef = useRef(false);
 
   useEffect(() => {
     const dialog = ref.current;
@@ -39,7 +40,15 @@ export function Modal({ open, onClose, title, children, actions, 'aria-label': a
       ref={ref}
       className="link-modal admin-logs-modal modal-with-close"
       aria-label={ariaLabel ?? title}
-      onClick={(e) => { if (e.target === ref.current) onClose(); }}
+      onMouseDown={(e) => {
+        mouseDownOnBackdropRef.current = e.target === ref.current;
+      }}
+      onClick={(e) => {
+        // Close only when both mouse down and mouse up occurred on the backdrop (outside modal content)
+        if (e.target === ref.current && mouseDownOnBackdropRef.current) {
+          onClose();
+        }
+      }}
     >
       <div className="modal-header-row">
         <h3>{title}</h3>

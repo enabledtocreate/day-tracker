@@ -1,9 +1,9 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('Incomplete panel', () => {
+test.describe('Completed tasks panel', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
-    await page.getByLabel(/username/i).fill('demo');
+    await page.getByLabel(/username/i).first().fill('demo');
     await page.getByLabel(/password/i).first().fill('demo');
     await page.getByRole('button', { name: /log in/i }).click();
     await expect(page.getByText(/completed tasks/i)).toBeVisible({ timeout: 10000 });

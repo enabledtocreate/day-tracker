@@ -70,7 +70,7 @@ export function AIPanel({ aiEnabled, viewDate, onRefresh, width: controlledWidth
   const [advice, setAdvice] = useState('');
   const [suggestedTasks, setSuggestedTasks] = useState<Array<{ title: string; priority?: string; suggestedSlot?: string }>>([]);
   const [sending, setSending] = useState(false);
-  const [internalCollapsed, setInternalCollapsed] = useState(false);
+  const [internalCollapsed, setInternalCollapsed] = useState(true);
   const isCollapsedControlled = controlledCollapsed !== undefined;
   const collapsed = isCollapsedControlled ? controlledCollapsed : internalCollapsed;
   const setCollapsed = isCollapsedControlled ? () => {} : setInternalCollapsed;

@@ -1,0 +1,200 @@
+Project daytracker {
+  database_type: "sqlite"
+  note: "Current Day Tracker schema (user DB + master DB). This file is the schema contract the app should conform to."
+}
+
+//// USER DATABASE SCHEMA //////////////////////////////////////////////////////
+//// Each authenticated user has their own SQLite DB (db_name on users table).
+
+Table tasks {
+  id               integer [pk, increment]
+  title            text    [not null]
+  priority         text    [not null, default: 'medium', note: 'commitment | high | medium | low']
+  recurring        integer [not null, default: 0, note: '0 = not recurring, 1 = recurring']
+  parent_id        integer [ref: > tasks.id, note: 'Optional parent task (subtasks)']
+  group_order     integer [not null, default: 0, note: 'Ordering for children within a group (task groups)']
+  created_at       text    [not null, note: 'ISO datetime']
+  due_date         text    [note: 'Optional YYYY-MM-DD date for task due date (nullable)']
+  list_state       text    [not null, default: 'unassigned', note: 'unassigned | pending']
+  list_style       text    [not null, default: 'bullet', note: 'bullet | checklist']
+  is_common        integer [not null, default: 0, note: '1 = Common Tasks template; scheduling creates a copy']
+  recurrence_rule  text    [note: 'Optional JSON: {\"freq\",\"time\",\"weekDays\",\"monthDays\",\"lastDayOfMonth\",\"count\",\"startDate\"}']
+}
+
+Table task_links {
+  id          integer [pk, increment]
+  task_id     integer [not null, ref: > tasks.id]
+  url         text    [not null]
+  description text
+
+  indexes {
+    (task_id, url) [unique]
+  }
+}
+
+Table task_list_items {
+  id          integer [pk, increment]
+  task_id     integer [not null, ref: > tasks.id]
+  content     text    [not null, default: '']
+  order_index integer [not null, default: 0]
+  completed   integer [not null, default: 0, note: '0 = not completed, 1 = completed (for checklist mode)']
+
+  indexes {
+    task_id
+  }
+}
+
+Table day_record {
+  id   integer [pk, increment]
+  date text    [not null, unique, note: 'YYYY-MM-DD']
+}
+
+Table scheduled_slots {
+  id           integer [pk, increment]
+  day_record_id integer [not null, ref: > day_record.id]
+  task_id      integer [not null, ref: > tasks.id]
+  start_time   text    [note: 'HH:MM, nullable for untimed slots']
+  end_time     text    [note: 'HH:MM, nullable for untimed slots']
+  completed    integer [not null, default: 0, note: '0 = not completed, 1 = completed']
+  order_index  integer [not null, default: 0]
+}
+
+Table app_settings {
+  key   text [pk]
+  value text
+
+  note: "Per-user settings in the user DB (schedule increments, timezone, etc.)."
+}
+
+//// iCal subscriptions & stored events (user DB) /////////////////////////////
+
+Table ical_subscriptions {
+  id         integer [pk, increment]
+  feed_url   text    [not null]
+  created_at text    [not null, note: 'ISO datetime']
+  enabled    integer [not null, default: 1, note: '0 = disabled, 1 = enabled']
+  last_synced_at text [note: 'ISO datetime of last successful sync (may be null)']
+}
+
+Table ical_feed_events {
+  id              integer [pk, increment]
+  subscription_id integer [not null, ref: > ical_subscriptions.id]
+  uid             text    [not null]
+  title           text    [not null]
+  start_iso       text    [not null, note: 'ISO datetime (UTC or local-encoded)']
+  end_iso         text    [not null, note: 'ISO datetime (UTC or local-encoded)']
+  all_day         integer [not null, default: 0, note: '0 = timed, 1 = all-day']
+  user_completed  integer [not null, default: 0, note: 'User-completed flag in the app']
+  event_type      text    [not null, default: 'event', note: 'event | task | other custom types']
+
+  indexes {
+    (subscription_id, start_iso)
+  }
+}
+
+Table ical_completion_marks {
+  subscription_id integer [not null, ref: > ical_subscriptions.id]
+  uid             text    [not null]
+  start_iso       text    [not null, note: 'Same as ical_feed_events row; distinguishes recurring UID']
+  user_completed  integer [not null, default: 0, note: 'Persists across feed re-sync when event rows are replaced']
+
+  indexes {
+    (subscription_id, uid, start_iso) [pk]
+  }
+
+  Note: '§5.15: completion survives feed re-sync / row replace.'
+}
+
+//// Organization (categories, subcategories, tags) ////////////////////////////
+
+Table task_categories {
+  id    integer [pk, increment]
+  name  text    [not null]
+  color text    [note: 'Optional CSS color (hex, hsl, etc.)']
+}
+
+Table task_subcategories {
+  id          integer [pk, increment]
+  category_id integer [not null, ref: > task_categories.id, note: 'Parent category (ON DELETE CASCADE)']
+  name        text    [not null]
+}
+
+Table task_tags {
+  id    integer [pk, increment]
+  name  text    [not null]
+  color text    [note: 'Optional CSS color; when null, UI may assign or render default']
+}
+
+Table task_category {
+  task_id     integer [pk, ref: > tasks.id, note: 'One category per task']
+  category_id integer [ref: > task_categories.id, note: 'ON DELETE SET NULL in SQLite schema']
+}
+
+Table task_subcategory {
+  task_id        integer [pk, ref: > tasks.id, note: 'One subcategory per task']
+  subcategory_id integer [ref: > task_subcategories.id, note: 'ON DELETE SET NULL in SQLite schema']
+}
+
+Table task_tag {
+  task_id integer [not null, ref: > tasks.id]
+  tag_id  integer [not null, ref: > task_tags.id]
+
+  indexes {
+    (task_id, tag_id) [pk]
+  }
+}
+
+//// MASTER DATABASE SCHEMA ////////////////////////////////////////////////////
+//// Shared between all users; lives in a separate SQLite DB (master_db_path).
+
+Table users {
+  id                  integer [pk, increment]
+  username            text    [not null, unique]
+  password_hash       text    [note: 'Null/empty for SSO-only accounts']
+  db_name             text    [not null, unique, note: 'Path fragment for per-user DB, e.g. daytracker_demo.sqlite']
+  is_admin            integer [not null, default: 0, note: '0 = regular user; 1 = admin']
+  force_password_reset integer [not null, default: 0]
+  created_at          text    [note: 'ISO datetime; may be null in older DBs']
+}
+
+Table sso_accounts {
+  id             integer [pk, increment]
+  master_user_id integer [not null, ref: > users.id]
+  provider       text    [not null, note: 'e.g. google, outlook']
+  email          text    [not null]
+}
+
+Table ical_feed_tokens {
+  user_id integer [pk, ref: > users.id]
+  token   text    [not null, note: 'Random token for user\'s own iCal feed URL']
+}
+
+Table ical_excluded_events {
+  uid   text [pk, note: 'iCal UID of excluded event']
+  title text [not null, default: '']
+
+  note: "Master-level list of excluded external events, used with app_settings. See key 'ical_omit_uids'."
+}
+
+Table master_app_settings {
+  key   text [pk]
+  value text
+
+  note: "Global app settings in master DB (debug, ai_enabled, iCal sync config, etc.). This mirrors the app_settings table name but lives in the master DB."
+}
+
+//// RELATIONSHIPS (explicit) //////////////////////////////////////////////////
+
+Ref: scheduled_slots.day_record_id > day_record.id
+Ref: scheduled_slots.task_id > tasks.id
+Ref: task_links.task_id > tasks.id
+Ref: task_list_items.task_id > tasks.id
+Ref: ical_feed_events.subscription_id > ical_subscriptions.id
+Ref: task_subcategories.category_id > task_categories.id
+Ref: task_category.category_id > task_categories.id
+Ref: task_subcategory.subcategory_id > task_subcategories.id
+Ref: task_tag.tag_id > task_tags.id
+Ref: tasks.parent_id > tasks.id
+Ref: sso_accounts.master_user_id > users.id
+Ref: ical_feed_tokens.user_id > users.id
+

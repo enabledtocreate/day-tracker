@@ -12,7 +12,6 @@ import { confirmUnschedulePartiallyComplete } from './unschedule-modal';
 const unassignedListEl = document.getElementById('task-list-unassigned');
 const unassignedSectionEl = document.querySelector('.task-list-section[data-drop-zone="unassigned"]') as HTMLElement | null;
 const pendingSectionEl = document.querySelector('.task-list-section[data-drop-zone="pending"]') as HTMLElement | null;
-const incompleteSectionEl = document.querySelector('.task-list-section[data-drop-zone="incomplete"]') as HTMLElement | null;
 const newTaskInput = document.getElementById('new-task-input') as HTMLInputElement | null;
 const newTaskAddBtn = document.getElementById('new-task-add-btn') as HTMLButtonElement | null;
 const taskListSortSelect = document.getElementById('task-list-sort') as HTMLSelectElement | null;
@@ -21,7 +20,6 @@ const unassignZoneEl = document.getElementById('task-list-unassign-zone');
 let tasks: Task[] = [];
 let scheduledTaskIds: Set<number> = new Set();
 let pendingRootIds: Set<number> = new Set();
-let incompleteRootIds: Set<number> = new Set();
 let completedNonRecurringRootIds: Set<number> = new Set();
 let taskListSortOrder: 'id' | 'priority' | 'alphabetical' | 'date_added' = 'id';
 let dragSourceTaskId: number | null = null;
@@ -30,36 +28,29 @@ let isSlotDrag = false;
 let dragTaskIdForUI: number | null = null;
 
 /** Counts are from current render (actual roots length). Omit to use ID-set sizes and show unassigned (e.g. during drag). */
-function updateSectionVisibility(counts?: { unassigned: number; pending: number; incomplete: number }): void {
+function updateSectionVisibility(counts?: { unassigned: number; pending: number }): void {
   const nUnassigned = counts?.unassigned ?? 1; // when unknown (e.g. drag), keep unassigned visible
   const nPending = counts?.pending ?? pendingRootIds.size;
-  const nIncomplete = counts?.incomplete ?? incompleteRootIds.size;
 
   const showUnassigned =
     nUnassigned > 0 || (isDragActive && (isSlotDrag || dragTaskIdForUI != null));
   /* Show Pending when we have roots to display OR stored IDs (so section stays visible on mobile even if tree is briefly empty). */
   const showPending =
     nPending > 0 || pendingRootIds.size > 0 || (isDragActive && (isSlotDrag || dragTaskIdForUI != null));
-  const showIncomplete =
-    nIncomplete > 0 ||
-    incompleteRootIds.size > 0 ||
-    (isDragActive && (isSlotDrag || (dragTaskIdForUI != null && incompleteRootIds.has(getRootTaskId(dragTaskIdForUI!)))));
 
   /* Only show sections that have tasks (same on desktop and mobile). */
   unassignedSectionEl?.classList.toggle('task-list-section-hidden', !showUnassigned);
   pendingSectionEl?.classList.toggle('task-list-section-hidden', !showPending);
-  incompleteSectionEl?.classList.toggle('task-list-section-hidden', !showIncomplete);
 
   const mobileNav = document.getElementById('task-list-sections-mobile-nav');
   const navBtns = mobileNav?.querySelectorAll<HTMLButtonElement>('button[data-task-slide]');
-  if (navBtns?.length === 3) {
+  if (navBtns?.length === 2) {
     navBtns[0].classList.toggle('task-list-nav-hidden', !showUnassigned);
     navBtns[1].classList.toggle('task-list-nav-hidden', !showPending);
-    navBtns[2].classList.toggle('task-list-nav-hidden', !showIncomplete);
   }
 
   const sectionsEl = document.getElementById('task-list-sections');
-  const visibleIndices: number[] = [showUnassigned && 0, showPending && 1, showIncomplete && 2].filter((x): x is number => x !== false);
+  const visibleIndices: number[] = [showUnassigned && 0, showPending && 1].filter((x): x is number => x !== false);
   sectionsEl?.setAttribute('data-visible-task-slides', visibleIndices.join(','));
   window.dispatchEvent(new Event('daytracker-task-sections-visibility-changed'));
 }
@@ -390,9 +381,8 @@ function getRootTaskId(taskId: number): number {
   return getRootTaskId(task.parent_id);
 }
 
-export function setScheduledTaskIds(ids: Set<number>, extra?: { unassignedRootIds: Set<number>; incompleteRootIds: Set<number> }): void {
+export function setScheduledTaskIds(ids: Set<number>, _extra?: { unassignedRootIds: Set<number>; incompleteRootIds: Set<number> }): void {
   scheduledTaskIds = ids;
-  incompleteRootIds = extra?.incompleteRootIds ?? new Set();
   render();
 }
 
@@ -452,11 +442,9 @@ function render(): void {
     (n) =>
       !allScheduled.has(n.id) &&
       !pendingRootIds.has(n.id) &&
-      !incompleteRootIds.has(n.id) &&
       !completedNonRecurringRootIds.has(n.id)
   );
   const pendingRoots = tree.filter((n) => pendingRootIds.has(n.id));
-  const incompleteRoots = tree.filter((n) => incompleteRootIds.has(n.id));
 
   function fillList(el: HTMLElement | null, nodes: TreeNode[]): void {
     if (!el) return;
@@ -467,14 +455,11 @@ function render(): void {
   /* Use fresh element refs in case DOM wasn't ready at module load (e.g. mobile) */
   const unassignedEl = document.getElementById('task-list-unassigned');
   const pendingEl = document.getElementById('task-list-pending');
-  const incompleteEl = document.getElementById('task-list-incomplete');
   fillList(unassignedEl, unassignedRoots);
   fillList(pendingEl, pendingRoots);
-  fillList(incompleteEl, incompleteRoots);
   updateSectionVisibility({
     unassigned: unassignedRoots.length,
     pending: pendingRoots.length,
-    incomplete: incompleteRoots.length,
   });
   /* Re-run visibility on next frame when in mobile so viewport is correct after layout. */
   if (isMobileView()) {
@@ -519,7 +504,6 @@ export function initTaskList(): void {
   }
 
   const pendingZoneEl = document.querySelector('.task-list-drop-zone-pending') as HTMLElement | null;
-  const incompleteZoneEl = document.querySelector('.task-list-drop-zone-incomplete') as HTMLElement | null;
 
   function showZone(el: HTMLElement | null): void {
     if (el) {
@@ -534,14 +518,9 @@ export function initTaskList(): void {
     }
   }
 
-  function setCanDropSections(slotDrag: boolean, taskId: number | null): void {
+  function setCanDropSections(): void {
     unassignedSectionEl?.classList.add('can-drop');
     pendingSectionEl?.classList.add('can-drop');
-    if (slotDrag) {
-      incompleteSectionEl?.classList.add('can-drop');
-    } else if (taskId != null && incompleteRootIds.has(getRootTaskId(taskId))) {
-      incompleteSectionEl?.classList.add('can-drop');
-    }
   }
   function clearCanDropSections(): void {
     document.querySelectorAll('.task-list-section.can-drop').forEach((el) => el.classList.remove('can-drop'));
@@ -552,21 +531,18 @@ export function initTaskList(): void {
     isSlotDrag = true;
     dragTaskIdForUI = null;
     updateSectionVisibility();
-    setCanDropSections(true, null);
+    setCanDropSections();
     showZone(unassignZoneEl as HTMLElement);
     showZone(pendingZoneEl);
-    showZone(incompleteZoneEl);
   }
   function showZonesForTaskDrag(taskId: number): void {
     isDragActive = true;
     isSlotDrag = false;
     dragTaskIdForUI = taskId;
     updateSectionVisibility();
-    setCanDropSections(false, taskId);
+    setCanDropSections();
     showZone(unassignZoneEl as HTMLElement);
     showZone(pendingZoneEl);
-    const rootId = getRootTaskId(taskId);
-    if (incompleteRootIds.has(rootId)) showZone(incompleteZoneEl);
   }
   function hideAllZones(): void {
     isDragActive = false;
@@ -576,11 +552,10 @@ export function initTaskList(): void {
     clearCanDropSections();
     hideZone(unassignZoneEl as HTMLElement);
     hideZone(pendingZoneEl);
-    hideZone(incompleteZoneEl);
     document.querySelectorAll('.task-list-section.drop-target').forEach((el) => el.classList.remove('drop-target'));
   }
 
-  /* Re-run visibility on resize/orientation so mobile gets all three tabs when viewport is ≤768px. */
+  /* Re-run visibility on resize/orientation so mobile gets correct tabs when viewport is ≤768px. */
   function onViewportChange(): void {
     if (isMobileView()) updateSectionVisibility();
   }
@@ -597,8 +572,6 @@ export function initTaskList(): void {
     if (zone === 'pending' && taskId != null) {
       const rootId = getRootTaskId(taskId);
       api.tasks.update({ id: rootId, list_state: 'pending' }).then(() => loadTasks()).catch(console.error);
-    } else if (zone === 'incomplete') {
-      loadTasks();
     }
   }) as EventListener);
   document.addEventListener('dragend', hideAllZones);
@@ -660,27 +633,6 @@ export function initTaskList(): void {
     });
   }
 
-  function handleSlotDropOnIncomplete(slotIdStr: string): void {
-    const slotId = parseInt(slotIdStr, 10);
-    if (!slotId) return;
-    confirmUnschedulePartiallyComplete(slotId).then(({ choice, childSlots }) => {
-      if (choice === 'cancel') return;
-      const afterSlotsDeleted = () => {
-        loadTasks();
-        window.dispatchEvent(new Event('daytracker-refresh'));
-      };
-      if (choice === 'orphan' && childSlots?.length) {
-        const incomplete = childSlots.filter((c) => c.completed !== 1);
-        Promise.all(incomplete.map((c) => api.slots.delete(c.id)))
-          .then(() => api.slots.delete(slotId))
-          .then(afterSlotsDeleted)
-          .catch(console.error);
-      } else {
-        api.slots.delete(slotId).then(afterSlotsDeleted).catch(console.error);
-      }
-    });
-  }
-
   document.querySelectorAll('.task-list-section[data-drop-zone]').forEach((sectionEl) => {
     const section = sectionEl as HTMLElement;
     const zone = section.dataset.dropZone;
@@ -689,11 +641,6 @@ export function initTaskList(): void {
         e.dataTransfer?.types.includes('application/x-daytracker-slot') ||
         e.dataTransfer?.types.includes('application/x-daytracker-task')
       ) {
-        if (zone === 'incomplete' && e.dataTransfer?.types.includes('application/x-daytracker-task')) {
-          const taskIdStr = e.dataTransfer?.getData('application/x-daytracker-task');
-          const taskId = taskIdStr ? parseInt(taskIdStr, 10) : NaN;
-          if (!incompleteRootIds.has(getRootTaskId(taskId))) return;
-        }
         section.classList.add('drop-target');
       }
     });
@@ -706,11 +653,6 @@ export function initTaskList(): void {
         e.dataTransfer?.types.includes('application/x-daytracker-slot') ||
         e.dataTransfer?.types.includes('application/x-daytracker-task')
       ) {
-        if (zone === 'incomplete' && e.dataTransfer?.types.includes('application/x-daytracker-task')) {
-          const taskIdStr = e.dataTransfer?.getData('application/x-daytracker-task');
-          const taskId = taskIdStr ? parseInt(taskIdStr, 10) : NaN;
-          if (!incompleteRootIds.has(getRootTaskId(taskId))) return;
-        }
         e.dataTransfer.dropEffect = 'move';
       }
     });
@@ -723,7 +665,6 @@ export function initTaskList(): void {
         e.stopPropagation();
         if (zone === 'unassigned') handleSlotDropOnUnassigned(slotIdStr);
         else if (zone === 'pending') handleSlotDropOnPending(slotIdStr);
-        else if (zone === 'incomplete') handleSlotDropOnIncomplete(slotIdStr);
         return;
       }
       const target = e.target as HTMLElement;
@@ -741,8 +682,6 @@ export function initTaskList(): void {
         Promise.all(updates).then(() => loadTasks()).catch(console.error);
       } else if (zone === 'pending') {
         api.tasks.update({ id: rootId, list_state: 'pending' }).then(() => loadTasks()).catch(console.error);
-      } else if (zone === 'incomplete' && incompleteRootIds.has(rootId)) {
-        api.tasks.update({ id: rootId, list_state: 'unassigned' }).then(() => loadTasks()).catch(console.error);
       }
     });
   });
