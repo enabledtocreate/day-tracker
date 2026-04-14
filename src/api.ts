@@ -3,6 +3,14 @@
  * Uses relative paths (api/...) so the app works at the domain root or in a subfolder (e.g. /DayTracker/).
  * Override with data-baseurl on #app if you need an absolute API base.
  */
+import type {
+  AiAssistantResponse,
+  AiChatRequestBody,
+  AiContextResolveRequestBody,
+  AiContextResolveResponse,
+  AiMessageRow,
+  AiThreadSummary,
+} from '../lib/aiTypes';
 
 const BASE = ((): string => {
   const app = document.getElementById('app');
@@ -102,6 +110,7 @@ export interface TimeSettings {
   end_hour: number;
   increment_value: number;
   increment_unit: 'min' | 'hr';
+  task_schedule_layout?: 'stacked' | 'split';
 }
 
 /** Read-only event from a subscribed iCal feed (for time blocking display). */
@@ -173,6 +182,7 @@ export const api = {
           end_hour: data.end_hour,
           increment_value: data.increment_value,
           increment_unit: data.increment_unit,
+          task_schedule_layout: data.task_schedule_layout,
         },
       }),
   },
@@ -189,11 +199,36 @@ export const api = {
       request<{ ok: boolean; fixed: Record<string, Array<{ id: number; before: Record<string, string>; after: Record<string, string> }>> }>('api/data_integrity.php'),
   },
   chat: {
-    send: (message: string, taskContext: Record<string, unknown>) =>
-      request<{ advice: string; suggestedTasks: Array<{ title: string; priority?: string; suggestedSlot?: string }> }>('api/chat.php', {
+    send: (body: AiChatRequestBody) =>
+      request<AiAssistantResponse>('api/chat.php', {
         method: 'POST',
-        body: { message, taskContext },
+        body: { schemaVersion: 1, ...body },
       }),
+  },
+  ai: {
+    contextResolve: (body: AiContextResolveRequestBody) =>
+      request<AiContextResolveResponse>('api/ai/context_resolve.php', { method: 'POST', body }),
+    threads: {
+      list: () => request<{ threads: AiThreadSummary[] }>('api/ai/threads.php'),
+      get: (id: number) =>
+        request<{ thread: AiThreadSummary; messages: AiMessageRow[] }>(
+          `api/ai/threads.php?id=${encodeURIComponent(String(id))}`
+        ),
+      create: (title?: string) =>
+        request<{ thread: AiThreadSummary }>('api/ai/threads.php', {
+          method: 'POST',
+          body: { action: 'create', ...(title !== undefined && title !== '' ? { title } : {}) },
+        }),
+      append: (threadId: number, role: 'user' | 'assistant', payload: Record<string, unknown>) =>
+        request<{ message: { id: number; thread_id: number; role: string } }>('api/ai/threads.php', {
+          method: 'POST',
+          body: { action: 'append', thread_id: threadId, role, payload },
+        }),
+      delete: (id: number) =>
+        request<{ ok: boolean; deleted: number }>(`api/ai/threads.php?id=${encodeURIComponent(String(id))}`, {
+          method: 'DELETE',
+        }),
+    },
   },
   icalFeed: {
     getUrl: () => request<{ token: string }>('api/ical_feed.php'),
@@ -219,7 +254,17 @@ export const api = {
   },
   icalEvents: {
     get: (fromDate: string, toDate: string) =>
-      request<{ events: IcalFeedEvent[]; errors?: Array<{ feed_url: string; message: string }> }>(`api/ical_events.php?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}`),
+      request<{
+        events: IcalFeedEvent[];
+        errors?: Array<{ feed_url: string; message: string }>;
+        subscription_sync?: Array<{
+          subscription_id: number;
+          attempted: boolean;
+          skip_reason?: string;
+          trigger_reason?: string;
+          feed_errors?: Array<{ feed_url: string; message: string }>;
+        }>;
+      }>(`api/ical_events.php?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}`),
   },
   user: {
     get: () => request<{ user: { id: number; username: string; db_name: string; is_admin: boolean; sso: Array<{ id?: number; provider: string; email: string }> } }>('api/user.php'),

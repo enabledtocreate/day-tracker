@@ -220,6 +220,46 @@ body {
   overflow: hidden;
 }
 
+.panel-slide-tasks .left-main--split {
+  flex-direction: row;
+  align-items: stretch;
+}
+
+.panel-slide-tasks .left-main--split .left-top--split {
+  border-bottom: none;
+  border-right: 1px solid var(--border);
+  flex: 0 0 clamp(12.5rem, 30%, 26rem) !important;
+  max-width: 26rem;
+  min-width: 12rem;
+  min-height: 0;
+}
+
+.panel-slide-tasks .left-main--split .left-bottom--split {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  border-left: none;
+}
+
+.panel-slide-tasks .left-main--split .task-list-sections {
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  gap: 0.65rem;
+}
+
+.panel-slide-tasks .left-main--split .task-list-section {
+  flex: 1 1 0;
+  min-height: 5rem;
+  min-width: 0;
+}
+
+.panel-slide-tasks .left-main--split .task-list-scroll {
+  min-height: 3rem;
+}
+
 .panel-slide-tasks .left-top {
   flex: 0 0 auto;
   height: 35%;
@@ -1302,6 +1342,16 @@ body {
 
 .time-block.completed .time-block-title {
   text-decoration: line-through;
+}
+
+/* Grouped blocks: root row can be completed while outer block is not (.completed = all members) */
+.time-block.time-block-has-group .time-block-header.time-block-group-member-completed .time-block-title {
+  text-decoration: line-through;
+  opacity: 0.85;
+}
+.time-block.completed.time-block-has-group .time-block-header:not(.time-block-group-member-completed) .time-block-title {
+  text-decoration: none;
+  opacity: 1;
 }
 
 /* Read-only iCal feed blocks: yellow, same transparency as tasks, no edit controls */

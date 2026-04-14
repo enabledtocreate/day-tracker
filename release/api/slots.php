@@ -356,8 +356,8 @@ if ($method === 'POST') {
             jsonError('Recurring task not found');
             exit;
         }
-        $startTime = '09:00';
-        $endTime = '09:30';
+        $startTime = isset($in['start_time']) && (string)$in['start_time'] !== '' ? (string)$in['start_time'] : '09:00';
+        $endTime = isset($in['end_time']) && (string)$in['end_time'] !== '' ? (string)$in['end_time'] : '09:30';
         if (!empty($task['recurrence_rule'])) {
             $rule = @json_decode($task['recurrence_rule'], true);
             if (is_array($rule) && !empty($rule['time'])) {

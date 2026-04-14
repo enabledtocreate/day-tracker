@@ -8,12 +8,17 @@ require_once dirname(__DIR__) . '/lib/sso.php';
 require_once dirname(__DIR__) . '/lib/logger.php';
 
 logMessage('INFO', 'auth_callback.php');
-$provider = isset($_GET['provider']) ? strtolower(trim((string) $_GET['provider'])) : '';
 $code = isset($_GET['code']) ? trim((string) $_GET['code']) : '';
+$provider = ssoDecodeState(isset($_GET['state']) ? (string) $_GET['state'] : null);
+if ($provider === null && isset($_GET['provider'])) {
+    $p = strtolower(trim((string) $_GET['provider']));
+    $provider = ($p === 'google' || $p === 'outlook') ? $p : null;
+}
+$provider = $provider ?? '';
 $base = getBaseUrl();
 $appUrl = $base . '/';
 
-if ($provider !== 'google' && $provider !== 'outlook' || $code === '') {
+if (($provider !== 'google' && $provider !== 'outlook') || $code === '') {
     logMessage('WARNING', 'auth_callback invalid_callback', ['provider' => $provider, 'code_set' => $code !== '']);
     header('Location: ' . $appUrl . '?login_error=invalid_callback');
     exit;

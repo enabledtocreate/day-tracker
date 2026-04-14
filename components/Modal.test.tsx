@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { Modal } from './Modal';
+import { Modal } from '@/lib/ui-kit/kits/default/Modal';
 
 describe('Modal backdrop click semantics', () => {
   it('does not close when mousedown is inside and click is on backdrop', () => {

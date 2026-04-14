@@ -125,9 +125,14 @@ if ($method === 'GET') {
         exit;
     }
     try {
-        $stmt = $pdo->query('SELECT id, feed_url, created_at, COALESCE(enabled, 1) AS enabled FROM ical_subscriptions ORDER BY id');
+        $stmt = $pdo->query('SELECT id, feed_url, created_at, COALESCE(enabled, 1) AS enabled, display_name FROM ical_subscriptions ORDER BY id');
     } catch (Throwable $e) {
-        $stmt = $pdo->query('SELECT id, feed_url, created_at FROM ical_subscriptions ORDER BY id');
+        logMessage('NOTICE', 'ical_subscriptions list: using fallback query', ['message' => $e->getMessage()]);
+        try {
+            $stmt = $pdo->query('SELECT id, feed_url, created_at, COALESCE(enabled, 1) AS enabled FROM ical_subscriptions ORDER BY id');
+        } catch (Throwable $e2) {
+            $stmt = $pdo->query('SELECT id, feed_url, created_at FROM ical_subscriptions ORDER BY id');
+        }
     }
     $rows = $stmt ? $stmt->fetchAll(PDO::FETCH_ASSOC) : [];
     foreach ($rows as &$r) {
@@ -142,20 +147,41 @@ if ($method === 'GET') {
 if ($method === 'PATCH') {
     logMessage('INFO', 'ical_subscriptions PATCH');
     $in = readJsonInput();
-    if (!$in || !isset($in['id']) || !isset($in['enabled'])) {
-        jsonError('id and enabled required');
+    if (!$in || !isset($in['id'])) {
+        jsonError('id required');
         exit;
     }
     $id = (int) $in['id'];
-    $enabled = $in['enabled'] ? 1 : 0;
     if ($id < 1) {
         jsonError('invalid id');
         exit;
     }
+    $hasEnabled = array_key_exists('enabled', $in);
+    $hasDisplay = array_key_exists('display_name', $in);
+    if (!$hasEnabled && !$hasDisplay) {
+        jsonError('enabled and/or display_name required');
+        exit;
+    }
     try {
-        $pdo->prepare('UPDATE ical_subscriptions SET enabled = ? WHERE id = ?')->execute([$enabled, $id]);
+        if ($hasEnabled && $hasDisplay) {
+            $en = $in['enabled'] ? 1 : 0;
+            $dn = isset($in['display_name']) ? trim((string) $in['display_name']) : '';
+            $pdo->prepare('UPDATE ical_subscriptions SET enabled = ?, display_name = ? WHERE id = ?')->execute([$en, $dn === '' ? null : $dn, $id]);
+        } elseif ($hasDisplay) {
+            $dn = trim((string) $in['display_name']);
+            $pdo->prepare('UPDATE ical_subscriptions SET display_name = ? WHERE id = ?')->execute([$dn === '' ? null : $dn, $id]);
+        } else {
+            $en = $in['enabled'] ? 1 : 0;
+            $pdo->prepare('UPDATE ical_subscriptions SET enabled = ? WHERE id = ?')->execute([$en, $id]);
+        }
     } catch (Throwable $e) {
+        if (strpos($e->getMessage(), 'display_name') !== false) {
+            logMessage('WARNING', 'ical_subscriptions PATCH: display_name column missing', ['id' => $id, 'message' => $e->getMessage()]);
+            jsonError('Nickname not available. Run migrations.');
+            exit;
+        }
         if (strpos($e->getMessage(), 'enabled') !== false) {
+            logMessage('WARNING', 'ical_subscriptions PATCH: enabled column missing', ['id' => $id, 'message' => $e->getMessage()]);
             jsonError('Enable/disable not available. Run migrations.');
             exit;
         }

@@ -5,6 +5,22 @@
  */
 require_once __DIR__ . '/../lib/db.php';
 require_once __DIR__ . '/../lib/logger.php';
+require_once __DIR__ . '/../lib/api_error_bootstrap.php';
+
+daytracker_register_fatal_shutdown_logger();
+
+set_exception_handler(function (Throwable $e) {
+    logError('ERROR', 'ical.php: ' . $e->getMessage(), [
+        'file' => $e->getFile(),
+        'line' => $e->getLine(),
+        'trace' => $e->getTraceAsString(),
+    ]);
+    if (!headers_sent()) {
+        http_response_code(500);
+        header('Content-Type: text/plain; charset=utf-8');
+    }
+    echo 'Calendar feed error.';
+});
 
 $token = isset($_GET['token']) ? trim((string) $_GET['token']) : '';
 logMessage('INFO', 'ical.php GET feed', ['token_set' => $token !== '']);
@@ -45,12 +61,14 @@ $stmt = $master->prepare('SELECT db_name FROM users WHERE id = ?');
 $stmt->execute([$userId]);
 $user = $stmt->fetch(PDO::FETCH_ASSOC);
 if (!$user) {
+    logMessage('WARNING', 'ical.php user row missing for token user_id', ['user_id' => $userId]);
     http_response_code(404);
     exit;
 }
 
 $userDbPath = $dataDir . DIRECTORY_SEPARATOR . $user['db_name'];
 if (!is_file($userDbPath)) {
+    logMessage('WARNING', 'ical.php user database file missing', ['user_id' => $userId, 'db_name' => $user['db_name'] ?? '']);
     http_response_code(404);
     exit;
 }

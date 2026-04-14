@@ -131,6 +131,7 @@ if ($method === 'GET') {
         $rows = $stmt ? $stmt->fetchAll(PDO::FETCH_ASSOC) : [];
     } catch (PDOException $e) {
         if (strpos($e->getMessage(), 'recurrence_rule') !== false && strpos($columns, 'recurrence_rule') !== false) {
+            logMessage('NOTICE', 'tasks list: retrying without recurrence_rule column', ['message' => $e->getMessage()]);
             $columns = 'id, title, priority, recurring, parent_id, created_at, list_state, list_style';
             if ($hasGroupOrder) {
                 $columns .= ', group_order';
@@ -557,6 +558,10 @@ if ($method === 'PATCH') {
         } catch (PDOException $e) {
             $settingCommitment = array_key_exists('priority', $in) && ($in['priority'] ?? '') === 'commitment';
             if ($settingCommitment) {
+                logMessage('WARNING', 'tasks update: commitment priority blocked by schema', [
+                    'task_id' => $id,
+                    'message' => $e->getMessage(),
+                ]);
                 jsonError('Priority "commitment" requires a database update. Please run migrations (e.g. visit Settings or re-run install).', 400);
                 exit;
             }

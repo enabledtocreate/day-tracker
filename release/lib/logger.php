@@ -15,6 +15,7 @@ function getLogDir(): ?string {
         }
         return is_dir($dir) ? $dir : null;
     } catch (Throwable $e) {
+        @error_log('DayTracker getLogDir: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
         return null;
     }
 }

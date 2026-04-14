@@ -6,6 +6,7 @@ import { fetchMe, logout } from '@/lib/auth';
 import { LoginScreen } from '@/components/LoginScreen';
 import { AppBar } from '@/components/AppBar';
 import { AppPanels } from '@/components/AppPanels';
+import { DT_ID } from '@/lib/uiIdentifiers';
 
 export function MainApp() {
   const [user, setUser] = useState<AuthUser | null | undefined>(undefined);
@@ -53,7 +54,11 @@ export function MainApp() {
 
   if (user === undefined) {
     return (
-      <div className="login-screen" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div
+        id={DT_ID.sessionLoading}
+        className="login-screen"
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      >
         <p className="login-message">Loading…</p>
       </div>
     );
@@ -64,7 +69,7 @@ export function MainApp() {
   }
 
   return (
-    <>
+    <div id={DT_ID.appShell}>
       <AppBar
         user={user}
         onUserClick={() => setShowUserSettings(true)}
@@ -83,6 +88,6 @@ export function MainApp() {
         onLogout={handleLogout}
         onUserUpdated={() => fetchMe().then((data) => { setUser(data.user ?? null); setAiEnabled(data.ai_enabled !== false); })}
       />
-    </>
+    </div>
   );
 }

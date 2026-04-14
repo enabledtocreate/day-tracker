@@ -9,11 +9,11 @@ $pdo = getPdoSafe();
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 logMessage('INFO', 'settings.php branch', ['method' => $method, 'user_id' => $userId]);
 
-$keys = ['start_hour', 'end_hour', 'increment_value', 'increment_unit', 'timezone'];
+$keys = ['start_hour', 'end_hour', 'increment_value', 'increment_unit', 'timezone', 'task_schedule_layout'];
 
 if ($method === 'GET') {
     logMessage('INFO', 'settings GET');
-    $stmt = $pdo->query("SELECT key, value FROM app_settings WHERE key IN ('start_hour','end_hour','increment_value','increment_unit','timezone')");
+    $stmt = $pdo->query("SELECT key, value FROM app_settings WHERE key IN ('start_hour','end_hour','increment_value','increment_unit','timezone','task_schedule_layout')");
     $rows = $stmt ? $stmt->fetchAll(PDO::FETCH_KEY_PAIR) : [];
     $settings = [
         'start_hour' => (int) ($rows['start_hour'] ?? 6),
@@ -21,9 +21,13 @@ if ($method === 'GET') {
         'increment_value' => (int) ($rows['increment_value'] ?? 15),
         'increment_unit' => $rows['increment_unit'] ?? 'min',
         'timezone' => isset($rows['timezone']) ? (string) $rows['timezone'] : '',
+        'task_schedule_layout' => isset($rows['task_schedule_layout']) ? (string) $rows['task_schedule_layout'] : 'stacked',
     ];
     if ($settings['increment_unit'] !== 'min' && $settings['increment_unit'] !== 'hr') {
         $settings['increment_unit'] = 'min';
+    }
+    if ($settings['task_schedule_layout'] !== 'stacked' && $settings['task_schedule_layout'] !== 'split') {
+        $settings['task_schedule_layout'] = 'stacked';
     }
     logMessage('INFO', 'settings GET ok');
     jsonResponse($settings);
@@ -48,6 +52,8 @@ if ($method === 'PATCH') {
             $v = is_string($v) ? trim($v) : '';
         } elseif ($key === 'increment_unit') {
             $v = ($v === 'hr' || $v === 'min') ? $v : 'min';
+        } elseif ($key === 'task_schedule_layout') {
+            $v = is_string($v) && ($v === 'split' || $v === 'stacked') ? $v : 'stacked';
         } else {
             $v = (string) (int) $v;
         }

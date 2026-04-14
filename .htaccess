@@ -1,1 +1,36 @@
-# Apache config for Day Tracker (optional rules can be added here)
+# Apache — Day Tracker release ships this file for optional server rules.
+#
+# HTTP → HTTPS (301 permanent). Works for the main domain, www, and any hostname
+# that points at this same document root (see WHERE TO PLACE below).
+#
+# Requires: mod_rewrite enabled; AllowOverride FileInfo (or All) for this directory.
+#
+# WHERE TO PLACE THIS FILE
+# ------------------------
+# To force HTTPS for the WHOLE site (recommended), put these rules in `.htaccess`
+# at your hosting DOCUMENT ROOT (e.g. `httpdocs`, `public_html`) — the folder that
+# CONTAINS your `DayTracker` (or other) subdirectory. If you only upload `release/`
+# into `/DayTracker/`, copy this redirect block into a SEPARATE `.htaccess` one
+# level ABOVE `DayTracker/` so `http://example.com/` also redirects to HTTPS.
+#
+# SUBDOMAINS (blog.example.com, app.example.com, …)
+# Each subdomain usually has its own document root on IONOS. Add the same
+# `<IfModule mod_rewrite.c> … </IfModule>` block to `.htaccess` in EACH
+# subdomain’s root folder if you want HTTPS there too.
+#
+# If enabling HTTPS redirect causes a LOOP, your host may terminate SSL in front
+# of Apache and set `X-Forwarded-Proto`. Comment out the first rule block and
+# uncomment the alternative below it.
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  # Default: TLS is handled on this server
+  RewriteCond %{HTTPS} !=on
+  RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+  # Alternative (uncomment if redirect loop; comment out the 2 lines above first):
+  # RewriteCond %{HTTP:X-Forwarded-Proto} !https
+  # RewriteCond %{HTTPS} off
+  # RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+</IfModule>

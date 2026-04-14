@@ -37,7 +37,7 @@ fs.mkdirSync(releaseDir, { recursive: true });
 copyRecursive(outDir, releaseDir);
 
 // PHP backend (overwrite or add)
-for (const dir of ['api', 'lib', 'migrations', 'migrations_master']) {
+for (const dir of ['api', 'lib', 'migrations', 'migrations_master', 'migrations_ai', 'cron']) {
   const src = path.join(root, dir);
   if (fs.existsSync(src)) copyRecursive(src, path.join(releaseDir, dir));
 }

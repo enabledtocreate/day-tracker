@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { MainApp } from '@/components/MainApp';
+import { DT } from '@/lib/uiIdentifiers';
 
 export default function HomePage() {
   const [mounted, setMounted] = useState(false);
@@ -9,11 +10,18 @@ export default function HomePage() {
 
   if (!mounted) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--text-muted)' }}>
+      <div
+        className={DT.pageBootstrapping}
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--text-muted)' }}
+      >
         Loading…
       </div>
     );
   }
 
-  return <MainApp />;
+  return (
+    <div className={DT.page}>
+      <MainApp />
+    </div>
+  );
 }

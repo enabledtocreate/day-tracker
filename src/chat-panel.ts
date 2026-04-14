@@ -121,11 +121,17 @@ export function initChatPanel(aiEnabled: boolean = true): void {
 
     try {
       const taskContext = await buildTaskContext();
-      const res = await api.chat.send(message, taskContext);
-      if (adviceEl) adviceEl.textContent = res.advice || 'No advice returned.';
-      if (suggestedEl && res.suggestedTasks?.length) {
+      const res = await api.chat.send({ message, viewDate: getCurrentDate(), taskContext });
+      if (adviceEl) adviceEl.textContent = res.advice?.summary || 'No advice returned.';
+      const flat: Array<{ title: string; priority?: string }> = [];
+      for (const g of res.proposals ?? []) {
+        for (const t of g.tasks ?? []) {
+          if (t.title) flat.push({ title: t.title, priority: t.priority });
+        }
+      }
+      if (suggestedEl && flat.length) {
         suggestedEl.innerHTML = '';
-        res.suggestedTasks.forEach((sug) => {
+        flat.forEach((sug) => {
           const item = document.createElement('div');
           item.className = 'suggested-task-item';
           const title = document.createElement('span');
@@ -137,7 +143,7 @@ export function initChatPanel(aiEnabled: boolean = true): void {
           addListBtn.addEventListener('click', () => {
             api.tasks.create({
               title: sug.title,
-              priority: (sug.priority as 'high' | 'medium' | 'low') || 'medium',
+              priority: (sug.priority as 'commitment' | 'high' | 'medium' | 'low') || 'medium',
             }).then(() => window.dispatchEvent(new CustomEvent('daytracker-refresh'))).catch(console.error);
           });
           const addSlotBtn = document.createElement('button');
@@ -154,7 +160,7 @@ export function initChatPanel(aiEnabled: boolean = true): void {
             const endTime = String(Math.floor(endMin / 60)).padStart(2, '0') + ':' + String(endMin % 60).padStart(2, '0');
             const created = await api.tasks.create({
               title: sug.title,
-              priority: (sug.priority as 'high' | 'medium' | 'low') || 'medium',
+              priority: (sug.priority as 'commitment' | 'high' | 'medium' | 'low') || 'medium',
             });
             await api.slots.create({
               day_record_id: day.id,

@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/logger.php';
+
 /**
  * Create a stable completion key for one iCal occurrence.
  *
@@ -31,7 +33,7 @@ function icalLoadCompletionMarks(PDO $pdo, int $subscriptionId): array {
             $map[$key] = ((int) ($row['user_completed'] ?? 0) === 1) ? 1 : 0;
         }
     } catch (Throwable $e) {
-        // Table missing before migration 021
+        logMessage('NOTICE', 'icalLoadCompletionMarks: table or query failed', ['message' => $e->getMessage()]);
     }
 
     return $map;
@@ -62,7 +64,7 @@ function icalUpsertCompletionMark(PDO $pdo, int $subscriptionId, string $uid, st
         );
         $st->execute([$subscriptionId, $uid, $startIso, $userCompleted ? 1 : 0]);
     } catch (Throwable $e) {
-        // Table missing before migration 021
+        logMessage('NOTICE', 'icalUpsertCompletionMark: table or query failed', ['message' => $e->getMessage()]);
     }
 }
 

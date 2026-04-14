@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import type { AuthUser } from '@/lib/auth';
 import { getBaseUrl } from '@/lib/getBaseUrl';
+import { DT } from '@/lib/uiIdentifiers';
 
 type Props = {
   user: AuthUser;
@@ -28,7 +29,7 @@ export function AppBar({ user, onUserClick, onAdminClick, onLogout }: Props) {
 
   const faviconSrc = getBaseUrl() + 'favicon.ico';
   return (
-    <header className="app-bar" id="app-bar">
+    <header className={`app-bar ${DT.appBar}`} id="app-bar">
       <div className="app-bar-left">
         <img src={faviconSrc} alt="" className="app-bar-favicon" />
         <h1 className="app-bar-title">Day Tracker</h1>

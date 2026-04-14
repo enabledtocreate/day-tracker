@@ -3,6 +3,14 @@
  * Uses getBaseUrl() so the app works at the domain root or in a subfolder (e.g. /DayTracker/).
  */
 import { getBaseUrl } from './getBaseUrl';
+import type {
+  AiAssistantResponse,
+  AiChatRequestBody,
+  AiContextResolveRequestBody,
+  AiContextResolveResponse,
+  AiMessageRow,
+  AiThreadSummary,
+} from './aiTypes';
 
 type ApiRequestInit = Omit<RequestInit, 'body'> & { method?: string; body?: unknown };
 
@@ -109,6 +117,17 @@ export interface TimeSettings {
   increment_unit: 'min' | 'hr';
   /** IANA timezone for iCal/schedule display (e.g. America/Los_Angeles). Empty = use browser timezone. */
   timezone?: string;
+  /** Desktop: `stacked` = tasks above schedule (default); `split` = task column left, schedule right. */
+  task_schedule_layout?: 'stacked' | 'split';
+}
+
+export interface IcalSubscriptionRow {
+  id: number;
+  feed_url: string;
+  created_at: string;
+  enabled: boolean;
+  /** User-defined label shown on the schedule (optional). */
+  display_name?: string | null;
 }
 
 export interface IcalFeedEvent {
@@ -121,6 +140,15 @@ export interface IcalFeedEvent {
   subscription_id?: number;
   user_completed?: boolean;
   event_type?: 'event' | 'todo';
+}
+
+/** Per-subscription outcome from ical_events.php (multi-calendar sync visibility). */
+export interface IcalSubscriptionSyncEntry {
+  subscription_id: number;
+  attempted: boolean;
+  skip_reason?: string;
+  trigger_reason?: string;
+  feed_errors?: Array<{ feed_url: string; message: string }>;
 }
 
 export const api = {
@@ -168,8 +196,17 @@ export const api = {
     },
     create: (data: { day_record_id: number; task_id: number; start_time?: string | null; end_time?: string | null; order_index?: number; completed?: boolean }) =>
       request<ScheduledSlot & { id: number }>('api/slots.php', { method: 'POST', body: data }),
-    completeOccurrence: (taskId: number, date: string) =>
-      request<ScheduledSlot & { id: number }>('api/slots.php', { method: 'POST', body: { task_id: taskId, date, complete_occurrence: true } }),
+    completeOccurrence: (taskId: number, date: string, startTime?: string, endTime?: string) =>
+      request<ScheduledSlot & { id: number }>('api/slots.php', {
+        method: 'POST',
+        body: {
+          task_id: taskId,
+          date,
+          complete_occurrence: true,
+          ...(startTime ? { start_time: startTime } : {}),
+          ...(endTime ? { end_time: endTime } : {}),
+        },
+      }),
     update: (data: { id: number; completed?: boolean; start_time?: string | null; end_time?: string | null; order_index?: number; parent_id?: number | null }) => {
       const body: Record<string, unknown> = { id: data.id };
       if (data.completed !== undefined) body.completed = data.completed ? 1 : 0;
@@ -210,6 +247,7 @@ export const api = {
           increment_value: data.increment_value,
           increment_unit: data.increment_unit,
           timezone: data.timezone,
+          task_schedule_layout: data.task_schedule_layout,
         },
       }),
   },
@@ -218,16 +256,33 @@ export const api = {
     listAll: (params?: { with?: string }) => {
       const q = new URLSearchParams({ list_all: '1' });
       if (params?.with) q.set('with', params.with);
-      return request<{ byDate: Record<string, Array<{ id: number; day_record_id: number; task_id: number; title: string; start_time?: string; completed_at: string; subtasks?: Array<{ id: number; task_id: number; title: string; start_time?: string; completed_at: string }> }>>; linksByTaskId?: Record<number, TaskLink[]>; listItemsByTaskId?: Record<number, TaskListItem[]> }>(`api/accomplished.php?${q.toString()}`);
+      return request<{ byDate: Record<string, Array<{ id: number; day_record_id: number; task_id: number; title: string; start_time?: string; completed_at: string }>>; linksByTaskId?: Record<number, TaskLink[]>; listItemsByTaskId?: Record<number, TaskListItem[]> }>(`api/accomplished.php?${q.toString()}`);
     },
     /** Per-day rollup of completed scheduled time by category / subcategory (from slot start/end). */
-    summaryByOrganization: () =>
-      request<{
+    summaryByOrganization: (params?: { from_date?: string; to_date?: string }) => {
+      const q = new URLSearchParams({ summary_org: '1' });
+      if (params?.from_date) q.set('from_date', params.from_date);
+      if (params?.to_date) q.set('to_date', params.to_date);
+      return request<{
         days: Array<{
           date: string;
-          rows: Array<{ category: string; subcategory: string | null; hours: number; titles: string[] }>;
+          rows: Array<{
+            category: string;
+            subcategory: string | null;
+            hours: number;
+            titles: string[];
+            tasks: Array<{
+              task_id: number;
+              title: string;
+              hours: number;
+              links: TaskLink[];
+              list_items: TaskListItem[];
+              tags?: Array<{ id: number; name: string; color?: string | null }>;
+            }>;
+          }>;
         }>;
-      }>('api/accomplished.php?summary_org=1'),
+      }>(`api/accomplished.php?${q.toString()}`);
+    },
   },
   debug: {
     clearTasks: () => request<{ ok: boolean }>('api/debug.php', { method: 'POST', body: { action: 'clear_tasks' } }),
@@ -258,20 +313,46 @@ export const api = {
     deleteTag: (id: number) => request<{ ok: boolean }>(`api/organization.php?type=tag&id=${id}`, { method: 'DELETE' }),
   },
   chat: {
-    send: (message: string, taskContext: Record<string, unknown>) =>
-      request<{ advice: string; suggestedTasks: Array<{ title: string; priority?: string; suggestedSlot?: string }> }>('api/chat.php', {
+    send: (body: AiChatRequestBody) =>
+      request<AiAssistantResponse>('api/chat.php', {
         method: 'POST',
-        body: { message, taskContext },
+        body: { schemaVersion: 1, ...body },
       }),
+  },
+  ai: {
+    contextResolve: (body: AiContextResolveRequestBody) =>
+      request<AiContextResolveResponse>('api/ai/context_resolve.php', { method: 'POST', body }),
+    threads: {
+      list: () => request<{ threads: AiThreadSummary[] }>('api/ai/threads.php'),
+      get: (id: number) =>
+        request<{ thread: AiThreadSummary; messages: AiMessageRow[] }>(`api/ai/threads.php?id=${encodeURIComponent(String(id))}`),
+      create: (title?: string) =>
+        request<{ thread: AiThreadSummary }>('api/ai/threads.php', {
+          method: 'POST',
+          body: { action: 'create', ...(title !== undefined && title !== '' ? { title } : {}) },
+        }),
+      append: (threadId: number, role: 'user' | 'assistant', payload: Record<string, unknown>) =>
+        request<{ message: { id: number; thread_id: number; role: string } }>('api/ai/threads.php', {
+          method: 'POST',
+          body: { action: 'append', thread_id: threadId, role, payload },
+        }),
+      delete: (id: number) =>
+        request<{ ok: boolean; deleted: number }>(`api/ai/threads.php?id=${encodeURIComponent(String(id))}`, {
+          method: 'DELETE',
+        }),
+    },
   },
   icalFeed: {
     getUrl: () => request<{ token: string }>('api/ical_feed.php'),
   },
   icalSubscriptions: {
-    list: () => request<{ subscriptions: Array<{ id: number; feed_url: string; created_at: string; enabled: boolean }> }>('api/ical_subscriptions.php'),
+    list: () =>
+      request<{ subscriptions: IcalSubscriptionRow[] }>('api/ical_subscriptions.php'),
     add: (feedUrl: string) => request<{ id: number; feed_url: string }>('api/ical_subscriptions.php', { method: 'POST', body: { feed_url: feedUrl } }),
     setEnabled: (id: number, enabled: boolean) =>
       request<{ ok: boolean }>('api/ical_subscriptions.php', { method: 'PATCH', body: { id, enabled } }),
+    setDisplayName: (id: number, displayName: string) =>
+      request<{ ok: boolean }>('api/ical_subscriptions.php', { method: 'PATCH', body: { id, display_name: displayName } }),
     delete: (id: number) => request<{ ok: boolean }>(`api/ical_subscriptions.php?id=${id}`, { method: 'DELETE' }),
     preview: (id: number, parse = true) =>
       request<{
@@ -288,14 +369,21 @@ export const api = {
   },
   icalEvents: {
     getConfig: () =>
-      request<{ interval_fetch?: boolean; interval_minutes?: number }>('api/ical_events.php?config=1'),
+      request<{
+        interval_fetch?: boolean;
+        interval_minutes?: number;
+        use_cron_job?: boolean;
+        client_triggers_sync?: boolean;
+      }>('api/ical_events.php?config=1'),
     get: (fromDate: string, toDate: string, options?: { force_sync?: boolean; sync_if_stale?: boolean }) => {
       const params = new URLSearchParams({ from_date: fromDate, to_date: toDate });
       if (options?.force_sync) params.set('force_sync', '1');
       if (options?.sync_if_stale) params.set('sync_if_stale', '1');
-      return request<{ events: IcalFeedEvent[]; errors?: Array<{ feed_url: string; message: string }> }>(
-        `api/ical_events.php?${params.toString()}`
-      );
+      return request<{
+        events: IcalFeedEvent[];
+        errors?: Array<{ feed_url: string; message: string }>;
+        subscription_sync?: IcalSubscriptionSyncEntry[];
+      }>(`api/ical_events.php?${params.toString()}`);
     },
     setCompleted: (id: number, userCompleted: boolean) =>
       request<{ ok: boolean }>('api/ical_events.php', { method: 'PATCH', body: { id, user_completed: userCompleted } }),
@@ -328,6 +416,7 @@ export const api = {
         ical_sync_interval_minutes?: number;
         ical_event_range_days?: number;
         ical_omit_uids?: string;
+        ical_use_cron_job?: boolean;
       }>('api/admin.php?action=settings'),
     setDebug: (debug: boolean) => request<{ ok: boolean }>('api/admin.php', { method: 'PATCH', body: { debug } }),
     setAiEnabled: (aiEnabled: boolean) => request<{ ok: boolean }>('api/admin.php', { method: 'PATCH', body: { ai_enabled: aiEnabled } }),
@@ -336,6 +425,10 @@ export const api = {
     setIcalSaveFolder: (folder: string) => request<{ ok: boolean }>('api/admin.php', { method: 'PATCH', body: { ical_save_folder: folder } }),
     setIcalSaveLastFetch: (on: boolean) => request<{ ok: boolean }>('api/admin.php', { method: 'PATCH', body: { ical_save_last_fetch: on } }),
     setIcalIntervalFetch: (on: boolean) => request<{ ok: boolean }>('api/admin.php', { method: 'PATCH', body: { ical_interval_fetch: on } }),
+    setIcalUseCronJob: (on: boolean) => request<{ ok: boolean }>('api/admin.php', { method: 'PATCH', body: { ical_use_cron_job: on } }),
+    /** Mutually exclusive: browser interval polling vs server cron (sets both app flags atomically). */
+    setIcalFetchTrigger: (mode: 'browser_interval' | 'server_cron') =>
+      request<{ ok: boolean }>('api/admin.php', { method: 'PATCH', body: { ical_fetch_trigger: mode } }),
     setIcalSyncIntervalMinutes: (minutes: number) => request<{ ok: boolean }>('api/admin.php', { method: 'PATCH', body: { ical_sync_interval_minutes: minutes } }),
     setIcalEventRangeDays: (days: number) => request<{ ok: boolean }>('api/admin.php', { method: 'PATCH', body: { ical_event_range_days: days } }),
     setIcalOmitUids: (value: string) => request<{ ok: boolean }>('api/admin.php', { method: 'PATCH', body: { ical_omit_uids: value } }),
@@ -349,6 +442,22 @@ export const api = {
         sync_state: Record<string, unknown> | null;
         parsed_events: Array<{ uid: string; title: string; start: string; end: string; allDay: boolean }> | null;
         parse_range: { from: string; to: string } | null;
+        subscriptions?: Array<{
+          subscription_id: number;
+          feed_url: string | null;
+          sync_state: string | null;
+          message: string | null;
+          error: string | null;
+          bytes_fetched: number | null;
+          parsed_count: number | null;
+          range_from: string | null;
+          range_to: string | null;
+          updated_at: string | null;
+          path: string | null;
+          content: string | null;
+          parsed_events: Array<{ uid: string; title: string; start: string; end: string; allDay: boolean }> | null;
+          parse_range: { from: string; to: string };
+        }>;
       }>('api/admin.php?action=ical_last_fetch'),
     runMigrations: () =>
       request<{ ok: boolean; applied: string[] }>('api/migrate.php'),

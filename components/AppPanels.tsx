@@ -7,6 +7,7 @@ import { useMediaQuery } from '@/lib/useMediaQuery';
 import { UserSettingsView } from '@/components/UserSettingsView';
 import { AdminSettingsView } from '@/components/AdminSettingsView';
 import { TaskListAndSchedule } from '@/components/TaskListAndSchedule';
+import { DT } from '@/lib/uiIdentifiers';
 
 const MOBILE_BREAKPOINT = '(max-width: 768px)';
 const SWIPE_THRESHOLD = 60;
@@ -96,14 +97,14 @@ export function AppPanels({
       </div>
       <div
         id="admin-settings-view"
-        className="settings-view"
+        className={`settings-view ${DT.adminSettingsContainer}`}
         hidden={!showAdminSettings}
         aria-hidden={!showAdminSettings}
       >
         <AdminSettingsView user={user} onClose={onCloseSettings} />
       </div>
       <div
-        className={panelsClassName}
+        className={`${panelsClassName} ${DT.mainPanels}`}
         id="main-panels"
         style={{ display: 'flex' }}
         {...(isMobile ? bindPanelsDrag() : {})}

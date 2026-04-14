@@ -4,12 +4,30 @@
  */
 require_once __DIR__ . '/db.php';
 
+/** True when the incoming request is HTTPS (or behind a TLS-terminating proxy). */
+function ssoRequestIsHttps(): bool {
+    if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
+        return true;
+    }
+    if (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower((string) $_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https') {
+        return true;
+    }
+    if (!empty($_SERVER['HTTP_X_FORWARDED_SSL']) && strtolower((string) $_SERVER['HTTP_X_FORWARDED_SSL']) === 'on') {
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Public origin for OAuth redirect_uri and post-login redirects.
+ * Set `base_url` in config.php when auto-detection is wrong (e.g. subfolder behind reverse proxy).
+ */
 function getBaseUrl(): string {
     $config = getConfig();
     if (!empty($config['base_url'])) {
-        return rtrim($config['base_url'], '/');
+        return rtrim((string) $config['base_url'], '/');
     }
-    $scheme = 'http';
+    $scheme = ssoRequestIsHttps() ? 'https' : 'http';
     $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
     $script = $_SERVER['SCRIPT_NAME'] ?? '';
     $base = dirname($script);
@@ -17,6 +35,37 @@ function getBaseUrl(): string {
         $base = dirname($base);
     }
     return $scheme . '://' . $host . ($base === '/' ? '' : $base);
+}
+
+/** Encode provider for OAuth `state` (IdPs do not append `provider` to the callback query). */
+function ssoEncodeState(string $provider): string {
+    $raw = json_encode(['p' => $provider]);
+    if ($raw === false) {
+        return '';
+    }
+    return rtrim(strtr(base64_encode($raw), '+/', '-_'), '=');
+}
+
+/** @return 'google'|'outlook'|null */
+function ssoDecodeState(?string $state): ?string {
+    if ($state === null || $state === '') {
+        return null;
+    }
+    $b64 = strtr($state, '-_', '+/');
+    $pad = strlen($b64) % 4;
+    if ($pad > 0) {
+        $b64 .= str_repeat('=', 4 - $pad);
+    }
+    $raw = base64_decode($b64, true);
+    if ($raw === false) {
+        return null;
+    }
+    $data = json_decode($raw, true);
+    if (!is_array($data) || empty($data['p'])) {
+        return null;
+    }
+    $p = strtolower((string) $data['p']);
+    return ($p === 'google' || $p === 'outlook') ? $p : null;
 }
 
 function httpPostJson(string $url, array $data, array $headers = []): array {
@@ -49,6 +98,7 @@ function ssoRedirectUrl(string $provider): ?string {
             'scope' => 'openid email profile',
             'access_type' => 'offline',
             'prompt' => 'consent',
+            'state' => ssoEncodeState('google'),
         ];
         return 'https://accounts.google.com/o/oauth2/v2/auth?' . http_build_query($params);
     }
@@ -61,6 +111,7 @@ function ssoRedirectUrl(string $provider): ?string {
             'redirect_uri' => $callback,
             'response_type' => 'code',
             'scope' => 'openid email profile',
+            'state' => ssoEncodeState('outlook'),
         ];
         return 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?' . http_build_query($params);
     }

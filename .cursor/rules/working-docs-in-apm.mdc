@@ -1,0 +1,16 @@
+---
+description: Put working / exploratory docs in .apm unless user says to use docs/
+alwaysApply: true
+---
+
+# Working documents live in `.apm/`
+
+When creating or updating **working material** for this application—plans, rough design notes, scratch specifications, implementation drafts, and anything used to “work things out” before it is product truth—**write under `.apm/`** (repo root), e.g. `.apm/plan-feature-foo.md`.
+
+**Do not** place those files under `docs/` **unless the user explicitly says otherwise** (e.g. “put this in docs” or “promote to SRS”).
+
+**Keep in `docs/`** without asking each time: stable references the team treats as published—`Application-SRS.md`, `Application-Spec.md`, `BACKLOG.md`, `ARCHITECTURE.md`, `DATABASE_SCHEMA.md`, `AI_ENVIRONMENT.md`, external-facing templates, etc.
+
+After a plan stabilizes, **merge** the substance into the appropriate `docs/*` (and contracts) in a separate step—the working copy can stay in `.apm/` or be archived.
+
+Note: `.apm/` is gitignored; working docs are local unless you add narrow git exceptions.

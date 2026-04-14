@@ -19,7 +19,7 @@ if ($method === 'GET') {
     $action = $_GET['action'] ?? 'settings';
     if ($action === 'settings') {
         logMessage('INFO', 'admin action settings');
-        $stmt = $master->query("SELECT key, value FROM app_settings WHERE key IN ('debug', 'ai_enabled', 'ical_fetch_timeout', 'ical_subscriptions_enabled', 'ical_save_folder', 'ical_save_last_fetch', 'ical_interval_fetch', 'ical_sync_interval_minutes', 'ical_event_range_days', 'ical_omit_uids')");
+        $stmt = $master->query("SELECT key, value FROM app_settings WHERE key IN ('debug', 'ai_enabled', 'ical_fetch_timeout', 'ical_subscriptions_enabled', 'ical_save_folder', 'ical_save_last_fetch', 'ical_interval_fetch', 'ical_sync_interval_minutes', 'ical_event_range_days', 'ical_omit_uids', 'ical_use_cron_job')");
         $settings = [
             'debug' => false,
             'ai_enabled' => true,
@@ -31,6 +31,7 @@ if ($method === 'GET') {
             'ical_sync_interval_minutes' => 15,
             'ical_event_range_days' => 365,
             'ical_omit_uids' => '',
+            'ical_use_cron_job' => false,
         ];
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             if ($row['key'] === 'debug') {
@@ -56,6 +57,8 @@ if ($method === 'GET') {
                 $settings['ical_event_range_days'] = $v > 0 ? max(1, min(732, $v)) : 365;
             } elseif ($row['key'] === 'ical_omit_uids') {
                 $settings['ical_omit_uids'] = trim((string) $row['value']);
+            } elseif ($row['key'] === 'ical_use_cron_job') {
+                $settings['ical_use_cron_job'] = ($row['value'] === '1');
             }
         }
         require_once dirname(__DIR__) . '/lib/db.php';
@@ -111,32 +114,103 @@ if ($method === 'GET') {
         logMessage('INFO', 'admin action ical_last_fetch');
         require_once dirname(__DIR__) . '/lib/db.php';
         require_once dirname(__DIR__) . '/lib/ical_parser.php';
+        require_once dirname(__DIR__) . '/lib/ical_subscription_sync.php';
         $folder = getIcalSaveFolder();
-        $metaPath = $folder . DIRECTORY_SEPARATOR . 'last_fetch.json';
-        $out = ['path' => null, 'content' => null, 'subscription_id' => null, 'saved_at' => null, 'save_folder' => $folder, 'sync_state' => null, 'parsed_events' => null, 'parse_range' => null];
-        if (is_file($metaPath)) {
-            $meta = @json_decode((string) file_get_contents($metaPath), true);
-            if (is_array($meta)) {
-                $out['sync_state'] = $meta;
-                $out['subscription_id'] = isset($meta['subscription_id']) ? (int) $meta['subscription_id'] : null;
-                $out['saved_at'] = $meta['saved_at'] ?? null;
-                if (!empty($meta['path']) && is_file($meta['path'])) {
-                    $out['path'] = $meta['path'];
-                    $out['content'] = file_get_contents($meta['path']);
-                    $from = $meta['range_from'] ?? $meta['saved_at'] ? substr($meta['saved_at'], 0, 10) : gmdate('Y-m-d');
-                    $to = $meta['range_to'] ?? gmdate('Y-m-d', strtotime('+1 year'));
-                    if (is_string($out['content']) && $out['content'] !== '') {
-                        try {
-                            $out['parsed_events'] = parseIcalEvents($out['content'], $from, $to);
-                            $out['parse_range'] = ['from' => $from, 'to' => $to];
-                        } catch (Throwable $e) {
-                            $out['parsed_events'] = [];
-                        }
+        $pdo = getPdo();
+        icalSubscriptionSyncStatusEnsureTable($pdo);
+        $today = gmdate('Y-m-d');
+        $rangeDays = getIcalEventRangeDays();
+        $toDateDefault = gmdate('Y-m-d', strtotime('+' . $rangeDays . ' days'));
+        $subscriptions = [];
+        try {
+            $stmt = $pdo->query(
+                'SELECT s.id AS subscription_id, s.feed_url, st.sync_state, st.message, st.error, st.bytes_fetched, st.parsed_count, st.range_from, st.range_to, st.fetch_file_path, st.updated_at
+                FROM ical_subscriptions s
+                LEFT JOIN ical_subscription_sync_status st ON st.subscription_id = s.id
+                WHERE COALESCE(s.enabled, 1) = 1
+                ORDER BY s.id'
+            );
+            $rows = $stmt ? $stmt->fetchAll(PDO::FETCH_ASSOC) : [];
+        } catch (Throwable $e) {
+            logMessage('NOTICE', 'admin ical_last_fetch subscriptions query', ['message' => $e->getMessage()]);
+            $rows = [];
+        }
+        foreach ($rows as $row) {
+            $sid = (int) $row['subscription_id'];
+            $path = isset($row['fetch_file_path']) ? trim((string) $row['fetch_file_path']) : '';
+            $content = null;
+            $parsed_events = null;
+            $fromParse = $row['range_from'] ? trim((string) $row['range_from']) : $today;
+            $toParse = $row['range_to'] ? trim((string) $row['range_to']) : $toDateDefault;
+            if ($path !== '' && is_file($path)) {
+                $content = @file_get_contents($path);
+                if (is_string($content) && $content !== '') {
+                    try {
+                        $parsed_events = parseIcalEvents($content, $fromParse, $toParse);
+                    } catch (Throwable $e) {
+                        logError('WARNING', 'admin ical_last_fetch parseIcalEvents failed', [
+                            'subscription_id' => $sid,
+                            'message' => $e->getMessage(),
+                        ]);
+                        $parsed_events = [];
                     }
                 }
             }
+            $subscriptions[] = [
+                'subscription_id' => $sid,
+                'feed_url' => $row['feed_url'] ?? null,
+                'sync_state' => $row['sync_state'] ?? null,
+                'message' => $row['message'] ?? null,
+                'error' => $row['error'] ?? null,
+                'bytes_fetched' => isset($row['bytes_fetched']) && $row['bytes_fetched'] !== null && $row['bytes_fetched'] !== '' ? (int) $row['bytes_fetched'] : null,
+                'parsed_count' => isset($row['parsed_count']) && $row['parsed_count'] !== null && $row['parsed_count'] !== '' ? (int) $row['parsed_count'] : null,
+                'range_from' => $row['range_from'] ?? null,
+                'range_to' => $row['range_to'] ?? null,
+                'updated_at' => $row['updated_at'] ?? null,
+                'path' => ($path !== '' && is_file($path)) ? $path : null,
+                'content' => is_string($content) ? $content : null,
+                'parsed_events' => $parsed_events,
+                'parse_range' => ['from' => $fromParse, 'to' => $toParse],
+            ];
         }
-        logMessage('INFO', 'admin ical_last_fetch ok', ['has_sync_state' => $out['sync_state'] !== null]);
+        $primary = null;
+        foreach ($subscriptions as $s) {
+            if (!empty($s['content'])) {
+                $primary = $s;
+                break;
+            }
+        }
+        if ($primary === null && $subscriptions !== []) {
+            $primary = $subscriptions[0];
+        }
+        $out = [
+            'save_folder' => $folder,
+            'subscriptions' => $subscriptions,
+            'path' => $primary['path'] ?? null,
+            'content' => $primary['content'] ?? null,
+            'subscription_id' => $primary['subscription_id'] ?? null,
+            'saved_at' => $primary['updated_at'] ?? null,
+            'sync_state' => null,
+            'parsed_events' => $primary['parsed_events'] ?? null,
+            'parse_range' => $primary['parse_range'] ?? null,
+        ];
+        if ($primary !== null) {
+            $out['sync_state'] = array_filter([
+                'state' => $primary['sync_state'],
+                'subscription_id' => $primary['subscription_id'],
+                'feed_url' => $primary['feed_url'],
+                'range_from' => $primary['range_from'],
+                'range_to' => $primary['range_to'],
+                'parsed_count' => $primary['parsed_count'],
+                'bytes_fetched' => $primary['bytes_fetched'],
+                'updated_at' => $primary['updated_at'],
+                'message' => $primary['message'],
+                'error' => $primary['error'],
+            ], static function ($v) {
+                return $v !== null && $v !== '';
+            });
+        }
+        logMessage('INFO', 'admin ical_last_fetch ok', ['subscriptions' => count($subscriptions)]);
         jsonResponse($out);
         exit;
     }
@@ -170,7 +244,32 @@ if ($method === 'PATCH' || $method === 'POST') {
     if (isset($in['ical_subscriptions_enabled'])) {
         $v = $in['ical_subscriptions_enabled'] ? '1' : '0';
         $master->prepare('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)')->execute(['ical_subscriptions_enabled', $v]);
+        if ($v === '0') {
+            $upd = $master->prepare('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)');
+            $upd->execute(['ical_use_cron_job', '0']);
+            $upd->execute(['ical_interval_fetch', '0']);
+            logMessage('INFO', 'admin PATCH ical_subscriptions_enabled off: cleared cron job mode and browser interval fetch');
+        }
         logMessage('INFO', 'admin PATCH ical_subscriptions_enabled ok');
+        jsonResponse(['ok' => true]);
+        exit;
+    }
+    if (isset($in['ical_fetch_trigger'])) {
+        $t = (string) $in['ical_fetch_trigger'];
+        if ($t === 'server_cron') {
+            $upd = $master->prepare('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)');
+            $upd->execute(['ical_use_cron_job', '1']);
+            $upd->execute(['ical_interval_fetch', '0']);
+            logMessage('INFO', 'admin PATCH ical_fetch_trigger', ['mode' => 'server_cron']);
+        } elseif ($t === 'browser_interval') {
+            $upd = $master->prepare('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)');
+            $upd->execute(['ical_use_cron_job', '0']);
+            $upd->execute(['ical_interval_fetch', '1']);
+            logMessage('INFO', 'admin PATCH ical_fetch_trigger', ['mode' => 'browser_interval']);
+        } else {
+            jsonError('ical_fetch_trigger must be browser_interval or server_cron', 400);
+            exit;
+        }
         jsonResponse(['ok' => true]);
         exit;
     }
@@ -209,6 +308,13 @@ if ($method === 'PATCH' || $method === 'POST') {
         $v = ($in['ical_interval_fetch'] === true || $in['ical_interval_fetch'] === '1' || $in['ical_interval_fetch'] === 1) ? '1' : '0';
         $master->prepare('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)')->execute(['ical_interval_fetch', $v]);
         logMessage('INFO', 'admin PATCH ical_interval_fetch ok');
+        jsonResponse(['ok' => true]);
+        exit;
+    }
+    if (isset($in['ical_use_cron_job'])) {
+        $v = ($in['ical_use_cron_job'] === true || $in['ical_use_cron_job'] === '1' || $in['ical_use_cron_job'] === 1) ? '1' : '0';
+        $master->prepare('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)')->execute(['ical_use_cron_job', $v]);
+        logMessage('INFO', 'admin PATCH ical_use_cron_job ok', ['value' => $v === '1']);
         jsonResponse(['ok' => true]);
         exit;
     }

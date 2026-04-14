@@ -1,292 +1,368 @@
 ## Day Tracker – Application Specification
 
-### 1. Introduction & scope
+### Document map
 
-- **Purpose**: This document describes the **current behavior and architecture** of the Day Tracker application as implemented in this repository. It is the reference for how the app works today, and the target that future changes should continue to satisfy (or deliberately evolve).
-- **Audience**: Developers and product owners working on Day Tracker.
-- **Sources of truth**:
-  - **Database schema**: `contracts/schema.dbml` (DBML contract) and the user/master migrations in `migrations/`.
-  - **Backend behavior**: PHP APIs under `api/` and shared helpers under `lib/`.
-  - **Frontend behavior**: Next.js app under `app/`, React components in `components/`, and the TypeScript client in `lib/api.ts`.
-
-This spec focuses on *what* the app does (observable behavior and rules) rather than low-level implementation details.
+| Audience | Use this spec for **current product behavior** and architecture. |
+|----------|---------------------------------------------------------------------|
+| Split docs | **`docs/PRD.md`**, **`docs/FUNCTIONAL_SPEC.md`**, **`docs/TECHNICAL_DESIGN.md`**, **`docs/EXPERIENCE_DESIGN.md`** are managed templates for future fragment-driven expansion; this file remains the **implementation-aligned** reference until those are fully populated. |
+| Schema | **`docs/DATABASE.md`** (narrative DB overview), **`contracts/schema.dbml`** (contract). |
+| UI hooks | **`docs/UI_IDENTIFIERS.md`** — stable `dt-*` ids/classes and `data-dt-*` for regions and automation. |
+| SSO | **`docs/SSO_SETUP.md`** — Google / Microsoft OAuth, `config.php`, `base_url`, redirect URIs. |
 
 ---
 
-### 2. High-level architecture
+### 1. Executive summary
 
-- **Frontend**: Next.js 14 app (`app/page.tsx`) that renders a single-page experience:
-  - `MainApp` handles authentication state (`/api/auth.php?action=me`) and switches between `LoginScreen` and the main app.
-  - `AppBar` shows user/admin controls and logout.
-  - `AppPanels` manages the three main panels (Completed, Tasks + Schedule, AI) and mobile swipe navigation.
-  - `TaskListAndSchedule` is the core tasks/schedule view.
-  - `CompletedPanel` and `AIPanel` are rendered as side panels within `TaskListAndSchedule`.
-
-- **Backend**:
-  - PHP endpoints in `api/*.php`, all of which (except `auth.php`, `auth_callback.php`) go through `api/common.php`’s `requireAuth()` and logging.
-  - Per-user SQLite database chosen from the master DB (`users.db_name`) via `lib/db.php::getCurrentUserDbPath()` and `getPdo()`, with migrations under `migrations/`.
-  - Master SQLite database (`getMasterDbPath()`) stores users, SSO accounts, global app settings, and iCal exclusion metadata.
-
-- **Demo account**:
-  - Username/password: `demo` / `demo`.
-  - On first login, `ensureDemoUserExists()` creates a dedicated `daytracker_demo.sqlite` user DB.
-  - On each calendar day (and on demo login/logout), `resetDemoUser()` reseeds the demo DB with tasks, schedule, links, checklists, and organization data.
+**Day Tracker** is a browser-based personal productivity app: tasks (with templates, groups, links, checklists, and organization metadata), a multi-mode **schedule** (Today / Week / Calendar), **completed-work history** with analytics-style summary, optional **Smart Planning** (AI-assisted proposals and apply-to-schedule), and **settings** (user profile, subscriptions, schedule, organization, admin). The UI is a **Next.js 14** single-page app talking to **PHP** JSON APIs backed by **SQLite** (master + per-user DBs). This document describes what the shipped code does, how the UX is structured, and where files live—so engineering and product can align on **current** behavior and plan split documentation (PRD, functional spec, etc.) without losing traceability.
 
 ---
 
-### 3. Data model (overview)
+### 2. UX description
 
-The full schema is defined in **`contracts/schema.dbml`**, which is the authoritative contract for database structure. The key entities are:
-
-- **User DB (per user)**:
-  - `tasks`: core task records; fields include `title`, `priority` (commitment/high/medium/low), `recurring` (flag), optional `recurrence_rule` (JSON), `parent_id` for subtasks, `list_state` (`unassigned` or `pending`), and `list_style` (`bullet` or `checklist`).
-  - `task_links`: URLs attached to tasks (unique by `(task_id, url)`).
-  - `task_list_items`: list/checklist items per task, with `order_index` and `completed` flags.
-  - `day_record`: calendar of days the app knows about (`date` as `YYYY-MM-DD`).
-  - `scheduled_slots`: scheduled instances of tasks on specific days, with optional `start_time` / `end_time`, `completed` flag, and `order_index`.
-  - `app_settings` (user DB): per-user schedule settings (start/end hour, increment, timezone, etc.).
-  - `ical_subscriptions`: external iCal feed URLs the user has subscribed to, with `enabled` flag and `last_synced_at`.
-  - `ical_feed_events`: parsed, stored occurrences from external iCal feeds, including `user_completed` and `event_type`.
-  - **Organization tables**:
-    - `task_categories`: named categories with optional color.
-    - `task_subcategories`: names scoped to a parent category.
-    - `task_tags`: named tags with optional color.
-    - `task_category`, `task_subcategory`, `task_tag`: join tables assigning at most one category, at most one subcategory, and many tags per task.
-
-- **Master DB (shared)**:
-  - `users`: login accounts, each with a `db_name` for their user DB and flags `is_admin` / `force_password_reset`.
-  - `sso_accounts`: linked OAuth accounts (e.g. Google, Outlook) keyed by master user.
-  - `app_settings` (master): global settings (debug, `ai_enabled`, iCal sync config, etc.).
-  - `ical_feed_tokens`: one token per user, used to build the user’s own iCal feed URL.
-  - `ical_excluded_events`: list of excluded external iCal events by UID, with friendly titles; combined with the `ical_omit_uids` setting.
-
-See `contracts/schema.dbml` for exact columns, constraints, and relationships.
+- **Mental model**: Users capture work as **tasks**, optionally organize them with **categories / subcategories / tags**, place them on a **day and time** (or leave them in **Unassigned** / **Pending**), and mark **completion** on the schedule or checklist. **Common Tasks** are reusable templates that **copy** into real tasks when scheduled or moved to a list. **Task groups** stack members under a root in both list and schedule.
+- **Primary surfaces**: A **horizontal panel** strip—**Completed** (history), **Tasks + Schedule** (main), **Smart Planning** (AI)—with **mobile swipe** between panels. The task column and schedule share `TaskListAndSchedule`; settings and admin open as **modals** from the app bar.
+- **Feedback**: Loading spinners use the accent color; iCal sync shows phase/status on the schedule header; errors surface as inline messages and `task-list-error` text. **Demo** account resets to a seeded state so trials are predictable.
+- **Density**: Schedule blocks adapt **font scale** and **action drawer** patterns for narrow or short blocks (`scheduleBlockDensityClasses`, CSS density classes).
 
 ---
 
-### 4. Core features & behavior
+### 3. UI description & design system
 
-#### 4.1 Authentication & accounts
+#### 3.1 Typography & layout
 
-- The frontend calls `api/auth.php?action=me` on load to determine the current user and whether AI is enabled.
-- **Login / register**: `api/auth.php?action=login|register` accepts JSON `{username, password}`; usernames are sanitized to `[a-zA-Z0-9_-]`.
-- Registration is disabled for `demo` (must use login).
-- On login:
-  - For non-demo users, the master DB is checked; if their per-user DB file is missing, it is created and all migrations are applied.
-  - For `demo`, `ensureDemoUserExists()` + `resetDemoUser()` + `setDemoLastResetDate()` run before session is established.
-- Logout:
-  - For `demo`, logout also triggers `resetDemoUser()` so the next visitor gets a fresh demo state.
+- **Body**: `system-ui, -apple-system, sans-serif` on `body` (`app/globals.css`).
+- **Task titles / inputs**: Shared size token `--task-title-font-size` (0.85rem) for new-task and search inputs vs. task row titles.
+- **Schedule**: Time labels use a dense column in Week view (`week-time-labels-tight`); block titles ellipsis with expanded group mode when needed.
 
-#### 4.2 Tasks: list, organization, and subtasks
+#### 3.2 Color tokens (CSS variables)
 
-- Tasks are fetched from `api/tasks.php`:
-  - `GET /api/tasks.php` returns all tasks ordered with parents before children.
-  - `GET /api/tasks.php?list_state=unassigned|pending` filters by list.
-  - `GET /api/tasks.php?view=incomplete&day=YYYY-MM-DD` returns tasks that were partially completed yesterday (some subtasks or slots done, not all).
-  - `with` query parameter allows eager-loading:
-    - `with=links` → `linksByTaskId`.
-    - `with=list_items` → `listItemsByTaskId`.
-    - `with=organization` → `category_id`, `subcategory_id`, `tag_ids` injected into each task.
-- Creation:
-  - `POST /api/tasks.php` requires `title`; optional `priority`, `recurring`, `parent_id`, and `list_style`.
-  - When `recurring` is true and the `recurrence_rule` column exists, a default daily rule (`{"freq":"daily","time":"09:00"}`) is set if none is provided.
-- Update:
-  - `PATCH /api/tasks.php` can update `title`, `priority`, `recurring`, `recurrence_rule`, `parent_id`, `list_state`, and list style.
-  - When `category_id`, `subcategory_id`, or `tag_ids` are provided, the handler updates the organization join tables even if no other columns change.
-- Deletion:
-  - `DELETE /api/tasks.php?id=` removes the task and cascades to links, list items, slots, and organization joins via foreign keys.
+Defined under `:root` in `app/globals.css` (dark theme default):
 
-**Subtasks**:
-- Represented by `tasks.parent_id` pointing to a parent task.
-- The UI shows subtasks nested under their parent in both the task list and, when scheduled, as child blocks under a schedule slot.
+| Token | Typical use |
+|-------|-------------|
+| `--bg`, `--surface`, `--surface-elevated` | Page and panel backgrounds |
+| `--border`, `--border-subtle` | Dividers, cards |
+| `--text`, `--text-muted`, `--text-dim` | Primary and secondary text |
+| `--accent`, `--accent-dim`, `--accent-bg` | Primary green accent, buttons, “today” highlights, focus |
+| `--commitment`, `--high`, `--medium`, `--low` | Priority colors (icons / cues) |
+| `--feed-bg` | External iCal / feed-tinted chips |
+| `--task-template-bg` | Common Tasks (template) striping |
 
-**Task groups (root + members)**
-- A "task group" is represented by the same parent/child relationship:
-  - The group root is a task with `tasks.parent_id IS NULL`.
-  - Group members are tasks whose `tasks.parent_id` points to the group root.
-- Group member ordering within the root is stable and uses `tasks.group_order` (sibling ordering for grouped children).
-- When editing a group root in the task list:
-  - Changing priority on the root applies to the root and its direct group members (so children show the same priority icon).
-  - Ungrouping a group root's members clears `parent_id` for those descendants, moving them back to the root task list.
-- When rendering the schedule:
-  - Scheduling (or dragging/resizing/moving) a group root updates the schedule for the whole group:
-    - The root schedule block spans the full group duration.
-    - Member schedule blocks are distributed sequentially within that duration.
-    - Group-aware clamping ensures the group cannot be resized to violate minimum duration constraints.
+Category colors come from **user-defined** CSS colors on categories; schedule blocks tint from category background with optional transparency.
 
-**Organization (categories, subcategories, tags)**:
-- CRUD is exposed via `api/organization.php`:
-  - `GET` returns `categories`, `subcategories`, and `tags` (empty if tables don’t exist).
-  - `POST` with `type: 'category' | 'subcategory' | 'tag'` creates respective records; tag creation auto-assigns a random color if none is provided.
-  - `PATCH` and `DELETE` update or remove categories, subcategories, and tags; foreign-key rules cascade subcategories and tag assignments.
-- Tasks can have:
-  - Exactly **one** `task_category` (or none).
-  - Exactly **one** `task_subcategory` (or none).
-  - Zero or more `task_tag` rows.
-- The frontend:
-  - Fetches organization definitions at load and when the Organization section in User Settings is open.
-  - Shows category/subcategory inline under the task title and tags as small pills to the right in both list and schedule views.
+#### 3.3 Icons & affordances
 
-#### 4.3 Task list & search
+- **Priority**: Unicode-style markers (e.g. ★, ↑, ●, ↓) via `priorityIcon()` in code—no bundled icon font required for core flows.
+- **Actions**: Emoji/icon buttons in schedule rows (e.g. link 🔗, list 📋, folder 📁, date 📅, recurring ↻, check ✓, trash 🗑); **hold-to-drag** handles (⋮⋮) for list/schedule moves.
+- **Completion**: Checkmarks on slots and checklist rows; completed schedule blocks use darkening overlays (`--completed-task-darken-overlay`, `completed` class).
+- **Scrollbars**: Styled to match theme (WebKit + `scrollbar-color` for Firefox).
 
-- The main task list (left panel in `TaskListAndSchedule`) shows:
-  - **Unassigned**, **Pending**, and **Incomplete** views (incomplete based on yesterday’s partial completion rules).
-  - Sorting by `date_added` (created_at), `priority`, or `title`, with ascending/descending controls.
-  - A search box that filters tasks by:
-    - Task title.
-    - Link descriptions / URLs.
-    - Task list item content.
-- Tasks support:
-  - Changing priority (commitment/high/medium/low).
-  - Changing list style (bullet vs checklist).
-  - Adding subtasks (via parent/child relationship).
-  - Attaching links and list items via modals.
+#### 3.4 How UX is achieved (mechanics)
 
-#### 4.4 Schedule & calendar
+- **Panels**: `AppPanels` + `mainSlideIndex` control which third is visible; gestures hook to panel edges on mobile.
+- **Drag and drop**: Pointer-based holds, `@use-gesture/react`, and explicit drop targets (`data-schedule-drop`, calendar cells)—see §6 workflows.
+- **Responsiveness**: Schedule **Week** is desktop-focused; **mobile** collapses week tab and uses swipe columns for Unassigned / Pending / Common Tasks.
+- **Accessibility**: ARIA on modals, toggles, and schedule bulk modes where implemented; ongoing hardening is tracked in `docs/BACKLOG.md` / tests.
 
-- The schedule view is the core of `TaskListAndSchedule`:
-  - **Today view**: vertical time grid (controlled by `start_hour`, `end_hour`, `increment_value`, `increment_unit` from settings).
-  - **Calendar view**: month grid built from `day_record` plus `scheduled_slots` and iCal events.
-- `scheduled_slots` rules:
-  - Slots are ordered by time, with untimed slots grouped at the top for a day.
-  - Each slot references a single task but tasks can be scheduled on multiple days via multiple slots.
-  - `completed` on a slot marks that scheduled occurrence done; recurring tasks have special handling (copy-on-day-end, “this occurrence vs all” dialogs).
-- Completion logic:
-  - Toggling completion for a root slot can:
-    - Optionally cascade to child slots or prompt for recurring behavior (complete this occurrence vs series).
-    - Detect partial completion vs all-complete conditions when subtasks/child slots exist.
-  - “Incomplete” view for yesterday is derived from combinations of root/child slot `completed` flags as defined in `api/tasks.php`.
-- Task groups in schedule view
-  - When a scheduled root task has direct group members, the schedule renders a stacked group:
-    - The root slot spans the full group duration.
-    - Each member slot represents a contiguous slice of the group duration, distributed sequentially.
-  - Group-aware resizing/moving updates `start_time` and `end_time` for all group members together, while preserving the group duration constraints and step snapping.
-- Drag & drop:
-  - Tasks can be dragged from Unassigned/Pending into the schedule to create slots.
-  - Dragging within the schedule can move or resize slots, subject to recurrence and future-date rules (e.g. modals for completing in the future).
-  - There are visual drop zones and debug rectangles (when `adminDebug` is enabled).
+#### 3.5 Stable UI identifiers (`dt-`)
 
-#### 4.5 Completed view
-
-- `CompletedPanel` uses `api/accomplished.php`:
-  - `listAll` groups completed items by date, with optional subtasks under each entry.
-  - The backend derives completed data from `scheduled_slots` (post–`011_drop_accomplished`), not the legacy `accomplished` table.
-  - The panel shows per-day headings, titles, and approximate durations (based on slot times).
-
-#### 4.6 User settings
-
-- `UserSettingsView` organizes settings into sections:
-  - **Profile**:
-    - Shows username and linked SSO accounts.
-    - Allows changing password (except for `demo`, where it is locked).
-    - Permits disconnecting SSO by setting a new password via API.
-  - **Subscriptions**:
-    - Shows the user’s outbound calendar feed URL (built from `ical_feed_tokens` and `api/ical.php`).
-    - Manages subscribed external iCal feeds via `api/ical_subscriptions.php` (add/remove, enable/disable).
-    - Manages excluded external events via `api/ical_excluded.php` and the master `ical_excluded_events` table.
-  - **Schedule Settings**:
-    - Reads and writes `start_hour`, `end_hour`, `increment_value`, `increment_unit`, and `timezone` using `api/settings.php` and the user DB’s `app_settings` table.
-  - **Organization**:
-    - Full CRUD for categories, subcategories, and tags (including color picking for categories/tags).
-    - Any change triggers `onOrganizationChange`, which refreshes organization data in `TaskListAndSchedule`.
-
-#### 4.7 Admin features
-
-- `AdminSettingsView` consumes `api/admin.php`, which provides:
-  - Global toggles for `debug` and `ai_enabled`.
-  - iCal sync configuration: fetch timeouts, polling vs manual, sync interval minutes, event range, and save-folder options.
-  - A raw error-log viewer (`error_log` action).
-  - User listing with basic metadata and SSO providers (no direct UI editing beyond what is defined in the component).
-
-#### 4.8 AI assistant
-
-- `AIPanel` is an optional right-hand panel:
-  - Uses `api.chat.send()` with:
-    - The user’s freeform message.
-    - A structured context built from:
-      - Today’s accomplished items (`api/accomplished.listByDate`).
-      - The full task list (`api.tasks.list()`).
-      - Today’s schedule (`api.day.getOrCreate` + `api.slots.list`).
-  - The backend (`api/chat.php`) expects this context to generate:
-    - An `advice` string.
-    - Optional `suggestedTasks` (title + priority + suggested slot time).
-  - The panel allows:
-    - Adding suggested tasks to the list only.
-    - Adding suggested tasks directly into today’s schedule as new slots.
+The client adds **semantic** hooks (`dt-*` classes and ids, plus `data-dt-section` on task buckets) for product references, support, and tests. They are **additive** alongside existing ids (`#app-bar`, `#main-panels`, …) and behavior attributes (`data-drop-zone`, `data-task-id`, …). Constants live in **`lib/uiIdentifiers.ts`**; the full inventory and rules are in **`docs/UI_IDENTIFIERS.md`**.
 
 ---
 
-### 5. API overview (selected endpoints)
+### 4. Workflows (Mermaid)
 
-This is a brief summary; for behavior details see the sections above and implementation in `api/*.php`.
+#### 4.1 Authentication & session
 
-- `api/auth.php`: `me`, `login`, `register`, `logout`, `sso` redirects.
-- `api/user.php`: profile-related actions (password change, SSO disconnect).
-- `api/tasks.php`: list/create/update/delete tasks; supports `with=links,list_items,organization` and `view=incomplete`.
-- `api/slots.php`: list slots for day or date range, create, update (resize, complete), delete; handles recurring occurrences.
-- `api/accomplished.php`: list completed tasks by date or all.
-- `api/links.php`: CRUD for `task_links`.
-- `api/task_list_items.php`: CRUD for `task_list_items` and order.
-- `api/organization.php`: CRUD for categories, subcategories, tags.
-- `api/settings.php`: get/patch schedule/timezone settings.
-- `api/ical_subscriptions.php`: manage external iCal feeds and stream/preview them.
-- `api/ical_events.php`: sync-and-store external events into `ical_feed_events`, and read them by date range.
-- `api/ical_excluded.php`: manage excluded external iCal event UIDs.
-- `api/ical.php`: serves the user’s own iCal feed from their scheduled slots (for subscribing elsewhere).
-- `api/admin.php`: global admin settings, user list, iCal fetch debug info.
-- `api/chat.php`: AI assistant endpoint.
-- `api/day.php`: get-or-create `day_record` for a date.
-- `api/rollover.php`: rollover rules for end-of-day handling (incomplete tasks and recurring behavior).
+```mermaid
+flowchart LR
+  A[Browser loads app] --> B[GET auth.php?action=me]
+  B -->|no session| C[LoginScreen]
+  C --> D[POST login or register]
+  D --> E[Session established]
+  B -->|ok| F[MainApp + TaskListAndSchedule]
+  E --> F
+```
 
----
+#### 4.2 Create task and place on schedule
 
-### 6. UX & interaction patterns (selected)
+```mermaid
+flowchart TD
+  A[New task input or template drag] --> B{Template?}
+  B -->|yes| C[copy_from API → new task id]
+  B -->|no| D[POST tasks → task id]
+  C --> E[getOrCreate day_record]
+  D --> E
+  E --> F[POST slots for day_record_id + times]
+  F --> G[loadData refresh]
+```
 
-- **Panels**:
-  - Main horizontal slide between Completed, Tasks, and AI. On mobile, horizontal swipes near screen edges change panels.
-- **Task editing**:
-  - Single-click selects, double-click on task titles (in list or schedule) enters inline edit mode.
-  - Checkboxes for checklist items and schedule blocks toggle completion, with special prompts for recurring tasks.
-- **Drag & drop**:
-  - Tasks can be reordered or moved between Unassigned/Pending/Incomplete and the schedule.
-  - Dragging to specific zones triggers different behaviors (e.g. moving into the “Incomplete” area, constrained by rules).
-- **Dark theme**:
-  - Global design is dark-mode by default; colors in `app/globals.css` define the main palette, including task priorities and category/tag colors.
+#### 4.3 Smart Planning apply (simplified)
 
----
+```mermaid
+flowchart TD
+  A[User sends chat] --> B[api/chat.php JSON envelope]
+  B --> C{dataRequests?}
+  C -->|yes| D[context_resolve → fragments]
+  D --> A
+  C -->|no| E[User edits proposals]
+  E --> F{Preview schedule?}
+  F -->|yes| G[SchedulePreviewGrid → Accept]
+  G --> H[applyAiAssistantPlan in lib/aiApply.ts]
+  F -->|no| H
+  H --> I[APIs: tasks, slots, links, org…]
+```
 
-### 7. Demo account profile
+#### 4.4 iCal sync (client-triggered)
 
-On demo login (username `demo`, password `demo`), the app:
-
-- Ensures the demo user exists and its DB has all migrations applied.
-- Clears and reseeds the demo DB via `lib/demo_seed.php`:
-  - Creates two weeks of `day_record` entries around today.
-  - Inserts a curated set of tasks (review priorities, exercise, Project Alpha tasks, weekly planning, etc.) with mixed priorities, list states, and list styles.
-  - Defines subtasks for certain tasks (e.g. Project Alpha and Weekly planning).
-  - Adds links to several tasks (tickets, docs, Figma, API docs).
-  - Adds list items (checklists) for design and weekly planning tasks.
-  - Seeds `scheduled_slots` for yesterday, today, tomorrow, and a few other days, with a mix of completed/incomplete slots.
-  - Seeds organization data:
-    - Categories: Work, Personal, Health.
-    - Subcategories: Meetings, Deep work, Chores, Exercise.
-    - Tags: urgent, this-week, focus.
-    - Assigns sample tasks to categories/subcategories/tags (e.g. Fix bug #42 as Work/urgent; Exercise as Health/Exercise/focus; Weekly planning as Work/Deep work/this-week).
-  - Regenerates the demo user’s iCal feed token (`ical_feed_tokens`) so old public URLs no longer work.
-
-This seeded state is what a new visitor to the demo environment should see.
+```mermaid
+sequenceDiagram
+  participant UI as Schedule (Today tab)
+  participant API as ical_events.php
+  participant DB as user SQLite
+  UI->>API: get range + sync_if_stale
+  API->>DB: upsert ical_feed_events
+  API-->>UI: events + errors[]
+```
 
 ---
 
-### 8. Known limitations / notes
+### 5. Architecture & tech stack
 
-- The app currently uses SQLite both for master and per-user DBs; `contracts/schema.dbml` models this, but future ports to other databases should preserve table and column semantics.
-- Some features (e.g. mutual app ↔ Google Calendar sync) are specified in docs but not yet fully implemented in code; those future features are **not** part of this current-behavior spec.
-- Legacy tables (like `accomplished` from the initial schema) have been removed by migrations; they do not appear in the DBML and should not be reintroduced.
+| Layer | Technology |
+|-------|------------|
+| UI | React 18, Next.js 14 App Router (`app/page.tsx`), client components |
+| Styling | Global CSS `app/globals.css` (design tokens + component classes) |
+| HTTP client | `lib/api.ts` (typed fetch to `api/*.php`) |
+| Backend | PHP 7.4+, PDO SQLite, per-request `requireAuth()` in `api/common.php` |
+| Auth | Session-based; SSO OAuth entry via `api/auth.php` + `config.php` client ids |
+| AI | OpenAI via `api/chat.php`; threads in `*_ai.sqlite` |
+| Tests | Vitest (`lib/*.test.ts`, `components/*.test.ts`), PHPUnit (`tests/`), Playwright (`e2e/`) |
 
-Going forward, any schema changes should:
+**High-level diagram:**
 
-1. Be expressed as new migrations under `migrations/`.
-2. Be mirrored in `contracts/schema.dbml`.
-3. Be reflected, where relevant, in this specification document.
+```mermaid
+flowchart TB
+  subgraph client [Browser]
+    Next[Next.js UI]
+    ApiTS[lib/api.ts]
+  end
+  subgraph server [PHP host]
+    APIs[api/*.php]
+    Lib[lib/*.php]
+    M[Master SQLite]
+    U[Per-user SQLite]
+    AI[Optional *_ai.sqlite]
+  end
+  Next --> ApiTS --> APIs
+  APIs --> Lib
+  Lib --> M
+  Lib --> U
+  Lib --> AI
+```
 
+---
+
+### 6. Repository folder structure & file locations
+
+| Path | Responsibility |
+|------|----------------|
+| `app/` | Next.js routes, `globals.css`, `page.tsx` shell |
+| `components/` | React UI: `TaskListAndSchedule`, `CompletedPanel`, `AIPanel`, `UserSettingsView`, `AdminSettingsView`, `LoginScreen`, modals, `WeekColumnBlocks`, etc. |
+| `lib/` | TypeScript: `api.ts`, `auth.ts`, `aiApply.ts`, `aiTypes.ts`, PHP: `db.php`, `demo_seed.php`, `ai_*.php`, `data_integrity.php` |
+| `api/` | JSON endpoints (`tasks.php`, `slots.php`, `accomplished.php`, `chat.php`, `ai/*.php`, …) |
+| `contracts/` | `schema.dbml`, `ai/assistant-response.schema.json` |
+| `migrations/`, `migrations_master/`, `migrations_ai/` | SQLite DDL evolution |
+| `cron/` | e.g. `ical_sync_all_users.php` for server cron |
+| `scripts/` | `pack-next.cjs` assembles `release/` |
+| `release/` | **Deploy artifact**: static export + copied `api/`, `lib/`, `install.php` (from `npm run build`) |
+| `tests/`, `e2e/` | PHPUnit, Playwright |
+| `docs/` | This spec, SRS, `DATABASE.md`, backlog, templates for split docs |
+
+---
+
+### 7. Server responsibility & deployment
+
+1. **Host**: PHP with PDO SQLite, writable `data/` directory, HTTPS recommended for cookies.
+2. **Install**: Upload `release/` (or repo after `npm run build`), open **`install.php`** once to create master DB, admin user, and `config.php` from `config.example.php`; remove `install.php` after success. For Apache **HTTP → HTTPS** and document-root placement (especially with a **subfolder** deploy), see **`docs/HOSTING_APACHE.md`**.
+3. **Config** (`config.php`): `master_db_path`, `data_dir`, `openai_api_key`, OAuth client IDs/secrets for SSO providers as used by `api/auth.php`.
+4. **Cron** (optional): Point server cron at `cron/ical_sync_all_users.php` (or equivalent) for background iCal refresh per deployment docs.
+5. **Per user**: On login, user DB file created/migrated under `data/` using `users.db_name`.
+
+---
+
+### 8. Software design (cross-cutting)
+
+- **Contracts**: Assistant JSON schema in `contracts/ai/assistant-response.schema.json`; DB contract in `contracts/schema.dbml`.
+- **Auth gate**: Most `api/*.php` require session via `api/common.php`; exceptions include auth endpoints and public iCal feed URL.
+- **Logging**: `lib/logger.php` used from APIs for diagnostics.
+- **Data integrity**: `api/data_integrity.php` + `lib/data_integrity.php` for repair paths on load.
+- **Release pipeline**: `next build` static export to `out/`, then `scripts/pack-next.cjs` copies PHP tree into `release/` and rewrites asset paths for subdirectory deploys.
+
+---
+
+### 9. Data model (overview)
+
+The authoritative contract is **`contracts/schema.dbml`**; narrative detail is in **`docs/DATABASE.md`**. In short:
+
+- **User DB**: `tasks`, `task_links`, `task_list_items`, `day_record`, `scheduled_slots`, `app_settings`, iCal tables, organization tables.
+- **Master DB**: `users`, `sso_accounts`, `ical_feed_tokens`, `ical_excluded_events`, `master_app_settings`.
+- **AI DB**: `*_ai.sqlite` for threads/messages.
+
+---
+
+### 10. Product: Task area
+
+#### 10.1 Sections and list states
+
+- **Unassigned** (`list_state=unassigned`): default inbox for new tasks.
+- **Pending** (`list_state=pending`): user-deferred work.
+- **Common Tasks**: roots with `is_common=1`—templates only; **not** mixed into unassigned/pending API filters. Distinct styling (template striping, orange-border cue).
+- There is **no** separate “Incomplete” column: **partial-completion** roots from yesterday appear in Unassigned or Pending per API rules (`view=incomplete`).
+
+#### 10.2 Adding tasks
+
+- **New task** input creates a normal root task (`POST /api/tasks.php`).
+- **Templates**: created via Common Tasks input or by marking an eligible root as template; constraints: root only, not a group parent with children (API/UI).
+
+#### 10.3 Search & ordering
+
+- **Search** (same row as **Order by**): filters visible tasks by title, link URL/description, and list item text; case-insensitive; applies to Common Tasks when that panel is active.
+- **Order by**: `date_added` (created_at), `priority`, `title`; ascending/descending toggles.
+
+#### 10.4 Task component – fields & organization language
+
+- **Title** (inline double-click edit).
+- **Priority**: commitment, high, medium, low—with icons/colors.
+- **List style**: bullet vs checklist (`task_list_items` behavior).
+- **Due date** optional; shown when set.
+- **Organization**: one category, one subcategory (scoped to category), many tags—chosen via organization modal; displayed under title / as pills in list and schedule.
+- **Recurring**: flag + `recurrence_rule` JSON; recurrence dialogs for slot edits.
+
+#### 10.5 Actions on a task (CRUD & more)
+
+- **Create / Read / Update / Delete** via `api/tasks.php`.
+- **Links**: `api/links.php` + `LinkModal`—add/edit/remove URLs; open in new tab from list/schedule.
+- **List items**: `api/task_list_items.php` + `TaskListItemsModal`—reorder, toggle complete (checklist), add/remove lines.
+- **Schedule**: drag to schedule/calendar, “schedule on date” flows, move between lists, priority controls, template copy semantics.
+- **Grouping**: group with another task (creates `parent_id` chain per rules), **ungroup**, reorder members (`group_order`).
+- **Templates**: `copy_from` on drag/action; **To Unassigned** / **To Pending** from template cards; promote/demote template flag when eligible.
+
+---
+
+### 11. Product: Schedule view
+
+#### 11.1 Modes
+
+- **Today**: Single-day vertical grid; **untimed** strip at top; **local `viewDate`** with Prev/Next/“Today” jump; optional iCal sync status; **rollover** when viewing actual today.
+- **Week** (desktop): Seven or five-day columns; **independent column scroll** vs **locked** shared time column; **today column** uses same accent border as Calendar “today”.
+- **Calendar**: Month grid; app tasks + iCal events; **today** cell accent border; click/double-click behaviors to open day or create slots.
+
+#### 11.2 Time grid & settings
+
+- **Start / end hour**, **increment** (minutes or hours + value), **timezone** from `api/settings.php` → user `app_settings`.
+
+#### 11.3 Navigation & dates
+
+- Prev/next day (Today tab), week anchors (**This week**), calendar month prev/next.
+- **Local calendar YYYY-MM-DD** for all client day keys (no UTC `toISOString()` day slicing)—see `formatLocalYmd` usage in `TaskListAndSchedule`.
+
+#### 11.4 iCal & sync feedback
+
+- Subscription list + sync reports; feed errors surfaced in schedule untimed zone.
+- External events rendered in Today untimed (all-day) and timed (overlap layout); **user_completed** and **exclude** actions where implemented.
+
+#### 11.5 Adding tasks to the schedule
+
+- Drag from Unassigned/Pending/Common Tasks into **timed grid** or **untimed** zone (creates slot; templates use `copy_from` first).
+- **Calendar**: drop on day / double-click to create.
+- **Week**: per-column drops with `data-schedule-day`.
+
+#### 11.6 Per-view behaviors
+
+- **Today**: Full slot actions (resize, move, complete, recurring dialogs, bulk selection when enabled, URL drop onto blocks).
+- **Week**: Compact `time-block-week` styling; column-complete rules; group boundaries; iCal complete/exclude.
+- **Calendar**: compact task list per cell; navigates to Today tab with selected date on click.
+
+#### 11.7 Task groups on the schedule
+
+- Root spans duration; **member slots** sequential; resize/move as a group; split/ungroup; tag display on segments (Week uses root tags in compact header when space constrained).
+
+---
+
+### 12. Product: Completed tasks
+
+- **Panel**: `CompletedPanel` loads **`list_all`** accomplished data when opened; groups by date (newest first); root slots + nested related rows; durations from slot times when present.
+- **Summary**: **Time by category** modal—`GET api/accomplished.php?summary_org=1`, optional date range; **search** (client-side on title, tags, category, subcategory); **list vs comma** title modes; **tag pills** per task from API; hours recomputed when filtering.
+- Source of truth: **`scheduled_slots.completed`**, not legacy `accomplished` table.
+
+---
+
+### 13. Product: Smart Planning (AI)
+
+> **Documentation note:** Baseline **Smart Planning** (chat, threads, apply, preview) is implemented in this repository. **Extended** product scope—additional providers, richer admin configuration UX, governance, and polished onboarding—is **planned / coming soon** relative to that baseline; track `docs/BACKLOG.md`. Split-doc consumers should mirror detailed flows into **`docs/FUNCTIONAL_SPEC.md`** / **`docs/TECHNICAL_DESIGN.md`** when those templates are filled.
+
+- **Enablement**: Global `ai_enabled` + user visibility from `me`; OpenAI key in `config.php`.
+- **UI**: `AIPanel`—threads, New chat, proposal editing, Apply, Preview schedule (`SchedulePreviewGrid`).
+- **APIs**: `api/chat.php`, `api/ai/threads.php`, `api/ai/context_resolve.php`; server context merge option.
+- **Client**: `lib/aiApply.ts`, `lib/aiTypes.ts`; schema tests `lib/assistant-response-schema.test.ts`.
+
+---
+
+### 14. Product: Settings & login
+
+#### 14.1 User settings (`UserSettingsView`)
+
+- **Profile**: Username, linked SSO accounts, password change (disabled for demo); SSO disconnect via password replacement where applicable.
+- **Subscriptions**: Outbound feed URL (`ical_feed_tokens` + `api/ical.php`); manage `ical_subscriptions`; **excluded events** via `api/ical_excluded.php` + master list.
+- **Schedule**: Start/end hour, increment, timezone.
+- **Organization**: CRUD categories, subcategories, tags (colors); triggers task list refresh.
+
+#### 14.2 Admin settings (`AdminSettingsView`)
+
+- Requires `user.is_admin`.
+- **Global**: `debug`, `ai_enabled`.
+- **iCal**: Fetch timeout, polling vs manual, sync interval, event range, optional save fetch artifacts.
+- **Diagnostics**: Error log viewer; last fetch state; **user list** with metadata and SSO providers.
+
+#### 14.3 Login screen (`LoginScreen`)
+
+- **Login** and **Create account** forms (toggle); username + password validation; messages on failure.
+- **SSO links**: Google and Outlook entry points via `getSSOUrl` → `api/auth.php` OAuth flows.
+- **Product note:** **SSO** is implemented for **Google** and **Microsoft (Outlook)** via OAuth (`api/auth.php`, `api/auth_callback.php`, `lib/sso.php`). Production use requires HTTPS, correct **`redirect_uri`** registration, and optional **`base_url`** for subfolder deploys—see **`docs/SSO_SETUP.md`**. Extended IdPs and edge-case UX remain roadmap where noted in **`docs/BACKLOG.md`**.
+
+---
+
+### 15. API overview (selected endpoints)
+
+- `api/auth.php`: `me`, `login`, `register`, `logout`, SSO redirects.
+- `api/user.php`: profile (password, SSO disconnect).
+- `api/tasks.php`: list/create/update/delete; `with=links,list_items,organization`; `view=incomplete`; `common=1`; `copy_from`, `is_common`.
+- `api/slots.php`: day, range, recurring virtual occurrences, CRUD.
+- `api/accomplished.php`: by date, `list_all`, `summary_org=1` (tags on tasks in summary).
+- `api/links.php`, `api/task_list_items.php`, `api/organization.php`, `api/settings.php`.
+- `api/ical_subscriptions.php`, `api/ical_events.php`, `api/ical_excluded.php`, `api/ical.php`.
+- `api/admin.php`, `api/chat.php`, `api/ai/threads.php`, `api/ai/context_resolve.php`.
+- `api/day.php`, `api/rollover.php`, `api/data_integrity.php`.
+
+**Assistant envelope** (chat): see `contracts/ai/assistant-response.schema.json` and `ai_normalize_assistant_json` in PHP.
+
+---
+
+### 16. Demo account
+
+- Credentials `demo` / `demo`; daily reset via `resetDemoUser()` and related helpers; seed in `lib/demo_seed.php`—two weeks of days, mixed tasks, groups, templates, organization, slots, fresh iCal token; `demo_ai.sqlite` reset when present.
+
+---
+
+### 17. Known limitations / notes
+
+- SQLite-only storage; portability to other DBs must preserve semantics.
+- Outbound iCal works; **deep mutual sync** with Google (API push / dedupe) is not fully specified here—see SRS §3.6.2 and backlog.
+- Legacy `accomplished` table removed—do not reintroduce.
+
+---
+
+### 18. Maintenance
+
+Schema or behavior changes should: (1) add `migrations/*.sql`, (2) update `contracts/schema.dbml`, (3) update **`docs/DATABASE.md`**, this spec, and **`docs/Application-SRS.md`**.

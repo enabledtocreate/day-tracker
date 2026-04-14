@@ -34,9 +34,23 @@ function accomplished_slot_hours(?string $start, ?string $end): float
 }
 
 if ($summaryOrg) {
+    $fromDate = isset($_GET['from_date']) ? trim((string) $_GET['from_date']) : '';
+    $toDate = isset($_GET['to_date']) ? trim((string) $_GET['to_date']) : '';
+    $dateConds = [];
+    $dateBind = [];
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $fromDate)) {
+        $dateConds[] = 'd.date >= ?';
+        $dateBind[] = $fromDate;
+    }
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $toDate)) {
+        $dateConds[] = 'd.date <= ?';
+        $dateBind[] = $toDate;
+    }
+    $extraWhere = $dateConds !== [] ? ' AND ' . implode(' AND ', $dateConds) : '';
+
     $hasOrg = (bool) $pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_category'")->fetchColumn();
     if ($hasOrg) {
-        $stmt = $pdo->query("
+        $sql = "
             SELECT d.date, s.task_id, t.title, s.start_time, s.end_time,
                 cat.name AS category_name,
                 sub.name AS subcategory_name
@@ -47,23 +61,25 @@ if ($summaryOrg) {
             LEFT JOIN task_categories cat ON cat.id = tcat.category_id
             LEFT JOIN task_subcategory tsub ON tsub.task_id = t.id
             LEFT JOIN task_subcategories sub ON sub.id = tsub.subcategory_id
-            WHERE s.completed = 1
+            WHERE s.completed = 1{$extraWhere}
             ORDER BY d.date ASC, s.id ASC
-        ");
+        ";
     } else {
-        $stmt = $pdo->query("
+        $sql = "
             SELECT d.date, s.task_id, t.title, s.start_time, s.end_time,
                 NULL AS category_name,
                 NULL AS subcategory_name
             FROM scheduled_slots s
             JOIN day_record d ON d.id = s.day_record_id
             JOIN tasks t ON t.id = s.task_id
-            WHERE s.completed = 1
+            WHERE s.completed = 1{$extraWhere}
             ORDER BY d.date ASC, s.id ASC
-        ");
+        ";
     }
-    $rows = $stmt ? $stmt->fetchAll(PDO::FETCH_ASSOC) : [];
-    /** @var array<string, array<string, array{hours: float, titles: array<int, string>}>> */
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($dateBind);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    /** @var array<string, array<string, array{hours: float, tasks: array<int, array{task_id: int, title: string, hours: float}>}>> */
     $acc = [];
     foreach ($rows as $r) {
         $day = $r['date'];
@@ -78,26 +94,123 @@ if ($summaryOrg) {
             $acc[$day] = [];
         }
         if (!isset($acc[$day][$bucketKey])) {
-            $acc[$day][$bucketKey] = ['hours' => 0.0, 'titles' => []];
+            $acc[$day][$bucketKey] = ['hours' => 0.0, 'tasks' => []];
         }
         $acc[$day][$bucketKey]['hours'] = round($acc[$day][$bucketKey]['hours'] + $hours, 2);
-        $title = trim((string) ($r['title'] ?? ''));
-        if ($title !== '') {
-            $acc[$day][$bucketKey]['titles'][$title] = $title;
+        $tid = (int) $r['task_id'];
+        if (!isset($acc[$day][$bucketKey]['tasks'][$tid])) {
+            $acc[$day][$bucketKey]['tasks'][$tid] = [
+                'task_id' => $tid,
+                'title' => trim((string) ($r['title'] ?? '')),
+                'hours' => 0.0,
+            ];
+        }
+        $acc[$day][$bucketKey]['tasks'][$tid]['hours'] = round($acc[$day][$bucketKey]['tasks'][$tid]['hours'] + $hours, 2);
+    }
+
+    $allTaskIds = [];
+    foreach ($acc as $buckets) {
+        foreach ($buckets as $data) {
+            foreach ($data['tasks'] as $tid => $_) {
+                $allTaskIds[(int) $tid] = true;
+            }
         }
     }
+    $taskIdList = array_keys($allTaskIds);
+    $linksByTaskId = [];
+    $listItemsByTaskId = [];
+    $tagsByTaskId = [];
+    if (count($taskIdList) > 0) {
+        $ph = implode(',', array_fill(0, count($taskIdList), '?'));
+        $linkStmt = $pdo->prepare("SELECT id, task_id, url, description FROM task_links WHERE task_id IN ({$ph}) ORDER BY task_id, id");
+        $linkStmt->execute($taskIdList);
+        foreach ($linkStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $tid = (int) $row['task_id'];
+            if (!isset($linksByTaskId[$tid])) {
+                $linksByTaskId[$tid] = [];
+            }
+            $linksByTaskId[$tid][] = [
+                'id' => (int) $row['id'],
+                'task_id' => $tid,
+                'url' => (string) $row['url'],
+                'description' => (string) ($row['description'] ?? ''),
+            ];
+        }
+        $itemStmt = $pdo->prepare("SELECT id, task_id, content, order_index, completed FROM task_list_items WHERE task_id IN ({$ph}) ORDER BY task_id, order_index ASC, id ASC");
+        $itemStmt->execute($taskIdList);
+        foreach ($itemStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $tid = (int) $row['task_id'];
+            if (!isset($listItemsByTaskId[$tid])) {
+                $listItemsByTaskId[$tid] = [];
+            }
+            $listItemsByTaskId[$tid][] = [
+                'id' => (int) $row['id'],
+                'task_id' => $tid,
+                'content' => (string) ($row['content'] ?? ''),
+                'order_index' => (int) $row['order_index'],
+                'completed' => (int) ($row['completed'] ?? 0),
+            ];
+        }
+        $hasTaskTagJoin = (bool) $pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_tag'")->fetchColumn()
+            && (bool) $pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_tags'")->fetchColumn();
+        if ($hasTaskTagJoin) {
+            $tagStmt = $pdo->prepare("
+                SELECT tt.task_id, tg.id, tg.name, tg.color
+                FROM task_tag tt
+                INNER JOIN task_tags tg ON tg.id = tt.tag_id
+                WHERE tt.task_id IN ({$ph})
+                ORDER BY tt.task_id, tg.name COLLATE NOCASE
+            ");
+            $tagStmt->execute($taskIdList);
+            foreach ($tagStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $tid = (int) $row['task_id'];
+                if (!isset($tagsByTaskId[$tid])) {
+                    $tagsByTaskId[$tid] = [];
+                }
+                $tagsByTaskId[$tid][] = [
+                    'id' => (int) $row['id'],
+                    'name' => (string) ($row['name'] ?? ''),
+                    'color' => isset($row['color']) && $row['color'] !== '' ? (string) $row['color'] : null,
+                ];
+            }
+        }
+    }
+
     $daysOut = [];
     foreach ($acc as $dayStr => $buckets) {
         $rowOut = [];
         foreach ($buckets as $bucketKey => $data) {
             [$c, $s] = explode("\0", $bucketKey, 2);
-            $titles = array_values($data['titles']);
+            $tasksOut = array_values($data['tasks']);
+            usort($tasksOut, static function ($a, $b) {
+                $cmp = strcmp((string) $a['title'], (string) $b['title']);
+                if ($cmp !== 0) {
+                    return $cmp;
+                }
+                return ((int) $a['task_id']) <=> ((int) $b['task_id']);
+            });
+            $titlesUnique = [];
+            foreach ($tasksOut as $tt) {
+                $ti = (string) $tt['title'];
+                if ($ti !== '') {
+                    $titlesUnique[$ti] = $ti;
+                }
+            }
+            $titles = array_values($titlesUnique);
             sort($titles, SORT_STRING);
+            foreach ($tasksOut as &$tRow) {
+                $tid = (int) $tRow['task_id'];
+                $tRow['links'] = $linksByTaskId[$tid] ?? [];
+                $tRow['list_items'] = $listItemsByTaskId[$tid] ?? [];
+                $tRow['tags'] = $tagsByTaskId[$tid] ?? [];
+            }
+            unset($tRow);
             $rowOut[] = [
                 'category' => $c,
                 'subcategory' => $s !== '' ? $s : null,
                 'hours' => $data['hours'],
                 'titles' => $titles,
+                'tasks' => $tasksOut,
             ];
         }
         usort($rowOut, static function ($a, $b) {
@@ -107,14 +220,14 @@ if ($summaryOrg) {
             }
             $sa = $a['subcategory'] ?? '';
             $sb = $b['subcategory'] ?? '';
-            return strcmp($sa, $sb);
+            return strcmp((string) $sa, (string) $sb);
         });
         $daysOut[] = ['date' => $dayStr, 'rows' => $rowOut];
     }
     usort($daysOut, static function ($a, $b) {
         return strcmp($b['date'], $a['date']);
     });
-    logMessage('INFO', 'accomplished summary_org ok', ['days' => count($daysOut)]);
+    logMessage('INFO', 'accomplished summary_org ok', ['days' => count($daysOut), 'from_date' => $fromDate ?: null, 'to_date' => $toDate ?: null]);
     jsonResponse(['days' => $daysOut]);
     exit;
 }
@@ -125,35 +238,23 @@ if ($listAll) {
     $withListItems = $with !== '' && in_array('list_items', array_map('trim', explode(',', $with)), true);
 
     logMessage('INFO', 'accomplished listAll');
+    // One row per completed slot (roots and group members alike); no nested "subtasks" in the response.
     $stmt = $pdo->prepare("
         SELECT s.id, s.day_record_id, s.task_id, t.title, s.start_time, s.end_time AS completed_at, d.date
         FROM scheduled_slots s
         JOIN day_record d ON d.id = s.day_record_id
         JOIN tasks t ON t.id = s.task_id
-        WHERE s.completed = 1 AND t.parent_id IS NULL
+        WHERE s.completed = 1
         ORDER BY d.date DESC, s.end_time
     ");
     $stmt->execute();
-    $roots = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
     $byDate = [];
-    $childStmt = $pdo->prepare("
-        SELECT s.id, s.task_id, t.title, s.start_time, s.end_time AS completed_at
-        FROM scheduled_slots s
-        JOIN tasks t ON t.id = s.task_id
-        WHERE s.day_record_id = ? AND s.completed = 1 AND t.parent_id = ?
-        ORDER BY s.end_time
-    ");
     $taskIds = [];
-    foreach ($roots as $r) {
+    foreach ($rows as $r) {
         $taskIds[] = (int) $r['task_id'];
         $d = $r['date'];
         unset($r['date']);
-        $r['subtasks'] = [];
-        $childStmt->execute([$r['day_record_id'], $r['task_id']]);
-        while ($row = $childStmt->fetch(PDO::FETCH_ASSOC)) {
-            $r['subtasks'][] = $row;
-            $taskIds[] = (int) $row['task_id'];
-        }
         if (!isset($byDate[$d])) {
             $byDate[$d] = [];
         }

@@ -5,6 +5,7 @@ import type { AuthUser } from '@/lib/auth';
 import { api } from '@/lib/api';
 import { Modal } from '@/components/Modal';
 import { Button } from '@/components/Button';
+import { DT } from '@/lib/uiIdentifiers';
 
 type Props = { user: AuthUser; onClose: () => void };
 
@@ -17,6 +18,7 @@ type AdminSettings = {
   ical_save_folder_local?: string;
   ical_save_last_fetch?: boolean;
   ical_interval_fetch?: boolean;
+  ical_use_cron_job?: boolean;
   ical_sync_interval_minutes?: number;
   ical_event_range_days?: number;
   ical_omit_uids?: string;
@@ -48,6 +50,22 @@ export function AdminSettingsView({ user, onClose }: Props) {
   const [selectedSubcategory, setSelectedSubcategory] = useState<SubcategoryId>('app.general');
   const [logsOpen, setLogsOpen] = useState(false);
   const [logLines, setLogLines] = useState<string[]>([]);
+  type IcalSubSyncRow = {
+    subscription_id: number;
+    feed_url: string | null;
+    sync_state: string | null;
+    message: string | null;
+    error: string | null;
+    bytes_fetched: number | null;
+    parsed_count: number | null;
+    range_from: string | null;
+    range_to: string | null;
+    updated_at: string | null;
+    path: string | null;
+    content: string | null;
+    parsed_events: Array<{ uid: string; title: string; start: string; end: string; allDay: boolean }> | null;
+    parse_range: { from: string; to: string };
+  };
   const [lastFetch, setLastFetch] = useState<{
     path: string | null;
     content: string | null;
@@ -55,8 +73,10 @@ export function AdminSettingsView({ user, onClose }: Props) {
     sync_state: Record<string, unknown> | null;
     parsed_events: Array<{ uid: string; title: string; start: string; end: string; allDay: boolean }> | null;
     parse_range: { from: string; to: string } | null;
+    subscriptions?: IcalSubSyncRow[];
   } | null>(null);
   const [feedModalOpen, setFeedModalOpen] = useState(false);
+  const [feedModalSubId, setFeedModalSubId] = useState<number | null>(null);
   const [feedModalView, setFeedModalView] = useState<'raw' | 'parsed'>('raw');
   const [logSearch, setLogSearch] = useState('');
   const [logMatchIndex, setLogMatchIndex] = useState(0);
@@ -108,6 +128,7 @@ export function AdminSettingsView({ user, onClose }: Props) {
           sync_state: r.sync_state ?? null,
           parsed_events: r.parsed_events ?? null,
           parse_range: r.parse_range ?? null,
+          subscriptions: r.subscriptions,
         })
       )
       .catch(() =>
@@ -118,6 +139,7 @@ export function AdminSettingsView({ user, onClose }: Props) {
           sync_state: null,
           parsed_events: null,
           parse_range: null,
+          subscriptions: undefined,
         })
       );
   };
@@ -136,7 +158,7 @@ export function AdminSettingsView({ user, onClose }: Props) {
 
   if (!settings) {
     return (
-      <div className="settings-inner">
+      <div className={`settings-inner ${DT.adminSettingsInner}`}>
         <div className="settings-view-header">
           <h2>Admin settings</h2>
           <button type="button" className="settings-close" aria-label="Close" onClick={onClose}>×</button>
@@ -147,7 +169,7 @@ export function AdminSettingsView({ user, onClose }: Props) {
   }
 
   return (
-    <div className="settings-inner" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+    <div className={`settings-inner ${DT.adminSettingsInner}`} style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <div className="settings-view-header">
         <h2>Admin settings</h2>
         <button type="button" className="settings-close" aria-label="Close" title="Close" onClick={onClose}>×</button>
@@ -195,7 +217,11 @@ export function AdminSettingsView({ user, onClose }: Props) {
               lastFetch={lastFetch}
               onLoad={loadLastFetch}
               saveLastFetchOn={settings?.ical_save_last_fetch === true}
-              onOpenFeedModal={() => setFeedModalOpen(true)}
+              onOpenFeedModal={(subscriptionId) => {
+                setFeedModalSubId(subscriptionId);
+                setFeedModalOpen(true);
+              }}
+              useCronJob={settings?.ical_use_cron_job === true}
               icalEventRangeDays={settings?.ical_event_range_days ?? 365}
               debug={settings?.debug === true}
             />
@@ -274,54 +300,86 @@ export function AdminSettingsView({ user, onClose }: Props) {
 
       <Modal
         open={feedModalOpen}
-        onClose={() => { setFeedModalOpen(false); setFeedModalView('raw'); }}
-        title="Last fetch feed"
-        aria-label="Last fetch feed"
+        onClose={() => { setFeedModalOpen(false); setFeedModalView('raw'); setFeedModalSubId(null); }}
+        title="Saved fetch feed"
+        aria-label="Saved fetch feed"
         actions={
           <>
             <Button onClick={() => setFeedModalView('raw')}>Raw data</Button>
-            <Button onClick={() => setFeedModalView('parsed')}>Parsed (saved to DB)</Button>
-            <Button onClick={() => { setFeedModalOpen(false); setFeedModalView('raw'); }} aria-label="Close">×</Button>
+            <Button onClick={() => setFeedModalView('parsed')}>Parsed (preview)</Button>
+            <Button onClick={() => { setFeedModalOpen(false); setFeedModalView('raw'); setFeedModalSubId(null); }} aria-label="Close">×</Button>
           </>
         }
       >
-        {lastFetch?.parse_range && (
-          <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
-            Parsed for dates: {lastFetch.parse_range.from} to {lastFetch.parse_range.to}
-          </p>
-        )}
-        {feedModalView === 'raw' ? (
-          <pre style={{ margin: 0, padding: '0.75rem', background: 'var(--surface-elevated)', border: '1px solid var(--border)', borderRadius: 4, fontSize: '0.8rem', overflow: 'auto', maxHeight: '50vh', whiteSpace: 'pre-wrap' }}>
-            {lastFetch?.content ?? 'No content.'}
-          </pre>
-        ) : (
-          <div style={{ overflow: 'auto', maxHeight: '50vh' }}>
-            {lastFetch?.parsed_events && lastFetch.parsed_events.length > 0 ? (
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
-                <thead>
-                  <tr>
-                    <th style={{ textAlign: 'left', padding: '0.35rem', borderBottom: '1px solid var(--border)' }}>Title</th>
-                    <th style={{ textAlign: 'left', padding: '0.35rem', borderBottom: '1px solid var(--border)' }}>Start</th>
-                    <th style={{ textAlign: 'left', padding: '0.35rem', borderBottom: '1px solid var(--border)' }}>End</th>
-                    <th style={{ textAlign: 'left', padding: '0.35rem', borderBottom: '1px solid var(--border)' }}>All day</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {lastFetch.parsed_events.map((ev, i) => (
-                    <tr key={ev.uid + i}>
-                      <td style={{ padding: '0.35rem', borderBottom: '1px solid var(--border-subtle)' }}>{ev.title}</td>
-                      <td style={{ padding: '0.35rem', borderBottom: '1px solid var(--border-subtle)' }}>{ev.start}</td>
-                      <td style={{ padding: '0.35rem', borderBottom: '1px solid var(--border-subtle)' }}>{ev.end}</td>
-                      <td style={{ padding: '0.35rem', borderBottom: '1px solid var(--border-subtle)' }}>{ev.allDay ? 'Yes' : 'No'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : (
-              <p style={{ color: 'var(--text-muted)' }}>No parsed events for this range.</p>
-            )}
-          </div>
-        )}
+        {(() => {
+          const subs = lastFetch?.subscriptions;
+          const row =
+            subs && subs.length > 0
+              ? subs.find((s) => s.subscription_id === feedModalSubId) ?? subs[0]
+              : null;
+          const parseRange = row?.parse_range ?? lastFetch?.parse_range;
+          const modalContent = row?.content ?? lastFetch?.content;
+          const modalParsed = row?.parsed_events ?? lastFetch?.parsed_events;
+          return (
+            <>
+              {subs && subs.length > 1 && (
+                <label htmlFor="admin-ical-feed-modal-sub" style={{ display: 'block', marginBottom: '0.75rem', fontSize: '0.9rem' }}>
+                  Calendar:{' '}
+                  <select
+                    id="admin-ical-feed-modal-sub"
+                    aria-label="Calendar subscription for saved fetch preview"
+                    value={feedModalSubId ?? subs[0]?.subscription_id ?? ''}
+                    onChange={(e) => setFeedModalSubId(Number(e.target.value))}
+                    style={{ marginLeft: '0.35rem', padding: '0.25rem', maxWidth: '100%' }}
+                  >
+                    {subs.map((s) => (
+                      <option key={s.subscription_id} value={s.subscription_id}>
+                        #{s.subscription_id} {s.feed_url ? s.feed_url.slice(0, 48) + (s.feed_url.length > 48 ? '…' : '') : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {parseRange && (
+                <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
+                  Parsed for dates: {parseRange.from} to {parseRange.to}
+                </p>
+              )}
+              {feedModalView === 'raw' ? (
+                <pre style={{ margin: 0, padding: '0.75rem', background: 'var(--surface-elevated)', border: '1px solid var(--border)', borderRadius: 4, fontSize: '0.8rem', overflow: 'auto', maxHeight: '50vh', whiteSpace: 'pre-wrap' }}>
+                  {modalContent ?? 'No content.'}
+                </pre>
+              ) : (
+                <div style={{ overflow: 'auto', maxHeight: '50vh' }}>
+                  {modalParsed && modalParsed.length > 0 ? (
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                      <thead>
+                        <tr>
+                          <th style={{ textAlign: 'left', padding: '0.35rem', borderBottom: '1px solid var(--border)' }}>Title</th>
+                          <th style={{ textAlign: 'left', padding: '0.35rem', borderBottom: '1px solid var(--border)' }}>Start</th>
+                          <th style={{ textAlign: 'left', padding: '0.35rem', borderBottom: '1px solid var(--border)' }}>End</th>
+                          <th style={{ textAlign: 'left', padding: '0.35rem', borderBottom: '1px solid var(--border)' }}>All day</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {modalParsed.map((ev, i) => (
+                          <tr key={ev.uid + i}>
+                            <td style={{ padding: '0.35rem', borderBottom: '1px solid var(--border-subtle)' }}>{ev.title}</td>
+                            <td style={{ padding: '0.35rem', borderBottom: '1px solid var(--border-subtle)' }}>{ev.start}</td>
+                            <td style={{ padding: '0.35rem', borderBottom: '1px solid var(--border-subtle)' }}>{ev.end}</td>
+                            <td style={{ padding: '0.35rem', borderBottom: '1px solid var(--border-subtle)' }}>{ev.allDay ? 'Yes' : 'No'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p style={{ color: 'var(--text-muted)' }}>No parsed events for this range.</p>
+                  )}
+                </div>
+              )}
+            </>
+          );
+        })()}
       </Modal>
     </div>
   );
@@ -501,60 +559,179 @@ function AdminIcalFetchOptions({ settings, setSettings }: { settings: AdminSetti
         Save last fetch (keep one file for debugging; when off, file is deleted after parsing)
       </label>
 
-      <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', marginTop: '0.5rem' }} htmlFor="admin-ical-interval-fetch">
-        <input
-          id="admin-ical-interval-fetch"
-          type="checkbox"
-          checked={settings.ical_interval_fetch !== false}
-          onChange={(e) => {
-            const next = e.target.checked;
-            const prev = settings.ical_interval_fetch !== false;
-            setSettings((s) => (s ? { ...s, ical_interval_fetch: next } : s));
-            api.admin.setIcalIntervalFetch(next).catch(() => {
-              setSettings((s) => (s ? { ...s, ical_interval_fetch: prev } : s));
-              alert('Failed to save. Setting reverted.');
-            });
-          }}
-        />
-        Fetch iCal on interval (when on Today tab; when off, fetch only on page refresh)
-      </label>
-
-      <label style={{ display: 'block', marginTop: '0.5rem', marginLeft: '1.5rem' }}>
-        Sync interval (minutes):{' '}
-        <select
-          value={settings.ical_sync_interval_minutes ?? 15}
-          onChange={(e) => {
-            const v = Number(e.target.value);
-            setSettings((s) => (s ? { ...s, ical_sync_interval_minutes: v } : s));
-            api.admin.setIcalSyncIntervalMinutes(v).catch(alert);
-          }}
-          style={{ marginLeft: '0.25rem', padding: '0.3rem' }}
-        >
-          <option value={5}>5</option>
-          <option value={15}>15</option>
-          <option value={30}>30</option>
-          <option value={60}>60</option>
-        </select>
-        <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginLeft: '0.5rem' }}>How often to sync iCal when interval fetch is on.</span>
-      </label>
-
-      <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', marginTop: '0.5rem' }} htmlFor="admin-ical-subscriptions-enabled">
+      <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', marginTop: '1rem' }} htmlFor="admin-ical-subscriptions-enabled">
         <input
           id="admin-ical-subscriptions-enabled"
           type="checkbox"
           checked={settings.ical_subscriptions_enabled !== false}
           onChange={(e) => {
             const next = e.target.checked;
-            const prev = settings.ical_subscriptions_enabled !== false;
-            setSettings((s) => (s ? { ...s, ical_subscriptions_enabled: next } : s));
-            api.admin.setIcalSubscriptionsEnabled(next).catch(() => {
-              setSettings((s) => (s ? { ...s, ical_subscriptions_enabled: prev } : s));
-              alert('Failed to save. Setting reverted.');
-            });
+            const prevSubs = settings.ical_subscriptions_enabled !== false;
+            const revertCron = settings.ical_use_cron_job === true;
+            const revertInterval = settings.ical_interval_fetch !== false;
+            if (!next) {
+              setSettings((s) =>
+                s
+                  ? {
+                      ...s,
+                      ical_subscriptions_enabled: false,
+                      ical_use_cron_job: false,
+                      ical_interval_fetch: false,
+                    }
+                  : s
+              );
+              api.admin.setIcalSubscriptionsEnabled(false).catch(() => {
+                setSettings((s) =>
+                  s
+                    ? {
+                        ...s,
+                        ical_subscriptions_enabled: prevSubs,
+                        ical_use_cron_job: revertCron,
+                        ical_interval_fetch: revertInterval,
+                      }
+                    : s
+                );
+                alert('Failed to save. Setting reverted.');
+              });
+              return;
+            }
+            setSettings((s) => (s ? { ...s, ical_subscriptions_enabled: true } : s));
+            api.admin
+              .setIcalSubscriptionsEnabled(true)
+              .then(() => api.admin.setIcalFetchTrigger('browser_interval'))
+              .then(() => {
+                setSettings((s) =>
+                  s
+                    ? {
+                        ...s,
+                        ical_subscriptions_enabled: true,
+                        ical_use_cron_job: false,
+                        ical_interval_fetch: true,
+                      }
+                    : s
+                );
+              })
+              .catch(() => {
+                setSettings((s) =>
+                  s
+                    ? {
+                        ...s,
+                        ical_subscriptions_enabled: prevSubs,
+                        ical_use_cron_job: revertCron,
+                        ical_interval_fetch: revertInterval,
+                      }
+                    : s
+                );
+                alert('Failed to save. Setting reverted.');
+              });
           }}
         />
         Subscribed calendars enabled (fetch external iCal feeds)
       </label>
+
+      {(() => {
+        const subsOn = settings.ical_subscriptions_enabled !== false;
+        const cronSelected = subsOn && settings.ical_use_cron_job === true;
+        const browserSelected = subsOn && !cronSelected && settings.ical_interval_fetch !== false;
+        const applyFetchMode = (mode: 'browser_interval' | 'server_cron') => {
+          const prevCron = settings.ical_use_cron_job === true;
+          const prevInterval = settings.ical_interval_fetch !== false;
+          setSettings((s) =>
+            s
+              ? {
+                  ...s,
+                  ical_use_cron_job: mode === 'server_cron',
+                  ical_interval_fetch: mode === 'browser_interval',
+                }
+              : s
+          );
+          api.admin.setIcalFetchTrigger(mode).catch(() => {
+            setSettings((s) =>
+              s
+                ? {
+                    ...s,
+                    ical_use_cron_job: prevCron,
+                    ical_interval_fetch: prevInterval,
+                  }
+                : s
+            );
+            alert('Failed to save. Setting reverted.');
+          });
+        };
+        return (
+          <fieldset
+            disabled={!subsOn}
+            style={{
+              marginTop: '1rem',
+              padding: '0.75rem 1rem',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              maxWidth: '42rem',
+            }}
+          >
+            <legend style={{ padding: '0 0.35rem', fontWeight: 600 }}>How calendars refresh</legend>
+            <p style={{ fontSize: '0.88rem', color: 'var(--text-muted)', marginTop: 0, marginBottom: '0.75rem' }}>
+              Choose one. Browser mode polls from signed-in clients while the Today tab is active. Cron mode turns off client-triggered downloads; the PHP cron script syncs every user instead. Selecting browser mode clears server cron job mode in application settings (remove the crontab line on the host yourself).
+            </p>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', marginBottom: '0.6rem', cursor: subsOn ? 'pointer' : 'default' }}>
+              <input
+                type="radio"
+                name="admin-ical-fetch-mode"
+                checked={browserSelected}
+                disabled={!subsOn}
+                onChange={() => applyFetchMode('browser_interval')}
+                style={{ marginTop: '0.2rem' }}
+              />
+              <span>
+                <strong>Fetch from browsers on an interval</strong>
+                <span style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
+                  While the Today tab is open, clients request sync-if-stale on the interval below. When subscribed calendars are off, interval fetch and cron job mode are cleared.
+                </span>
+              </span>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', marginBottom: '0.75rem', cursor: subsOn ? 'pointer' : 'default' }}>
+              <input
+                type="radio"
+                name="admin-ical-fetch-mode"
+                checked={cronSelected}
+                disabled={!subsOn}
+                onChange={() => applyFetchMode('server_cron')}
+                style={{ marginTop: '0.2rem' }}
+              />
+              <span>
+                <strong>Use cron job</strong>
+                <span style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
+                  Run{' '}
+                  <code style={{ fontSize: '0.8rem', wordBreak: 'break-all' }}>php /path/to/app/cron/ical_sync_all_users.php</code>{' '}
+                  on a schedule. The app uses the sync interval below as the staleness window so spacing crontab runs to match it avoids wasted passes. The script exits immediately if this mode is off or calendars are disabled.
+                </span>
+              </span>
+            </label>
+            <label style={{ display: 'block', fontSize: '0.9rem' }} htmlFor="admin-ical-sync-interval">
+              Sync interval (minutes):{' '}
+              <select
+                id="admin-ical-sync-interval"
+                value={settings.ical_sync_interval_minutes ?? 15}
+                disabled={!subsOn}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  setSettings((s) => (s ? { ...s, ical_sync_interval_minutes: v } : s));
+                  api.admin.setIcalSyncIntervalMinutes(v).catch(alert);
+                }}
+                style={{ marginLeft: '0.25rem', padding: '0.3rem' }}
+              >
+                <option value={5}>5</option>
+                <option value={15}>15</option>
+                <option value={30}>30</option>
+                <option value={60}>60</option>
+              </select>
+            </label>
+            <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', margin: '0.35rem 0 0', maxWidth: '38rem' }}>
+              For browser mode, this is how often each client polls. For cron mode, schedule the system task at this spacing (or finer); the server treats subscriptions as stale after this many minutes.
+            </p>
+          </fieldset>
+        );
+      })()}
     </>
   );
 }
@@ -564,6 +741,7 @@ function AdminIcalViewLastFetch({
   onLoad,
   saveLastFetchOn,
   onOpenFeedModal,
+  useCronJob = false,
   icalEventRangeDays = 365,
   debug = false,
 }: {
@@ -574,10 +752,27 @@ function AdminIcalViewLastFetch({
     sync_state: Record<string, unknown> | null;
     parsed_events: Array<{ uid: string; title: string; start: string; end: string; allDay: boolean }> | null;
     parse_range: { from: string; to: string } | null;
+    subscriptions?: Array<{
+      subscription_id: number;
+      feed_url: string | null;
+      sync_state: string | null;
+      message: string | null;
+      error: string | null;
+      bytes_fetched: number | null;
+      parsed_count: number | null;
+      range_from: string | null;
+      range_to: string | null;
+      updated_at: string | null;
+      path: string | null;
+      content: string | null;
+      parsed_events: Array<{ uid: string; title: string; start: string; end: string; allDay: boolean }> | null;
+      parse_range: { from: string; to: string };
+    }>;
   } | null;
   onLoad: () => void;
   saveLastFetchOn: boolean;
-  onOpenFeedModal: () => void;
+  onOpenFeedModal: (subscriptionId: number | null) => void;
+  useCronJob?: boolean;
   icalEventRangeDays?: number;
   debug?: boolean;
 }) {
@@ -594,19 +789,32 @@ function AdminIcalViewLastFetch({
       .then(() => onLoad())
       .finally(() => setForceSyncLoading(false));
   }, [onLoad, icalEventRangeDays]);
+  const subs = lastFetch?.subscriptions;
+  const hasSavedFeed =
+    saveLastFetchOn &&
+    (subs?.some((s) => s.content != null && s.content !== '') || (lastFetch?.content != null && lastFetch.content !== ''));
+
   return (
     <>
-      <h3 style={{ marginTop: 0 }}>iCal sync state (last_fetch.json)</h3>
+      <h3 style={{ marginTop: 0 }}>iCal sync state (per calendar)</h3>
       <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
-        Current sync state and last saved fetch. State is updated at each step: downloading → parsing → saving → synced (or error). Use this to confirm the server is fetching, parsing, and saving to the database.
+        Sync metadata is stored in the database for each subscription. State moves through downloading → parsing → saving → synced (or error).
+        {useCronJob ? ' With Use Cron Job enabled, the server cron script refreshes feeds; browsers read cached events unless you force sync below.' : ''}
       </p>
       <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
         <Button onClick={onLoad}>Load sync state</Button>
         <Button onClick={handleForceSync} disabled={forceSyncLoading}>
           {forceSyncLoading ? 'Syncing…' : 'Force sync'}
         </Button>
-        {saveLastFetchOn && lastFetch?.content != null && lastFetch.content !== '' && (
-          <Button onClick={onOpenFeedModal}>View feed (raw + parsed)</Button>
+        {hasSavedFeed && (
+          <Button
+            onClick={() => {
+              const first = subs?.find((s) => s.content != null && s.content !== '');
+              onOpenFeedModal(first?.subscription_id ?? subs?.[0]?.subscription_id ?? null);
+            }}
+          >
+            View feed (raw + parsed)
+          </Button>
         )}
         {debug && saveLastFetchOn && (
           <Button
@@ -622,7 +830,37 @@ function AdminIcalViewLastFetch({
       </div>
       {lastFetch && (
         <div style={{ marginTop: '1rem' }}>
-          {lastFetch.sync_state && Object.keys(lastFetch.sync_state).length > 0 ? (
+          {subs && subs.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              {subs.map((s) => (
+                <div key={s.subscription_id} style={{ padding: '0.75rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface-elevated)' }}>
+                  <h4 style={{ marginTop: 0, marginBottom: '0.35rem' }}>Subscription #{s.subscription_id}</h4>
+                  <p style={{ fontSize: '0.85rem', margin: '0 0 0.5rem', wordBreak: 'break-all', color: 'var(--text-muted)' }}>{s.feed_url || '—'}</p>
+                  <dl style={{ fontSize: '0.85rem', margin: 0, display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '0.2rem 0.75rem' }}>
+                    {[
+                      ['sync_state', s.sync_state],
+                      ['updated_at', s.updated_at],
+                      ['range_from', s.range_from],
+                      ['range_to', s.range_to],
+                      ['parsed_count', s.parsed_count],
+                      ['bytes_fetched', s.bytes_fetched],
+                      ['path', s.path],
+                      ['message', s.message],
+                      ['error', s.error],
+                    ].map(([k, v]) => {
+                      if (v === undefined || v === null || v === '') return null;
+                      return (
+                        <div key={String(k)} style={{ gridColumn: '1 / -1', display: 'contents' }}>
+                          <dt style={{ margin: 0, color: 'var(--text-muted)' }}>{k}</dt>
+                          <dd style={{ margin: 0, wordBreak: 'break-all' }}>{String(v)}</dd>
+                        </div>
+                      );
+                    })}
+                  </dl>
+                </div>
+              ))}
+            </div>
+          ) : lastFetch.sync_state && Object.keys(lastFetch.sync_state).length > 0 ? (
             <div style={{ marginBottom: '1rem' }}>
               <h4 style={{ marginTop: 0, marginBottom: '0.5rem' }}>Sync state</h4>
               <dl style={{ fontSize: '0.9rem', margin: 0, display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '0.25rem 1rem' }}>
@@ -644,14 +882,18 @@ function AdminIcalViewLastFetch({
               </pre>
             </div>
           ) : (
-            <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>No sync state yet. Trigger a sync (open Today tab or click Sync iCal) then load again.</p>
+            <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>No sync state yet. Trigger a sync (open Today tab, run cron, or Force sync) then load again.</p>
           )}
-          <p style={{ fontSize: '0.9rem' }}><strong>Save folder:</strong> {lastFetch.save_folder || '—'}</p>
-          <p style={{ fontSize: '0.9rem' }}><strong>Last saved path:</strong> {lastFetch.path || '—'}</p>
-          {lastFetch.content != null && lastFetch.content !== '' && !saveLastFetchOn && (
-            <pre style={{ marginTop: '0.5rem', padding: '0.75rem', background: 'var(--surface-elevated)', border: '1px solid var(--border)', borderRadius: 4, fontSize: '0.8rem', overflow: 'auto', maxHeight: '40vh', whiteSpace: 'pre-wrap' }}>
-              {lastFetch.content}
-            </pre>
+          <p style={{ fontSize: '0.9rem', marginTop: '0.75rem' }}><strong>Save folder:</strong> {lastFetch.save_folder || '—'}</p>
+          {!subs?.length && (
+            <>
+              <p style={{ fontSize: '0.9rem' }}><strong>Last saved path:</strong> {lastFetch.path || '—'}</p>
+              {lastFetch.content != null && lastFetch.content !== '' && !saveLastFetchOn && (
+                <pre style={{ marginTop: '0.5rem', padding: '0.75rem', background: 'var(--surface-elevated)', border: '1px solid var(--border)', borderRadius: 4, fontSize: '0.8rem', overflow: 'auto', maxHeight: '40vh', whiteSpace: 'pre-wrap' }}>
+                  {lastFetch.content}
+                </pre>
+              )}
+            </>
           )}
         </div>
       )}

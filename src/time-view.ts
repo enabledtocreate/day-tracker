@@ -428,7 +428,13 @@ function render(): void {
     const leftPct = col * widthPct;
 
     const block = document.createElement('div');
-    block.className = 'time-block' + (slot.completed ? ' completed' : '');
+    const groupAllComplete =
+      childSlots.length > 0 && !!slot.completed && childSlots.every((c) => !!c.completed);
+    const showBlockCompletedOverlay = childSlots.length > 0 ? groupAllComplete : !!slot.completed;
+    block.className =
+      'time-block' +
+      (childSlots.length > 0 ? ' time-block-has-group' : '') +
+      (showBlockCompletedOverlay ? ' completed' : '');
     block.dataset.slotId = String(slot.id);
     block.style.top = top + 'px';
     block.style.height = height + 'px';
@@ -460,7 +466,9 @@ function render(): void {
     });
 
     const header = document.createElement('div');
-    header.className = 'time-block-header';
+    header.className =
+      'time-block-header' +
+      (childSlots.length > 0 && slot.completed ? ' time-block-group-member-completed' : '');
 
     const priorityBtn = document.createElement('button');
     priorityBtn.type = 'button';
@@ -494,19 +502,12 @@ function render(): void {
     const title = document.createElement('div');
     title.className = 'time-block-title';
     title.textContent = slot.title ?? 'Task';
-    if (slot.completed) title.style.textDecoration = 'line-through';
     titleWrap.appendChild(title);
     header.appendChild(titleWrap);
 
-    const allChildrenComplete = childSlots.length > 0 && childSlots.every((c) => c.completed);
-    const parentCompleteLocked = slot.completed && allChildrenComplete;
     const performRootCompleteToggle = (): void => {
-      if (parentCompleteLocked) return;
       const newCompleted = !slot.completed;
       const updates = [api.slots.update({ id: slot.id, completed: newCompleted })];
-      if (newCompleted) {
-        childSlotIds.forEach(cid => updates.push(api.slots.update({ id: cid, completed: true })));
-      }
       Promise.all(updates).then(() => {
         if (slot.recurring && newCompleted) {
           const deletes = [api.slots.delete(slot.id), ...childSlotIds.map(id => api.slots.delete(id))];
@@ -520,9 +521,8 @@ function render(): void {
       const checkBtn = document.createElement('button');
       checkBtn.type = 'button';
       checkBtn.className = 'time-block-check';
-      checkBtn.title = parentCompleteLocked ? 'Uncheck a subtask to unlock' : 'Mark complete';
+      checkBtn.title = 'Mark complete';
       checkBtn.textContent = '✓';
-      if (parentCompleteLocked) checkBtn.disabled = true;
       checkBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         performRootCompleteToggle();
@@ -667,7 +667,6 @@ function render(): void {
         const childTitle = document.createElement('span');
         childTitle.className = 'time-block-child-title';
         childTitle.textContent = child.title ?? 'Subtask';
-        if (child.completed) childTitle.style.textDecoration = 'line-through';
         childTitle.addEventListener('dblclick', (e) => {
           e.stopPropagation();
           const input = document.createElement('input');
@@ -699,10 +698,7 @@ function render(): void {
         const performChildCompleteToggle = (): void => {
           const nowComplete = !child.completed;
           const updates: Promise<unknown>[] = [api.slots.update({ id: child.id, completed: nowComplete })];
-          if (nowComplete) {
-            const allDone = childSlots.every(c => c.id === child.id ? true : !!c.completed);
-            if (allDone) updates.push(api.slots.update({ id: slot.id, completed: true }));
-          } else {
+          if (!nowComplete && slot.completed) {
             updates.push(api.slots.update({ id: slot.id, completed: false }));
           }
           Promise.all(updates).then(() => loadSlots());

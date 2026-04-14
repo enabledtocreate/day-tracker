@@ -5,7 +5,22 @@
 require_once dirname(__DIR__) . '/lib/auth.php';
 require_once dirname(__DIR__) . '/lib/db.php';
 require_once dirname(__DIR__) . '/lib/logger.php';
+require_once dirname(__DIR__) . '/lib/api_error_bootstrap.php';
 require_once dirname(__DIR__) . '/lib/demo_seed.php';
+
+daytracker_register_fatal_shutdown_logger();
+
+set_exception_handler(function (Throwable $e) {
+    logError('ERROR', $e->getMessage(), [
+        'file' => $e->getFile(),
+        'line' => $e->getLine(),
+        'trace' => $e->getTraceAsString(),
+        'context' => 'auth.php',
+    ]);
+    http_response_code(500);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['error' => 'Internal Server Error', 'message' => $e->getMessage(), 'file' => $e->getFile(), 'line' => $e->getLine()]);
+});
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -79,6 +94,7 @@ if ($method === 'GET' && $action === 'sso') {
     require_once dirname(__DIR__) . '/lib/sso.php';
     $url = ssoRedirectUrl($provider);
     if (!$url) {
+        logMessage('WARNING', 'auth sso not configured', ['provider' => $provider]);
         http_response_code(503);
         echo json_encode(['error' => 'SSO not configured for this provider']);
         exit;
@@ -115,6 +131,7 @@ if ($method === 'POST' && ($action === 'login' || $action === 'register')) {
 
     if ($action === 'register') {
         if ($username === 'demo') {
+            logMessage('WARNING', 'auth register attempted reserved username demo');
             http_response_code(400);
             echo json_encode(['error' => 'Use Login to use the demo account.']);
             exit;
@@ -122,6 +139,7 @@ if ($method === 'POST' && ($action === 'login' || $action === 'register')) {
         $stmt = $master->prepare('SELECT 1 FROM users WHERE username = ? OR db_name = ?');
         $stmt->execute([$username, $dbName]);
         if ($stmt->fetch()) {
+            logMessage('WARNING', 'auth register username already exists', ['username' => $username]);
             http_response_code(400);
             echo json_encode(['error' => 'Username already exists']);
             exit;
@@ -200,5 +218,6 @@ if ($method === 'POST' && ($action === 'login' || $action === 'register')) {
     }
 }
 
+logMessage('WARNING', 'auth bad request fallback', ['method' => $method, 'action' => $action]);
 http_response_code(400);
 echo json_encode(['error' => 'Bad request']);

@@ -4,6 +4,7 @@
  * Regenerates ical feed token so old links stop working.
  */
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/logger.php';
 
 function getDemoUserId(PDO $master): ?int {
     $stmt = $master->prepare('SELECT id FROM users WHERE username = ?');
@@ -58,7 +59,7 @@ function resetDemoUser(PDO $master, string $dataDir): void {
     try {
         $pdo->exec('DELETE FROM ical_subscriptions');
     } catch (Throwable $e) {
-        // table may not exist in older DBs
+        logMessage('NOTICE', 'demo_seed: DELETE ical_subscriptions skipped', ['message' => $e->getMessage()]);
     }
     // Clear organization tables (migration 016); skip if tables don't exist
     $hasOrg = $pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_categories'")->fetchColumn();

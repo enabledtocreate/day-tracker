@@ -5,6 +5,9 @@
 require_once dirname(__DIR__) . '/lib/auth.php';
 require_once dirname(__DIR__) . '/lib/db.php';
 require_once dirname(__DIR__) . '/lib/logger.php';
+require_once dirname(__DIR__) . '/lib/api_error_bootstrap.php';
+
+daytracker_register_fatal_shutdown_logger();
 
 requireAuth();
 
@@ -55,6 +58,17 @@ function jsonResponse(array $data, int $status = 200): void {
 }
 
 function jsonError(string $message, int $status = 400): void {
+    if (getenv('DAYTRACKER_TEST') !== '1') {
+        $uri = (string) ($_SERVER['REQUEST_URI'] ?? '');
+        $method = (string) ($_SERVER['REQUEST_METHOD'] ?? '');
+        $ctx = ['status' => $status, 'message' => $message, 'method' => $method, 'uri' => $uri];
+        if ($status >= 500) {
+            logError('ERROR', 'API jsonError', $ctx);
+        } elseif (in_array($status, [401, 403, 404, 405, 413, 429], true)) {
+            logError('WARNING', 'API jsonError', $ctx);
+        }
+        // Deliberately omit routine 400 validation responses to avoid log noise.
+    }
     jsonResponse(['error' => $message], $status);
 }
 

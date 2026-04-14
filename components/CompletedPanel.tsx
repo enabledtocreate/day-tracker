@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
 import { CompletedSummaryModal } from '@/components/CompletedSummaryModal';
+import { DT } from '@/lib/uiIdentifiers';
 
 type CompletedItem = {
   id: number;
@@ -10,7 +11,6 @@ type CompletedItem = {
   title: string;
   start_time?: string;
   completed_at: string;
-  subtasks?: Array<{ id: number; task_id: number; title: string; start_time?: string; completed_at: string }>;
 };
 
 function timeToHours(start: string | undefined, end: string): number {
@@ -34,28 +34,49 @@ export function CompletedPanel({ open: controlledOpen, onClose }: Props = {}) {
 
   const [byDate, setByDate] = useState<Record<string, CompletedItem[]>>({});
   const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [visibleDays, setVisibleDays] = useState(7);
   const [summaryOpen, setSummaryOpen] = useState(false);
 
-  useEffect(() => {
-    if (open) {
-      setLoading(true);
-      api.accomplished.listAll()
-        .then((r) => setByDate(r.byDate ?? {}))
-        .catch(() => setByDate({}))
-        .finally(() => setLoading(false));
+  const fetchCompleted = async () => {
+    setLoading(true);
+    try {
+      const r = await api.accomplished.listAll();
+      setByDate(r.byDate ?? {});
+      setLoaded(true);
+      setVisibleDays(7);
+    } catch {
+      setByDate({});
+      setLoaded(true);
+    } finally {
+      setLoading(false);
     }
-  }, [open]);
+  };
+
+  useEffect(() => {
+    if (open && !loaded && !loading) void fetchCompleted();
+  }, [open, loaded, loading]);
 
   const dates = Object.keys(byDate).sort((a, b) => b.localeCompare(a));
+  const shownDates = dates.slice(0, visibleDays);
 
   return (
     <>
-    <div className="panel-slide panel-slide-completed">
+    <div className={`panel-slide panel-slide-completed ${DT.panelCompletedSlide}`}>
       <button
         type="button"
         className="completed-tab-btn"
         title="Completed tasks by day"
-        onClick={() => (isControlled ? onClose() : setInternalOpen((o) => !o))}
+        onClick={() => {
+          if (isControlled) return onClose();
+          if (open) return setInternalOpen(false);
+          // Load first, then expand panel.
+          if (!loaded) {
+            void fetchCompleted().then(() => setInternalOpen(true));
+            return;
+          }
+          setInternalOpen(true);
+        }}
       >
         Completed Tasks
       </button>
@@ -70,15 +91,21 @@ export function CompletedPanel({ open: controlledOpen, onClose }: Props = {}) {
             <button type="button" className="completed-summary-open-btn" title="Summary by category and date" onClick={() => setSummaryOpen(true)}>
               Summary
             </button>
-            <button type="button" className="completed-panel-close" aria-label="Close" onClick={() => (isControlled ? onClose() : setInternalOpen(false))}>
-              &#215;
-            </button>
           </div>
         </div>
-        <div id="completed-list" className="completed-list">
+        <div
+          id="completed-list"
+          className="completed-list"
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            if (visibleDays >= dates.length) return;
+            const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
+            if (remaining < 40) setVisibleDays((n) => n + 7);
+          }}
+        >
           {loading && <p style={{ color: 'var(--text-muted)' }}>Loading…</p>}
           {!loading && dates.length === 0 && <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>No completed tasks yet.</p>}
-          {!loading && dates.map((date) => (
+          {!loading && shownDates.map((date) => (
             <div key={date} className="completed-day-group" data-date={date}>
               <div className="day-label">
                 {new Date(date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })}
@@ -94,20 +121,14 @@ export function CompletedPanel({ open: controlledOpen, onClose }: Props = {}) {
                           : ''}
                       </span>
                     </div>
-                    {item.subtasks && item.subtasks.length > 0 && (
-                      <ul className="completed-subtasks">
-                        {item.subtasks.map((sub) => (
-                          <li key={sub.id} className="completed-subtask">
-                            {sub.title ?? ''}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
                   </li>
                 ))}
               </ul>
             </div>
           ))}
+          {!loading && shownDates.length < dates.length && (
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Scroll for older days…</p>
+          )}
         </div>
       </div>
     </div>

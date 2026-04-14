@@ -61,6 +61,62 @@ function getCurrentUserDbPath(): string {
     return getDataDir() . '/' . $user['db_name'];
 }
 
+/**
+ * Per-user AI thread database path: same directory as main user DB, stem + "_ai.sqlite"
+ * (e.g. data/foo.sqlite -> data/foo_ai.sqlite).
+ */
+function getCurrentUserAiDbPath(): string {
+    $main = getCurrentUserDbPath();
+    $dir = dirname($main);
+    $stem = pathinfo($main, PATHINFO_FILENAME);
+    return $dir . DIRECTORY_SEPARATOR . $stem . '_ai.sqlite';
+}
+
+/**
+ * PDO for the current user's AI threads DB (separate file from tasks). Creates file and runs migrations_ai on first use.
+ * Cache is keyed by main user DB path so PHPUnit (new temp dir per test) gets a fresh connection.
+ */
+function getAiPdo(): PDO {
+    static $pdo = null;
+    static $cacheKey = null;
+    $key = getCurrentUserDbPath();
+    if ($pdo !== null && $cacheKey === $key) {
+        return $pdo;
+    }
+    $cacheKey = $key;
+    $pdo = null;
+    $path = getCurrentUserAiDbPath();
+    $dir = dirname($path);
+    if (!is_dir($dir)) {
+        throw new RuntimeException('Data directory does not exist: ' . $dir);
+    }
+    $pdo = new PDO('sqlite:' . $path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    $pdo->exec('PRAGMA foreign_keys = ON');
+    $migrationsDir = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'migrations_ai';
+    runMigrationsIn($pdo, $migrationsDir);
+    $chk = $pdo->query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ai_threads'");
+    if (!$chk || !$chk->fetchColumn()) {
+        throw new RuntimeException(
+            'AI database has no ai_threads table. Deploy the migrations_ai folder next to lib/ (see migrations_ai/001_ai_threads.sql).'
+        );
+    }
+    return $pdo;
+}
+
+function getAiPdoSafe(): PDO {
+    try {
+        return getAiPdo();
+    } catch (Throwable $e) {
+        logError('ERROR', 'AI database unavailable: ' . $e->getMessage(), [
+            'file' => $e->getFile(),
+            'line' => $e->getLine(),
+            'trace' => $e->getTraceAsString(),
+        ]);
+        jsonError('AI database unavailable: ' . $e->getMessage(), 503);
+        exit;
+    }
+}
+
 function getPdo(): PDO {
     static $pdo = null;
     if ($pdo !== null) return $pdo;
@@ -180,6 +236,10 @@ function getIcalSaveFolder(): string {
         }
         return $dir;
     } catch (Throwable $e) {
+        logError('WARNING', 'getIcalSaveFolder fallback: ' . $e->getMessage(), [
+            'file' => $e->getFile(),
+            'line' => $e->getLine(),
+        ]);
         $dir = getDataDir() . DIRECTORY_SEPARATOR . 'ical_fetches';
         if (!is_dir($dir)) {
             @mkdir($dir, 0755, true);
@@ -200,9 +260,12 @@ function getIcalSaveLastFetch(): bool {
     }
 }
 
-/** Minutes after last_synced_at before a subscription is considered stale. From app_settings ical_sync_stale_minutes; default 15. */
+/** Minutes after last_synced_at before a subscription is considered stale. From app_settings ical_sync_stale_minutes; default 15. When server cron mode is on, uses ical_sync_interval_minutes so staleness matches the configured sync spacing. */
 function getIcalSyncStaleMinutes(): int {
     try {
+        if (getIcalUseCronJob()) {
+            return getIcalSyncIntervalMinutes();
+        }
         $master = getMasterPdo();
         $stmt = $master->query("SELECT value FROM app_settings WHERE key = 'ical_sync_stale_minutes'");
         $row = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : false;
@@ -247,10 +310,15 @@ function getIcalOmitUids(): array {
     }
 }
 
-/** Whether to run periodic iCal fetch on the Today tab (interval). When false, fetch only on page load/refresh. From app_settings ical_interval_fetch; default true. */
+/** Whether to run periodic iCal fetch on the Today tab (interval). When false, fetch only on page load/refresh. From app_settings ical_interval_fetch; default true. Off when subscribed calendars are disabled. */
 function getIcalIntervalFetchEnabled(): bool {
     try {
         $master = getMasterPdo();
+        $stmt = $master->query("SELECT value FROM app_settings WHERE key = 'ical_subscriptions_enabled'");
+        $rowSub = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : false;
+        if ($rowSub && trim((string) ($rowSub['value'] ?? '')) === '0') {
+            return false;
+        }
         $stmt = $master->query("SELECT value FROM app_settings WHERE key = 'ical_interval_fetch'");
         $row = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : false;
         $v = $row ? trim((string) $row['value']) : '1';
@@ -271,4 +339,51 @@ function getIcalSyncIntervalMinutes(): int {
     } catch (Throwable $e) {
         return 15;
     }
+}
+
+/**
+ * When true, browsers skip trigger sync (sync_if_stale / interval); a server cron should call the sync pipeline for all users.
+ * Stored in master app_settings as ical_use_cron_job ('1' / absent or '0').
+ */
+function getIcalUseCronJob(): bool {
+    try {
+        $master = getMasterPdo();
+        $stmt = $master->query("SELECT value FROM app_settings WHERE key = 'ical_subscriptions_enabled'");
+        $rowSub = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : false;
+        if ($rowSub && trim((string) ($rowSub['value'] ?? '')) === '0') {
+            return false;
+        }
+        $stmt = $master->query("SELECT value FROM app_settings WHERE key = 'ical_use_cron_job'");
+        $row = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : false;
+        return $row && trim((string) $row['value']) === '1';
+    } catch (Throwable $e) {
+        return false;
+    }
+}
+
+/**
+ * Open a user SQLite file by absolute path (cron / tooling). Path must resolve under the app data directory.
+ */
+function getPdoForUserSqlitePath(string $absolutePath): PDO {
+    $normalized = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $absolutePath);
+    if (!is_file($normalized)) {
+        throw new RuntimeException('SQLite file not found: ' . $absolutePath);
+    }
+    $realDb = realpath($normalized);
+    if ($realDb === false) {
+        throw new RuntimeException('SQLite path could not be resolved: ' . $absolutePath);
+    }
+    $dataDir = rtrim(str_replace(['/', '\\'], DIRECTORY_SEPARATOR, getDataDir()), DIRECTORY_SEPARATOR);
+    $realData = realpath($dataDir);
+    if ($realData === false) {
+        throw new RuntimeException('Data directory could not be resolved.');
+    }
+    $prefix = $realData . DIRECTORY_SEPARATOR;
+    if (strpos($realDb, $prefix) !== 0) {
+        throw new RuntimeException('Database path must be under the application data directory.');
+    }
+    $pdo = new PDO('sqlite:' . $realDb, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    $pdo->exec('PRAGMA foreign_keys = ON');
+    runMigrationsIn($pdo, dirname(__DIR__) . '/migrations');
+    return $pdo;
 }

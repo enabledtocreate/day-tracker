@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://daytracker.local/schemas/ai/assistant-response.json",
+  "title": "Day Tracker AI assistant response",
+  "type": "object",
+  "required": ["schemaVersion", "kind", "advice", "dataRequests", "proposals"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "enum": ["plan", "need_context", "mixed"] },
+    "advice": {
+      "type": "object",
+      "required": ["summary"],
+      "properties": {
+        "summary": { "type": "string", "maxLength": 2000 },
+        "bullets": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "proposedOrgCreates": {
+      "type": "array",
+      "maxItems": 25,
+      "items": {
+        "type": "object",
+        "required": ["tempId", "kind", "name"],
+        "properties": {
+          "tempId": { "type": "string" },
+          "kind": { "type": "string", "enum": ["category", "subcategory", "tag"] },
+          "name": { "type": "string" },
+          "color": { "type": ["string", "null"] },
+          "parentCategoryId": { "type": ["integer", "null"] },
+          "parentCategoryTempId": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "dataRequests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "queryId"],
+        "properties": {
+          "id": { "type": "string" },
+          "queryId": { "type": "string" },
+          "params": { "type": "object" },
+          "userFacingReason": { "type": "string" }
+        }
+      }
+    },
+    "proposals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "groupTitle", "cadence", "tasks"],
+        "properties": {
+          "id": { "type": "string" },
+          "groupTitle": { "type": "string" },
+          "groupSummary": { "type": "string" },
+          "horizon": { "type": "string" },
+          "prioritization": { "type": "string" },
+          "cadence": {
+            "type": "object",
+            "properties": {
+              "frequency": { "type": "string" },
+              "dayOfWeek": { "type": ["string", "null"] },
+              "timeOfDay": { "type": ["string", "null"] },
+              "notes": { "type": "string" }
+            }
+          },
+          "tasks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["title"],
+              "properties": {
+                "title": { "type": "string" },
+                "priority": { "type": "string" },
+                "suggestedSlot": {
+                  "type": "object",
+                  "properties": {
+                    "date": { "type": ["string", "null"] },
+                    "start": { "type": ["string", "null"] },
+                    "end": { "type": ["string", "null"] }
+                  }
+                },
+                "listItems": {
+                  "type": "object",
+                  "properties": {
+                    "listStyle": { "type": "string", "enum": ["bullet", "checkbox"] },
+                    "items": { "type": "array", "items": { "type": "string" } }
+                  }
+                },
+                "groupWithTaskId": { "type": ["integer", "null"] },
+                "tagIds": { "type": "array", "items": { "type": "integer" } },
+                "tagTempIds": { "type": "array", "items": { "type": "string" } },
+                "newTagSuggestions": { "type": "array", "items": { "type": "string" } },
+                "categoryId": { "type": ["integer", "null"] },
+                "subcategoryId": { "type": ["integer", "null"] },
+                "categoryTempId": { "type": ["string", "null"] },
+                "subcategoryTempId": { "type": ["string", "null"] },
+                "linkAttachments": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "label": { "type": "string" },
+                      "url": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "questionsForUser": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "text": { "type": "string" },
+                "blocksProposalApply": { "type": "boolean" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "clientHints": {
+      "type": "object",
+      "properties": {
+        "includeIcalEvents": { "type": "boolean" },
+        "icalRangeDays": { "type": "integer" }
+      }
+    }
+  },
+  "additionalProperties": true
+}

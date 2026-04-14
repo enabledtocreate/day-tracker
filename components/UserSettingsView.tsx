@@ -8,7 +8,8 @@ import { SubscriptionRow } from '@/components/SubscriptionRow';
 import { ColorPickerModal, randomScheduleFriendlyColor } from '@/components/ColorPickerModal';
 import { Modal } from '@/components/Modal';
 import { Button } from '@/components/Button';
-import type { TimeSettings } from '@/lib/api';
+import type { TimeSettings, IcalSubscriptionRow } from '@/lib/api';
+import { DT } from '@/lib/uiIdentifiers';
 
 type SectionId = 'profile' | 'subscriptions' | 'schedule' | 'organization';
 
@@ -32,7 +33,7 @@ export function UserSettingsView({ user, onClose, onUserUpdated, onOrganizationC
   const [section, setSection] = useState<SectionId>('profile');
   const [newPassword, setNewPassword] = useState('');
   const [feedUrl, setFeedUrl] = useState('');
-  const [subscriptions, setSubscriptions] = useState<Array<{ id: number; feed_url: string; enabled: boolean }>>([]);
+  const [subscriptions, setSubscriptions] = useState<IcalSubscriptionRow[]>([]);
   const [addUrl, setAddUrl] = useState('');
   const [settings, setSettings] = useState<TimeSettings | null>(null);
   const [organizationCategories, setOrganizationCategories] = useState<Array<{ id: number; name: string; color?: string | null }>>([]);
@@ -96,7 +97,7 @@ export function UserSettingsView({ user, onClose, onUserUpdated, onOrganizationC
   };
 
   return (
-    <div className="settings-inner">
+    <div className={`settings-inner ${DT.userSettingsInner}`}>
       <div className="settings-view-header">
         <h2>User settings</h2>
         <button type="button" className="settings-close" aria-label="Close" title="Close" onClick={onClose}>×</button>
@@ -223,11 +224,41 @@ export function UserSettingsView({ user, onClose, onUserUpdated, onOrganizationC
       {section === 'schedule' && (
         <div className="user-settings-section">
           <h3 style={{ marginTop: 0 }}>Schedule Settings</h3>
-          <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Increment and time zone for the schedule view.</p>
+          <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Increment, layout, and time zone for the schedule view.</p>
           {settings == null ? (
             <p style={{ color: 'var(--text-muted)' }}>Loading…</p>
           ) : (
             <>
+              <fieldset style={{ border: 'none', padding: 0, margin: '1rem 0 0' }}>
+                <legend style={{ fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.35rem' }}>Task list &amp; schedule layout</legend>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: '0 0 0.5rem' }}>
+                  Desktop: place tasks above the schedule (default), or tasks in a narrow column to the left with the schedule on the right. Mobile always stacks tasks above the schedule.
+                </p>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginBottom: '0.35rem' }}>
+                  <input
+                    type="radio"
+                    name="task-schedule-layout"
+                    checked={(settings.task_schedule_layout ?? 'stacked') === 'stacked'}
+                    onChange={() => {
+                      setSettings((s) => (s ? { ...s, task_schedule_layout: 'stacked' } : s));
+                      api.settings.update({ task_schedule_layout: 'stacked' }).then(loadSettings).catch(alert);
+                    }}
+                  />
+                  Stacked — tasks above schedule
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    name="task-schedule-layout"
+                    checked={(settings.task_schedule_layout ?? 'stacked') === 'split'}
+                    onChange={() => {
+                      setSettings((s) => (s ? { ...s, task_schedule_layout: 'split' } : s));
+                      api.settings.update({ task_schedule_layout: 'split' }).then(loadSettings).catch(alert);
+                    }}
+                  />
+                  Side by side — tasks (narrow) left, schedule right
+                </label>
+              </fieldset>
               <label style={{ display: 'block', marginTop: '1rem' }}>
                 Increment
                 <span style={{ marginLeft: '0.5rem' }}>

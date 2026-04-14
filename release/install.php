@@ -44,6 +44,7 @@ if (is_file($configPath)) {
                 $defaults = [
                     'data_dir' => $dataDir,
                     'master_db_path' => $masterPath,
+                    'base_url' => '',
                     'openai_api_key' => '',
                     'google_client_id' => '',
                     'google_client_secret' => '',
@@ -67,6 +68,7 @@ if (is_file($configPath)) {
             }
         }
     } catch (Throwable $e) {
+        @error_log('DayTracker install: already-installed check: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
         // continue
     }
 }

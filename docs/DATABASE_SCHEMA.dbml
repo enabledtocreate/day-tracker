@@ -3,6 +3,18 @@
 // Observed Version: 0
 // Sync Status: unverified
 // Drift Severity: low
+// Change Source: intended_edit
+// Pending Migration Status: comparison_required
+// Recommended Action: capture_or_compare
+// Last Compared: 2026-04-14T05:08:47.804Z
+// Action Summary: Capture an observed schema or define the intended schema to begin tracking drift.
+// Drift Summary: No schema comparison has been recorded yet.
+// Action Item Count: 0
+// APM Schema Sync
+// Intended Version: 0
+// Observed Version: 0
+// Sync Status: unverified
+// Drift Severity: low
 // Change Source: unknown
 // Pending Migration Status: comparison_required
 // Recommended Action: capture_or_compare

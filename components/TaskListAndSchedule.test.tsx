@@ -15,6 +15,7 @@ import {
   reorderGroupSiblingIds,
   resolveScheduleRootSlotId,
   scheduleBlockDensityClasses,
+  buildGroupSegmentHeightsPx,
 } from './TaskListAndSchedule';
 
 const dayGetOrCreate = vi.fn();
@@ -23,6 +24,7 @@ const slotsList = vi.fn();
 const slotsUpdate = vi.fn();
 const slotsCreate = vi.fn();
 const slotsDelete = vi.fn();
+const slotsCompleteOccurrence = vi.fn();
 const settingsGet = vi.fn();
 const listByDateRange = vi.fn();
 const tasksUpdate = vi.fn();
@@ -47,12 +49,20 @@ vi.mock('@/lib/api', () => ({
       create: (...args: unknown[]) => slotsCreate(...args),
       update: (...args: unknown[]) => slotsUpdate(...args),
       delete: (...args: unknown[]) => slotsDelete(...args),
+      completeOccurrence: (...args: unknown[]) => slotsCompleteOccurrence(...args),
       get: vi.fn(),
     },
     settings: { get: () => settingsGet() },
     icalEvents: {
-      getConfig: vi.fn().mockResolvedValue({ interval_fetch: false, interval_minutes: 15 }),
-      get: vi.fn().mockResolvedValue({ events: [], errors: [] }),
+      getConfig: vi.fn().mockResolvedValue({
+        interval_fetch: false,
+        interval_minutes: 15,
+        client_triggers_sync: true,
+      }),
+      get: vi.fn().mockResolvedValue({ events: [], errors: [], subscription_sync: [] }),
+    },
+    icalSubscriptions: {
+      list: vi.fn().mockResolvedValue({ subscriptions: [] }),
     },
     links: { list: vi.fn().mockResolvedValue({ links: [] }) },
     taskListItems: { list: vi.fn().mockResolvedValue({ items: [] }) },
@@ -81,19 +91,22 @@ describe('TaskListAndSchedule', () => {
     slotsCreate.mockResolvedValue({ ok: true, id: 200 });
     slotsDelete.mockResolvedValue({ ok: true });
     slotsUpdate.mockResolvedValue({ ok: true });
+    slotsCompleteOccurrence.mockResolvedValue({ ok: true, id: 201 });
     settingsGet.mockResolvedValue({
       start_hour: 6,
       end_hour: 23,
       increment_value: 15,
       increment_unit: 'min',
+      task_schedule_layout: 'stacked',
     });
   });
 
-  it('renders schedule area with Today and Calendar tabs', async () => {
-    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
+  it('renders schedule area with Today, Week (desktop), and Calendar tabs', async () => {
+    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} isMobile={false} />);
 
     await screen.findByRole('button', { name: /today/i });
     expect(screen.getByRole('button', { name: /today/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^week$/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /calendar/i })).toBeInTheDocument();
   });
 
@@ -105,11 +118,35 @@ describe('TaskListAndSchedule', () => {
 
   it('scheduleBlockDensityClasses adds tight/micro and drawer hooks by height and width', () => {
     expect(scheduleBlockDensityClasses(30, 50)).toContain('time-block-density-micro');
-    expect(scheduleBlockDensityClasses(30, 50)).toContain('time-block-density-actions-drawer');
+    expect(scheduleBlockDensityClasses(30, 50)).not.toContain('time-block-density-actions-drawer');
     expect(scheduleBlockDensityClasses(50, 50)).toContain('time-block-density-tight');
-    expect(scheduleBlockDensityClasses(50, 50)).toContain('time-block-density-actions-drawer');
+    expect(scheduleBlockDensityClasses(50, 50)).not.toContain('time-block-density-actions-drawer');
     expect(scheduleBlockDensityClasses(80, 50)).toBe('');
     expect(scheduleBlockDensityClasses(80, 30)).toContain('time-block-density-actions-drawer');
+  });
+
+  it('buildGroupSegmentHeightsPx matches child start boundaries and absorbs extra block min-height in the last segment', () => {
+    const orderedChildren = [
+      { id: 1, start_time: '16:15', end_time: '16:30' },
+      { id: 2, start_time: '16:30', end_time: '16:45' },
+    ] as ScheduledSlot[];
+    const exact = buildGroupSegmentHeightsPx({
+      groupStartMin: 16 * 60,
+      groupEndMin: 16 * 60 + 45,
+      orderedChildren,
+      slotDurationMinutes: 15,
+      blockHeightPx: 96,
+    });
+    expect(exact).toEqual([32, 32, 32]);
+    const padded = buildGroupSegmentHeightsPx({
+      groupStartMin: 16 * 60,
+      groupEndMin: 16 * 60 + 45,
+      orderedChildren,
+      slotDurationMinutes: 15,
+      blockHeightPx: 100,
+    });
+    expect(padded.reduce((a, b) => a + b, 0)).toBe(100);
+    expect(padded[2]).toBe(36);
   });
 
   it('resolveScheduleRootSlotId walks parent task chain to the root slot', () => {
@@ -492,8 +529,33 @@ describe('TaskListAndSchedule', () => {
       memberCount,
       startHour: 6,
       endHour: 23,
+      currentStartMin: 600,
     });
     expect(clampedStart).toBe(615); // 10:15
+
+    // Overcrowded group: moving start earlier (870) is allowed to lengthen span toward validity.
+    const crowdedEarlier = clampTopResizeStartForMinGroupDuration({
+      candidateStartMin: 870,
+      endMin: 930,
+      slotDurationMinutes: 30,
+      memberCount: 2,
+      startHour: 6,
+      endHour: 23,
+      currentStartMin: 900,
+    });
+    expect(crowdedEarlier).toBe(870);
+
+    // Overcrowded: cannot move start later than current without shrinking below minimum — stay at 900.
+    const crowdedLater = clampTopResizeStartForMinGroupDuration({
+      candidateStartMin: 920,
+      endMin: 930,
+      slotDurationMinutes: 30,
+      memberCount: 2,
+      startHour: 6,
+      endHour: 23,
+      currentStartMin: 900,
+    });
+    expect(crowdedLater).toBe(900);
 
     const startMin = 600; // 10:00
     const clampedEnd = clampBottomResizeEndForMinGroupDuration({
@@ -570,6 +632,64 @@ describe('TaskListAndSchedule', () => {
     // Ungroup updates both direct children (root stays parent_id=null already).
     expect(tasksUpdate.mock.calls.map((c) => (c[0] as any).id).sort()).toEqual([2, 3]);
     expect(tasksUpdate.mock.calls.map((c) => (c[0] as any).parent_id)).toEqual([null, null]);
+  });
+
+  it('schedule grouped block split control ungroups descendants', async () => {
+    tasksList.mockResolvedValue({
+      tasks: [
+        { id: 1, title: 'Root', priority: 'medium', recurring: false, parent_id: null, created_at: '', list_state: 'unassigned', list_style: 'bullet' },
+        { id: 2, title: 'Child 1', priority: 'low', recurring: false, parent_id: 1, created_at: '', list_state: 'unassigned', list_style: 'bullet' },
+      ],
+    });
+    slotsList.mockResolvedValue({
+      slots: [
+        { id: 10, day_record_id: 1, task_id: 1, start_time: '09:00', end_time: '10:00', completed: 0, order_index: 0, title: 'Root', priority: 'medium', recurring: false, parent_id: null, list_style: 'bullet', has_list: false },
+        { id: 11, day_record_id: 1, task_id: 2, start_time: '09:00', end_time: '09:30', completed: 0, order_index: 1, title: 'Child 1', priority: 'low', recurring: false, parent_id: 1, list_style: 'bullet', has_list: false },
+      ],
+    });
+    (window as any).confirm = vi.fn(() => true);
+    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
+    await screen.findByText('Child 1');
+    const splitBtn = screen.getByTitle(/split group \(tasks stay scheduled/i);
+    fireEvent.click(splitBtn);
+    await waitFor(() => {
+      expect(tasksUpdate).toHaveBeenCalledWith(expect.objectContaining({ id: 2, parent_id: null }));
+    });
+  });
+
+  it('recurring virtual occurrence completion preserves start/end when materializing slot', async () => {
+    tasksList.mockResolvedValue({
+      tasks: [
+        { id: 1, title: 'Recurring root', priority: 'medium', recurring: true, parent_id: null, created_at: '', list_state: 'unassigned', list_style: 'bullet', recurrence_rule: JSON.stringify({ freq: 'daily', time: '09:00' }) },
+      ],
+    });
+    slotsList.mockResolvedValue({
+      slots: [
+        {
+          id: -1,
+          day_record_id: 1,
+          task_id: 1,
+          start_time: '13:15',
+          end_time: '14:00',
+          completed: 0,
+          order_index: 0,
+          title: 'Recurring root',
+          priority: 'medium',
+          recurring: true,
+          parent_id: null,
+          list_style: 'bullet',
+          is_recurring_occurrence: true,
+          has_list: false,
+        },
+      ],
+    });
+    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
+    await screen.findByText('Recurring root');
+    const checkBtn = screen.getByTitle(/mark complete/i);
+    fireEvent.click(checkBtn);
+    await waitFor(() => {
+      expect(slotsCompleteOccurrence).toHaveBeenCalledWith(1, expect.any(String), '13:15', '14:00');
+    });
   });
 
   it('schedule "Enter" in date/time fields triggers scheduling (same as clicking Schedule)', async () => {

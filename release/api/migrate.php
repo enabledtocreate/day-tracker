@@ -6,6 +6,9 @@
 require_once dirname(__DIR__) . '/lib/auth.php';
 require_once dirname(__DIR__) . '/lib/db.php';
 require_once dirname(__DIR__) . '/lib/logger.php';
+require_once dirname(__DIR__) . '/lib/api_error_bootstrap.php';
+
+daytracker_register_fatal_shutdown_logger();
 
 requireAuth();
 

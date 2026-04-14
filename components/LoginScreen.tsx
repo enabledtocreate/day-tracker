@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { login, register, getSSOUrl } from '@/lib/auth';
+import { DT } from '@/lib/uiIdentifiers';
 
 type Props = { onSuccess: () => void };
 
@@ -33,7 +34,7 @@ export function LoginScreen({ onSuccess }: Props) {
   };
 
   return (
-    <div className="login-screen">
+    <div className={`login-screen ${DT.loginRoot}`}>
       <div className="login-card">
         <h2>Day Tracker</h2>
         {message && <p id="login-message" className="login-message">{message}</p>}

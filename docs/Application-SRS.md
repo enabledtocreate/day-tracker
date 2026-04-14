@@ -1,5 +1,11 @@
 ## Day Tracker – Software Requirements Specification (SRS)
 
+### Executive summary (requirements)
+
+Day Tracker shall provide **task management**, **multi-mode scheduling**, **completed-work history and summary**, optional **Smart Planning (AI)** assistance, and **user/admin configuration**, backed by **PHP APIs** and **SQLite** storage with a **Next.js** web client. This SRS states **testable “shall” requirements** for that behavior. **`docs/Application-Spec.md`** is the behavior/architecture companion; **`docs/DATABASE.md`** narrates database files and tables; **`contracts/schema.dbml`** is the schema contract. Managed templates **`docs/PRD.md`**, **`docs/FUNCTIONAL_SPEC.md`**, **`docs/TECHNICAL_DESIGN.md`**, and **`docs/EXPERIENCE_DESIGN.md`** are placeholders for a future **split documentation** pipeline—requirements here remain authoritative until those documents are fully merged from fragments.
+
+---
+
 ### 1. Introduction
 
 #### 1.1 Purpose
@@ -7,7 +13,9 @@
 The purpose of this Software Requirements Specification (SRS) is to define, in a precise and testable way, the functional and non-functional requirements for the **Day Tracker** application.
 
 This SRS complements:
-- `docs/Application-Spec.md` – which describes **current** behavior and architecture.
+- `docs/Application-Spec.md` – which describes **current** behavior and architecture (including UX hierarchy, workflows, and folder structure).
+- `docs/DATABASE.md` – database files, tables, and migration rules.
+- `docs/UI_IDENTIFIERS.md` – stable **`dt-*`** UI hooks (ids/classes) and **`data-dt-*`** conventions for the web client.
 - `contracts/schema.dbml` – which defines the **database schema contract**.
 
 Where there is a discrepancy between implementation and this SRS, the SRS describes the **intended** behavior the system should converge to.
@@ -35,7 +43,8 @@ It does **not** cover:
 #### 1.3 Definitions, acronyms, abbreviations
 
 - **Task** – A unit of work tracked in the system (`tasks` table).
-- **Subtask** – A task whose `parent_id` points to another task.
+- **Task group member** – A task whose `parent_id` points to a **group root** (another task with `parent_id` null). The stacked list/schedule UX treats these as a group.
+- **Subtask (legacy)** – Same `parent_id` mechanism; older or edge-case nesting may still appear, but the primary product model is **task groups**, not arbitrary deep trees.
 - **Day record** – A row in `day_record` representing a specific calendar date.
 - **Slot / Scheduled slot** – An entry in `scheduled_slots` that places a task on a specific day (and optionally time window).
 - **List state** – One of `unassigned` or `pending`, indicating which list a task appears in.
@@ -50,9 +59,22 @@ It does **not** cover:
 #### 1.4 References
 
 - Application Specification: `docs/Application-Spec.md`
+- Database documentation: `docs/DATABASE.md`
 - Database schema: `contracts/schema.dbml`
-- TODO / product backlog: `.apm/TODO.md`
-- Mutual sync plan: `docs/plan-mutual-ical-google-sync.md`
+- Product backlog: [`docs/BACKLOG.md`](BACKLOG.md)
+
+#### 1.5 Documentation hierarchy vs. this SRS
+
+The following mapping ties **product areas** in `Application-Spec.md` to **SRS clause groups** (normative):
+
+| Product area (Spec) | SRS primary clauses |
+|---------------------|---------------------|
+| Task area (lists, search, order, templates, groups) | §3.2, §3.3 |
+| Schedule (Today / Week / Calendar), iCal display | §3.4, §3.6.1 |
+| Completed + summary | §3.5 |
+| Smart Planning | §3.8 |
+| User / Admin / Login | §3.7, §3.1 |
+| Demo | §3.9 |
 
 ---
 
@@ -71,14 +93,14 @@ The system consists of:
 The system shall:
 - Allow users to register, log in, and manage their own tasks and schedules.
 - Provide a **demo account** for try-before-signup, seeded with representative data.
-- Let users create, edit, and delete tasks, subtasks, checklists, and links.
+- Let users create, edit, and delete tasks, **task groups**, checklists, and links.
 - Support **Common Tasks** (reusable templates) with copy-on-schedule semantics.
 - Support organizing tasks by category, subcategory, and tags.
 - Provide a **Today** time-blocked view and a **Calendar** month view of scheduled tasks and external events.
 - Track task completion and present a **Completed** view grouped by date.
 - Integrate with external calendars via iCal subscriptions and a user’s own outbound calendar feed.
 - Allow administrative control over global settings (e.g. AI, iCal sync).
-- Optionally allow users to query an AI assistant for planning advice and suggested tasks.
+- Optionally allow users to use a **Smart Planning** (AI) panel for structured planning proposals, thread history, and apply-to-tasks/slots workflows (see §3.8).
 
 #### 2.3 User characteristics
 
@@ -98,6 +120,42 @@ The system shall:
 - The environment can send HTTP(S) requests to external iCal feed URLs.
 - Authentication sessions (cookie-based) are available and secure.
 - File system access is available for SQLite DB files and any iCal backup files as configured.
+
+#### 2.6 UX and presentation requirements
+
+- The system shall present a **dark-themed** UI using shared CSS variables for background, surface, text, border, and **accent** colors (see `Application-Spec.md` §3).
+- The system shall use **system UI fonts** for body text unless otherwise specified.
+- The system shall provide **priority** and **schedule** visual cues consistent across list and schedule (colors/icons).
+- The system shall support **mobile** horizontal panel navigation and **desktop** multi-column schedule (**Week**) as described in `Application-Spec.md` §10–11.
+- The system shall highlight the **current local calendar day** in **Calendar** and **Week** views with the **same accent border treatment** (see §3.4.2).
+
+#### 2.7 Workflow requirements (reference diagrams)
+
+The system shall support the end-to-end flows summarized in `Application-Spec.md` §4 (authentication, task→schedule, Smart Planning apply, iCal sync). **Mermaid diagrams** in that section are **informative**; testable behavior is stated in §3 below.
+
+```mermaid
+flowchart LR
+  subgraph tasks [Task area]
+    U[Unassigned]
+    P[Pending]
+    C[Common Tasks]
+  end
+  subgraph sched [Schedule]
+    T[Today]
+    W[Week]
+    Cal[Calendar]
+  end
+  U --> T
+  P --> T
+  C -->|copy_from| T
+```
+
+#### 2.8 Architecture and deployment constraints
+
+- The system shall be deployable as a **static Next.js export** plus **PHP** endpoints copied alongside it (`release/` layout per `scripts/pack-next.cjs`).
+- The system shall support **initial installation** via browser-driven **`install.php`** creating master SQLite and configuration (see `Application-Spec.md` §7).
+- The system shall store **secrets** (OpenAI key, OAuth client secrets) in server config (`config.php`), not in client bundles.
+- The system shall separate **master** and **per-user** SQLite databases as described in `docs/DATABASE.md`.
 
 ---
 
@@ -176,19 +234,18 @@ Each subsection below states requirements in the form “The system shall …”
   - Render completed items with a visible checkmark and dimmed, strike-through text.
   - Preserve completion state across reloads (persisted in the DB).
 
-##### 3.2.5 Subtasks
+##### 3.2.5 Task groups (`parent_id`)
 
-- The system shall represent subtasks via `tasks.parent_id` and:
-  - Display subtasks visually nested under their parent task (both in list and schedule where applicable).
-  - Ensure subtask UI closely matches parent task UI (fields, controls) except where inappropriate (e.g. root-only behaviors).
-- In the schedule view, a parent task with direct children is treated as a task group:
+- The system shall represent **task groups** via `tasks.parent_id`:
+  - A **group root** has `parent_id` null; **members** have `parent_id` equal to the root’s id.
+  - In the **task list**, members are shown **stacked** under the root with shared group actions (priority, schedule, ungroup, delete) and **`group_order`** for sibling ordering.
+- In the **schedule** view, a root with direct children is a **task group**:
   - The schedule renders the parent as the group root and the direct children as stacked member blocks.
   - The group root slot spans the full group duration, and member blocks are distributed sequentially within that duration.
   - Group-aware resizing/moving updates `start_time`/`end_time` for all member blocks together, while preserving the group duration constraints (including minimum group duration) and step snapping.
   - Group root priority edits apply to its direct members, and ungrouping clears `parent_id` for those descendants to move them back into the root task list.
-- When deleting a parent task, the system shall:
-  - Delete its subtasks (via `ON DELETE CASCADE` on `parent_id`), or
-  - Explicitly reassign or warn if different behavior is desired (current behavior: cascade).
+- When deleting a group root, the system shall delete or cascade members per schema (`ON DELETE CASCADE` on `parent_id` where applicable).
+- Legacy deeply nested rows (if any) shall still render without breaking list or schedule rules.
 
 ##### 3.2.6 Search
 
@@ -256,16 +313,19 @@ Each subsection below states requirements in the form “The system shall …”
 - In the **task list** view, the system shall:
   - Display category and subcategory beneath the task description in a font similar to the created-at date.
   - Display tags to the right of the task description as pill-shaped badges.
+  - For **task groups** (stacked root and members), display each segment’s category, subcategory, and tags the same way as for standalone tasks (per member row).
 - In the **schedule** view, the system shall:
   - Use category colors as background or accents for scheduled blocks when applicable.
   - Display category/subcategory beneath the scheduled task title within each slot.
   - Display tags as pill-shaped elements within the slot, ensuring text and categories remain legible within a single schedule interval (even when font size must shrink slightly).
+  - For **task groups**, display tags on the group root row and on each member’s slice; in **Week** view compact blocks, show the root task’s tags in the block header when space allows.
 
 #### 3.4 Schedule & calendar
 
 ##### 3.4.1 Day (Today) view
 
 - The system shall:
+  - Use **local** calendar **YYYY-MM-DD** strings for the viewed day and for prev/next day navigation in the web client so the correct `day_record` and scheduled slots are requested in every time zone (not UTC-derived days from `Date.toISOString()` alone).
   - Render a vertical hourly grid from `start_hour` to `end_hour` (from user settings).
   - Subdivide the grid according to `increment_value` and `increment_unit`.
   - Allow horizontal and vertical scrolling as needed.
@@ -283,6 +343,8 @@ Each subsection below states requirements in the form “The system shall …”
   - Distinguish visually between:
     - App tasks (slots) and external iCal events.
     - Completed vs incomplete tasks.
+  - Highlight the **current local calendar day** (“today”) in the month grid with a distinct border using the theme **accent** color (and matching outer ring), so it is visually obvious which cell is today.
+- In **Week** view (desktop, one time column per day in the selected range), the system shall highlight the column for the **current local calendar day** with the **same accent border treatment** as the “today” cell in the month **Calendar** view.
 - Overlapping tasks and iCal events shall **not** visually occlude each other; the layout shall allow both to be visible (e.g. stacked or sharing vertical space).
 
 ##### 3.4.3 Drag-and-drop behavior
@@ -292,7 +354,7 @@ Each subsection below states requirements in the form “The system shall …”
   - **Common Tasks** templates into the schedule or calendar: the system shall instantiate a **`copy_from`** task (or tasks) first, then create slots for the new instance(s), leaving the template unchanged.
   - Scheduled slots within a day to change time or across days (in calendar).
 - When dragging near the left or right edge of the schedule or calendar:
-  - The system **may** auto-advance the visible date (or week) after a small hover delay to allow cross-day drops (this behavior is planned per TODO and should be implemented as “Option – Edge drag to change day/week”).
+  - The system **may** auto-advance the visible date (or week) after a small hover delay to allow cross-day drops (this behavior is planned; see [`BACKLOG.md`](BACKLOG.md) — edge drag).
 - Partial completion (yesterday’s group slots):
   - Root tasks that had mixed completed/incomplete member slots on the previous day shall appear in **Unassigned** or **Pending** according to `list_state` (not in a separate list column).
   - When moving such a root between Unassigned and Pending (or when removing it from the schedule), the system shall apply the same orphan / slot-resolution rules as for other partially completed groups (e.g. confirmation and slot cleanup).
@@ -343,13 +405,20 @@ Each subsection below states requirements in the form “The system shall …”
 #### 3.5 Completed tasks & history
 
 - The system shall:
-  - Maintain a Completed panel showing tasks completed on each day (based on `scheduled_slots.completed` and day boundaries).
+  - Maintain a **Completed** panel showing tasks completed on each day, primarily from **`scheduled_slots`** (completed flag and day boundaries), with accomplished-style listings where implemented.
+  - On open, load completed data for the panel (e.g. `list_all` / accomplished APIs) so the drawer can show content without stale empties.
   - Group completed items by `date`, with the most recent dates first.
+  - Provide a **summary** affordance (e.g. modal) aggregating completed work for a chosen scope, as implemented in `CompletedPanel` / `api/accomplished.php` (`summary_org`).
+  - For the **Time by category** summary modal, the system shall:
+    - Support an optional **date range** query for the rollup.
+    - Show each task’s **tags** next to its title (or include tag names when titles are shown comma-separated), using tag data returned by the API.
+    - Provide a **search** control that filters the displayed rollup by task title, tag name, category, or subcategory without requiring a new server request.
   - Display:
     - Title.
     - Optional derived duration (based on start/end times).
-    - Optional subtasks completed under that task.
+    - Optional grouped members completed under a task where applicable.
 - The Completed view shall treat external iCal events with `user_completed = 1` appropriately (e.g. show them or keep them separate, as product decisions dictate).
+- *Planned UX refinement:* initial window of recent days, infinite scroll loading older chunks, and removal of redundant close chrome — see [`BACKLOG.md`](BACKLOG.md).
 
 #### 3.6 iCal integration
 
@@ -372,7 +441,7 @@ Each subsection below states requirements in the form “The system shall …”
   - Using `ical_feed_tokens.user_id/token`.
   - Accessible from User Settings → Subscriptions.
   - Representing the user’s own scheduled tasks (`scheduled_slots`) as VEVENTs.
-- For mutual sync, the system shall (per `plan-mutual-ical-google-sync.md`):
+- For **full mutual sync** beyond the outbound feed, the system shall:
   - Support at least one of:
     - **Option A (preferred baseline)**: Publish an iCal feed that Google can subscribe to (“Add by URL”), so Day Tracker tasks appear in Google Calendar.
     - **Option B**: Use Google Calendar API with OAuth to push changes directly into a selected Google calendar.
@@ -411,30 +480,46 @@ Each subsection below states requirements in the form “The system shall …”
     - Recent error log lines from the server.
   - Listing users and their basic metadata (username, db_name, flags, created_at, SSO providers).
 
-#### 3.8 AI assistant
+##### 3.7.3 Login screen
+
+- The system shall provide a **login** screen allowing:
+  - **Username + password** authentication for existing users.
+  - **Registration** of new accounts (where enabled), with validation consistent with `api/auth.php` (e.g. minimum password length).
+  - Switching between login and register forms without a full page reload.
+  - Display of server error messages when authentication fails.
+- The system shall expose **SSO entry points** (e.g. provider-named links) that route into `api/auth.php` OAuth flows when configured.
+- **SSO product completeness** (all desired identity flows, edge-case messaging, and provider matrix) shall continue to **evolve**; requirements in §3.1 for `sso_accounts` and password/SSO linking remain authoritative for data model behavior. *Implementation note:* treat extended SSO scenarios as **roadmap** until explicitly closed in backlog.
+
+#### 3.8 Smart Planning (AI assistant)
+
+> **Documentation:** Core Smart Planning requirements are specified below. Additional narrative UX, detailed error budgets, and multi-provider AI configuration shall be expanded in **`docs/FUNCTIONAL_SPEC.md`** / **`docs/TECHNICAL_DESIGN.md`** when those managed documents are populated from fragments; **`docs/PRD.md`** carries product-level outcomes.
 
 - The system shall:
-  - Provide a right-hand AI panel that can be collapsed/expanded.
-  - Allow the user to enter a freeform text message.
-  - Build a structured context for the current date consisting of:
-    - Accomplished tasks for the day (titles and completion times).
-    - The full task list (id, title, priority, recurring, parent_id).
-    - Slots for today (task id, title, time window, completion status).
-  - Send message + context to `api/chat.php` and render:
-    - Advice text (markdown/plaintext).
-    - A list of suggested tasks (`title`, `priority`, optional suggested slot).
+  - Provide a right-hand **Smart Planning** panel (`AIPanel`) that can be collapsed/expanded and resized horizontally, with thread transcript and **New chat**.
+  - Persist **AI threads** in a per-user **`*_ai.sqlite`** database via `api/ai/threads.php` (list, get, create, append message rows, delete).
+  - Persist assistant/user payloads with server-side size caps; truncation behavior shall preserve transcript usability and Apply-critical envelope data.
+  - Store only **`daytracker_ai_active_thread_id`** in `localStorage` (not full transcripts).
+  - Allow the user to enter a freeform message; send to **`POST api/chat.php`** with:
+    - `message`, `viewDate`, `contextOptions`, client-built **`taskContext`**, optional **`contextFragments`**, optional **`threadId`** and **`threadHistoryMax`**.
+  - When **`useServerContext`** is enabled, merge a **server-built `taskContext`** (tasks, slots, accomplished, schedule settings, optional iCal slice, organization catalog) with the client payload, **server keys overriding** duplicates.
+  - Load prior turns from the thread into the model request as user text plus assistant **summaries**, skipping a duplicate trailing user row that matches the current message.
+- The assistant response shall be a **single JSON object** (see `contracts/ai/assistant-response.schema.json` and the API overview in `docs/Application-Spec.md`) with at least:
+  - `kind`, `advice`, optional `dataRequests`, `proposals`, optional `proposedOrgCreates`, `clientHints`.
 - The system shall:
-  - Allow the user to convert suggested tasks to real tasks:
-    - Add to task list with specified priority.
-    - Add to today’s schedule as a new slot using current schedule settings for duration.
-  - Respect a global `ai_enabled` flag:
-    - When disabled, the AI panel shall be visually disabled and shall not send requests.
+  - When the model returns **`dataRequests`**, let the user pick rows and call **`api/ai/context_resolve.php`** to obtain **`contextFragments`** for a follow-up chat.
+  - Render **`advice`** and editable **flattened proposals**; **Apply** shall execute `applyAiAssistantPlan` (`lib/aiApply.ts`): resolve `proposedOrgCreates` (categories → subcategories → tags), create/update tasks, links, list items, organization joins, and slots; apply **`newTagSuggestions`** via find-or-create; stop on first apply error and refresh state after reporting the failure.
+  - When proposals include slot times, offer **Preview schedule** (`SchedulePreviewGrid`); **Accept** shall gate Apply; **Reject** shall dismiss the preview only.
+  - Respect master **`ai_enabled`** and surface it via `auth.php?action=me`; when disabled, the panel shall not send chat requests.
+  - Use last-write-wins semantics for concurrent thread writes in v1; conflict UI is optional future work.
+  - Use the OpenAI key from **`config.php`** (`openai_api_key`) on the server; the client shall not receive full secrets.
+- *Planned:* Anthropic/Claude via Vercel, admin-editable install-time settings, masked key tails — see [`BACKLOG.md`](BACKLOG.md).
 
 #### 3.9 Demo account behavior
 
 - On any day the demo user first uses the app, the system shall:
   - Ensure migrations are applied to the demo DB.
-  - Seed demo data (tasks, slots, links, list items, organization) as described in `lib/demo_seed.php` and summarized in `docs/Application-Spec.md`.
+  - Seed demo data (tasks, **task groups** where applicable, **Common Tasks** templates, slots, links, list items, organization) as described in `lib/demo_seed.php` and summarized in `docs/Application-Spec.md`.
+  - Reset **`demo_ai.sqlite`** when present so AI threads do not leak between demo sessions.
   - Generate a fresh iCal feed token for the demo user.
 - The system shall:
   - Prevent the demo user from changing the account password.
@@ -507,12 +592,33 @@ For each major requirement area:
   - Schema: `ical_subscriptions`, `ical_feed_events`, `ical_excluded_events`, `master_app_settings`.
   - UI: `components/UserSettingsView.tsx`, `components/AdminSettingsView.tsx`.
 
-- **AI assistant**:
-  - APIs: `api/chat.php`.
-  - UI: `components/AIPanel.tsx`.
+- **Smart Planning (AI)**:
+  - APIs: `api/chat.php`, `api/ai/threads.php`, `api/ai/context_resolve.php`; helpers under `lib/ai_*.php`, `lib/aiApply.ts`, `lib/aiTypes.ts`.
+  - Schema: per-user `*_ai.sqlite` + `migrations_ai/` (threads/messages).
+  - Contracts: `contracts/ai/assistant-response.schema.json`.
+  - UI: `components/AIPanel.tsx`, `components/SchedulePreviewGrid.tsx` (or equivalent preview modal).
 
 - **Demo behavior**:
   - Code: `lib/demo_seed.php`, demo-specific branches in `api/auth.php` and `api/common.php`.
 
-These references should be updated if files are renamed or responsibilities move. Any schema change must be reflected in `contracts/schema.dbml` and, where relevant, in this SRS and `docs/Application-Spec.md`.
+These references should be updated if files are renamed or responsibilities move. Any schema change must be reflected in `contracts/schema.dbml`, **`docs/DATABASE.md`**, and, where relevant, in this SRS and `docs/Application-Spec.md`.
+
+---
+
+### 5. Software design coverage
+
+The following standard design topics are addressed across **`Application-Spec.md`**, this SRS, and **`docs/DATABASE.md`**:
+
+| Topic | Where addressed |
+|-------|-----------------|
+| UX structure & panel flow | Application-Spec §2–4, §10–14; SRS §2.6–2.7 |
+| UI tokens (color, type) | Application-Spec §3; SRS §2.6 |
+| Workflows | Application-Spec §4 (Mermaid); SRS §2.7 |
+| Architecture & folder layout | Application-Spec §5–6; SRS §2.8 |
+| Server install & config | Application-Spec §7; SRS §2.8 |
+| Persistence & schema | DATABASE.md, schema.dbml; SRS §3 (behavioral), traceability §4 |
+| API contracts (AI JSON) | Application-Spec §15; SRS §3.8; `contracts/ai/` |
+| Testing & quality gates | SRS §3.10; `tests/`, `e2e/`, Vitest in repo |
+
+Items intentionally **out of scope** for these three files but reserved for split templates: **commercial roadmap sequencing** (PRD), **detailed logical flows only** (FUNCTIONAL_SPEC), **experience principles-only** (EXPERIENCE_DESIGN), **deep technical alternatives** (TECHNICAL_DESIGN)—see respective template stubs under `docs/`.
 

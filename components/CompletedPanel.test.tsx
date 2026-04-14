@@ -25,7 +25,7 @@ describe('CompletedPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /completed tasks/i }));
 
     expect(listAll).toHaveBeenCalled();
-    expect(screen.getByRole('heading', { name: /completed tasks/i })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: /completed tasks/i })).toBeInTheDocument();
   });
 
   it('shows day label and task title when accomplished data provided', async () => {
