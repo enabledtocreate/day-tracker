@@ -6,7 +6,7 @@
 {
   "docType": "prd",
   "version": 1,
-  "markdown": "# Product Requirements Document: Day Tracker\n\n## 1. Executive Summary\n\n<\u0021--\nAPM-ID: prd-executive-summary-executive-summary\nAPM-LAST-UPDATED: 2026-04-09\n--\u003e\n\nExecutive Summary Here\n\n_Last updated: 2026-04-09_\n\n## 2. Product Overview\n\n### 2.1 Product Name\n\n<\u0021--\nAPM-ID: prd-product-overview-product-name-product-name\nAPM-LAST-UPDATED: 2026-04-09\n--\u003e\n\nDay Tracker\n\n### 2.2 Product Vision\n\n<\u0021--\nAPM-ID: prd-product-overview-product-vision-product-vision\nAPM-LAST-UPDATED: 2026-04-09\n--\u003e\n\nPending product vision.\n\n_Last updated: 2026-04-09_\n\n### 2.3 Target Audience\n\n- No target audiences defined yet\n\n### 2.4 Key Value Propositions\n\n- No value propositions defined yet\n\n## 3. Functional Requirements\n\n### 3.1 Workflows\n\nNo workflows defined yet.\n### 3.2 User Actions\n\nNo user actions defined yet.\n### 3.3 System Behaviors\n\nNo system behaviors defined yet.\n## 4. Non-Functional Requirements\n\n### 4.1 Usability\n\n<\u0021--\nAPM-ID: prd-non-functional-requirements-usability-usability\nAPM-LAST-UPDATED: 2026-04-09\n--\u003e\n\nPending usability guidance.\n\n### 4.2 Reliability\n\n<\u0021--\nAPM-ID: prd-non-functional-requirements-reliability-reliability\nAPM-LAST-UPDATED: 2026-04-09\n--\u003e\n\nPending reliability requirements.\n\n### 4.3 Accessibility\n\n<\u0021--\nAPM-ID: prd-non-functional-requirements-accessibility-accessibility\nAPM-LAST-UPDATED: 2026-04-09\n--\u003e\n\nPending accessibility requirements.\n\n### 4.4 Security\n\n<\u0021--\nAPM-ID: prd-non-functional-requirements-security-security\nAPM-LAST-UPDATED: 2026-04-09\n--\u003e\n\nPending security requirements.\n\n### 4.5 Performance\n\n<\u0021--\nAPM-ID: prd-non-functional-requirements-performance-performance\nAPM-LAST-UPDATED: 2026-04-09\n--\u003e\n\nPending performance requirements.\n\n_Last updated: 2026-04-09_\n\n## 5. Technical Architecture\n\nNo technical architecture decisions captured yet.\n## 6. Implementation Plan\n\n### 6.1 Sequencing\n\nNo sequencing defined yet.\n### 6.2 Dependencies\n\nNo dependencies defined yet.\n### 6.3 Milestones\n\nNo milestones defined yet.\n## 7. Success Metrics\n\nNo success metrics defined yet.\n## 8. Risks and Mitigations\n\nNo risks tracked yet.\n## 9. Future Enhancements\n\nPlanned and implemented feature work is tracked in FEATURES.md. Keep only product-facing future references here when they materially affect the product definition.\n\nNo future enhancements captured yet.\n## 10. Applied Fragments\n\nNo PRD fragments have been merged or integrated yet.\n## 11. Conclusion\n\nPending conclusion.",
+  "markdown": "# Product Requirements Document: Day Tracker\n\n## 1. Executive Summary\n\n<\u0021--\nAPM-ID: prd-executive-summary-executive-summary\nAPM-LAST-UPDATED: 2026-04-09\n--\u003e\n\nExecutive Summary Here\n\n_Last updated: 2026-04-09_\n\n## 2. Product Overview\n\n### 2.1 Product Name\n\n<\u0021--\nAPM-ID: prd-product-overview-product-name-product-name\nAPM-LAST-UPDATED: 2026-04-09\n--\u003e\n\nDay Tracker\n\n### 2.2 Product Vision\n\n<\u0021--\nAPM-ID: prd-product-overview-product-vision-product-vision\nAPM-LAST-UPDATED: 2026-04-09\n--\u003e\n\nPending product vision.\n\n_Last updated: 2026-04-09_\n\n### 2.3 Target Audience\n\n- No target audiences defined yet\n\n### 2.4 Key Value Propositions\n\n- No value propositions defined yet\n\n## 3. Functional Requirements\n\n### 3.1 Workflows\n\nNo workflows defined yet.\n### 3.2 User Actions\n\nNo user actions defined yet.\n### 3.3 System Behaviors\n\nNo system behaviors defined yet.\n## 4. Non-Functional Requirements\n\n### 4.1 Usability\n\n<\u0021--\nAPM-ID: prd-non-functional-requirements-usability-usability\nAPM-LAST-UPDATED: 2026-04-09\n--\u003e\n\nPending usability guidance.\n\n### 4.2 Reliability\n\n<\u0021--\nAPM-ID: prd-non-functional-requirements-reliability-reliability\nAPM-LAST-UPDATED: 2026-04-09\n--\u003e\n\nPending reliability requirements.\n\n### 4.3 Accessibility\n\n<\u0021--\nAPM-ID: prd-non-functional-requirements-accessibility-accessibility\nAPM-LAST-UPDATED: 2026-04-09\n--\u003e\n\nPending accessibility requirements.\n\n### 4.4 Security\n\n<\u0021--\nAPM-ID: prd-non-functional-requirements-security-security\nAPM-LAST-UPDATED: 2026-04-09\n--\u003e\n\nPending security requirements.\n\n### 4.5 Performance\n\n<\u0021--\nAPM-ID: prd-non-functional-requirements-performance-performance\nAPM-LAST-UPDATED: 2026-04-09\n--\u003e\n\nPending performance requirements.\n\n_Last updated: 2026-04-09_\n\n## 5. Technical Architecture\n\nNo technical architecture decisions captured yet.\n## 6. Implementation Plan\n\n### 6.1 Sequencing\n\nNo sequencing defined yet.\n### 6.2 Dependencies\n\nNo dependencies defined yet.\n### 6.3 Milestones\n\nNo milestones defined yet.\n## 7. Success Metrics\n\nNo success metrics defined yet.\n## 8. Risks and Mitigations\n\nNo risks tracked yet.\n## 9. Future Enhancements\n\nPlanned and implemented feature work is tracked in FEATURES.md. Keep only product-facing future references here when they materially affect the product definition.\n\nNo future enhancements captured yet.\n## 10. Applied Fragments\n\n### 10.1 FEAT-001: Favorites!\n\n- Status: integrated\n- Source Feature: feature-1776520242662-dfj1abf\n- Source Feature Status: implemented\n- Source File: PRD_FRAGMENT_20260418_095042681.md\n- Version Date: 2026-04-20\n\nThis fragment captures the PRD changes needed for FEAT-001: Favorites!.\n\n### 10.2 Roadmap Planning Sync\n\n- Status: integrated\n- Source File: PRD_FRAGMENT_20260418_095044774.md\n- Version Date: 2026-04-20\n\nThis fragment captures PRD updates that should stay aligned with the roadmap for Day Tracker.\n\n### 10.3 FEAT-002: Custom Buckets and Priorities\n\n- Status: integrated\n- Source Feature: feature-1776520417945-4z41oy3\n- Source Feature Status: implemented\n- Source File: PRD_FRAGMENT_20260418_095338003.md\n- Version Date: 2026-04-20\n\nThis fragment captures the PRD changes needed for FEAT-002: Custom Buckets and Priorities.\n\n## 11. Conclusion\n\nPending conclusion.",
   "mermaid": "flowchart TD\n  product[\"Product\"] --\u003e value[\"Value\"]",
   "editorState": {
     "executiveSummary": {
@@ -68,7 +68,44 @@
     "successMetrics": [],
     "risksMitigations": [],
     "futureEnhancements": [],
-    "appliedFragments": [],
+    "appliedFragments": [
+      {
+        "fragmentId": "prd-fragment-1776520242681-gpvfrai",
+        "title": "FEAT-001: Favorites!",
+        "sourceFeatureId": "feature-1776520242662-dfj1abf",
+        "sourceFeatureStatus": "implemented",
+        "status": "integrated",
+        "integratedAt": "2026-04-20T00:39:05.997Z",
+        "versionDate": "2026-04-20T00:39:05.997Z",
+        "summary": "This fragment captures the PRD changes needed for FEAT-001: Favorites!.",
+        "notes": "",
+        "fileName": "PRD_FRAGMENT_20260418_095042681.md"
+      },
+      {
+        "fragmentId": "prd-fragment-1776520244774-kq1l0y7",
+        "title": "Roadmap Planning Sync",
+        "sourceFeatureId": null,
+        "sourceFeatureStatus": "",
+        "status": "integrated",
+        "integratedAt": "2026-04-20T00:39:07.459Z",
+        "versionDate": "2026-04-20T00:39:07.459Z",
+        "summary": "This fragment captures PRD updates that should stay aligned with the roadmap for Day Tracker.",
+        "notes": "",
+        "fileName": "PRD_FRAGMENT_20260418_095044774.md"
+      },
+      {
+        "fragmentId": "prd-fragment-1776520418003-0ssv0a0",
+        "title": "FEAT-002: Custom Buckets and Priorities",
+        "sourceFeatureId": "feature-1776520417945-4z41oy3",
+        "sourceFeatureStatus": "implemented",
+        "status": "integrated",
+        "integratedAt": "2026-04-20T00:39:08.854Z",
+        "versionDate": "2026-04-20T00:39:08.854Z",
+        "summary": "This fragment captures the PRD changes needed for FEAT-002: Custom Buckets and Priorities.",
+        "notes": "",
+        "fileName": "PRD_FRAGMENT_20260418_095338003.md"
+      }
+    ],
     "conclusion": ""
   }
 }
@@ -204,7 +241,34 @@ Planned and implemented feature work is tracked in FEATURES.md. Keep only produc
 No future enhancements captured yet.
 ## 10. Applied Fragments
 
-No PRD fragments have been merged or integrated yet.
+### 10.1 FEAT-001: Favorites!
+
+- Status: integrated
+- Source Feature: feature-1776520242662-dfj1abf
+- Source Feature Status: implemented
+- Source File: PRD_FRAGMENT_20260418_095042681.md
+- Version Date: 2026-04-20
+
+This fragment captures the PRD changes needed for FEAT-001: Favorites!.
+
+### 10.2 Roadmap Planning Sync
+
+- Status: integrated
+- Source File: PRD_FRAGMENT_20260418_095044774.md
+- Version Date: 2026-04-20
+
+This fragment captures PRD updates that should stay aligned with the roadmap for Day Tracker.
+
+### 10.3 FEAT-002: Custom Buckets and Priorities
+
+- Status: integrated
+- Source Feature: feature-1776520417945-4z41oy3
+- Source Feature Status: implemented
+- Source File: PRD_FRAGMENT_20260418_095338003.md
+- Version Date: 2026-04-20
+
+This fragment captures the PRD changes needed for FEAT-002: Custom Buckets and Priorities.
+
 ## 11. Conclusion
 
 Pending conclusion.

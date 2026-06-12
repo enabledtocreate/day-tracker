@@ -8,7 +8,10 @@ import { openTaskListModal } from './task-list-items-ui';
 import { getChildTaskIds, getTasks, showPriorityPicker } from './task-list';
 import { openLinkModalForTask } from './links';
 import { confirmUnschedulePartiallyComplete } from './unschedule-modal';
-import { getTaskSlideIndex, isMobileView } from './mobile';
+// Legacy mobile.ts removed (see `.apm/_WORKSPACE/TODO-mobile.md §0.9 Step 2`).
+// Inline replacements; the legacy Vite build is not the shipped target.
+const isMobileView = (): boolean => window.matchMedia('(max-width: 768px)').matches;
+const getTaskSlideIndex = (): number => 0;
 
 const ROW_HEIGHT = 32;
 const DEBUG_DATE_KEY = 'daytracker_debug_date';

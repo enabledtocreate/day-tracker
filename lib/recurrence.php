@@ -21,6 +21,10 @@ function recurrenceMatchesDate(?array $rule, string $date): bool {
     if (is_array($omitDates) && in_array($date, $omitDates, true)) {
         return false;
     }
+    $endDate = $rule['endDate'] ?? null;
+    if (is_string($endDate) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $endDate) && $date > $endDate) {
+        return false;
+    }
     $freq = $rule['freq'] ?? 'daily';
     if ($freq === 'daily') return true;
     if ($freq === 'weekly') {

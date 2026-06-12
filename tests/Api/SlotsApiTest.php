@@ -41,11 +41,21 @@ final class SlotsApiTest extends ApiTestCase
 
     public function testGetByFromDateToDate(): void
     {
+        $taskRes = $this->request('POST', 'tasks', [], ['title' => 'Range query task']);
+        $taskId = $taskRes['body']['id'];
         $dayRes = $this->request('GET', 'day', ['date' => '2025-08-01']);
+        $dayId = $dayRes['body']['id'];
+        $this->request('POST', 'slots', [], [
+            'day_record_id' => $dayId,
+            'task_id' => $taskId,
+            'start_time' => '09:00',
+            'end_time' => '10:00',
+        ]);
         $res = $this->request('GET', 'slots', ['from_date' => '2025-08-01', 'to_date' => '2025-08-02']);
         $this->assertSame(200, $res['code']);
         $this->assertArrayHasKey('byDate', $res['body']);
         $this->assertArrayHasKey('2025-08-01', $res['body']['byDate']);
+        $this->assertNotEmpty($res['body']['byDate']['2025-08-01']);
     }
 
     public function testPatchCompleteAndDelete(): void

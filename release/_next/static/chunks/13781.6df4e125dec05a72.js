@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[13781],{13781:function(c,e,n){n.r(e),n.d(e,{__iconNode:function(){return t},default:function(){return i}});var r=n(47411);let t=[["path",{d:"M15 6a9 9 0 0 0-9 9V3",key:"1cii5b"}],["circle",{cx:"18",cy:"6",r:"3",key:"1h7g24"}],["circle",{cx:"6",cy:"18",r:"3",key:"fqmcym"}]],i=(0,r.Z)("git-branch",t)}}]);

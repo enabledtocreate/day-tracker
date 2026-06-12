@@ -18,4 +18,14 @@ test.describe('Settings', () => {
 
     await expect(page.locator('.time-view-labels').getByText('8:00 AM')).toBeVisible({ timeout: 3000 });
   });
+
+  test('schedule settings section shows buckets, priorities, and auto-priority', async ({ page }) => {
+    await page.getByRole('button', { name: /user menu/i }).click();
+    await page.getByRole('menuitem', { name: /settings/i }).click();
+    await expect(page.getByRole('heading', { name: /user settings/i })).toBeVisible({ timeout: 5000 });
+    await page.getByRole('button', { name: /schedule settings/i }).click();
+    await expect(page.getByText('Task list buckets')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText('Priorities')).toBeVisible();
+    await expect(page.getByText(/Auto-priority/i)).toBeVisible();
+  });
 });

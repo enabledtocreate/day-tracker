@@ -242,7 +242,7 @@ The authoritative contract is **`contracts/schema.dbml`**; narrative detail is i
 #### 10.5 Actions on a task (CRUD & more)
 
 - **Create / Read / Update / Delete** via `api/tasks.php`.
-- **Links**: `api/links.php` + `LinkModal`—add/edit/remove URLs; open in new tab from list/schedule.
+- **Links**: `api/links.php` + `LinkModal`—add/edit/remove URLs (https, `mailto:`, `tel:`, `sms:`, or bare email/phone normalized on save). **Contact links** (`lib/contactLinks.ts`, `lib/taskLinks.ts`) show ✉️ / 📞 / 💬 glyphs and respect user **Contact links** settings (Schedule Settings). **Map links** (`lib/mapLinks.ts`) show 🗺️ and prefer native maps open. Open from list, schedule, and completed summary.
 - **List items**: `api/task_list_items.php` + `TaskListItemsModal`—reorder, toggle complete (checklist), add/remove lines.
 - **Schedule**: drag to schedule/calendar, “schedule on date” flows, move between lists, priority controls, template copy semantics.
 - **Grouping**: group with another task (creates `parent_id` chain per rules), **ungroup**, reorder members (`group_order`).
@@ -315,7 +315,7 @@ The authoritative contract is **`contracts/schema.dbml`**; narrative detail is i
 
 - **Profile**: Username, linked SSO accounts, password change (disabled for demo); SSO disconnect via password replacement where applicable.
 - **Subscriptions**: Outbound feed URL (`ical_feed_tokens` + `api/ical.php`); manage `ical_subscriptions`; **excluded events** via `api/ical_excluded.php` + master list.
-- **Schedule**: Start/end hour, increment, timezone.
+- **Schedule**: Start/end hour, increment, timezone; **Contact links** (email/phone open preferences, stored as `contact_link_json` in `app_settings`).
 - **Organization**: CRUD categories, subcategories, tags (colors); triggers task list refresh.
 
 #### 14.2 Admin settings (`AdminSettingsView`)

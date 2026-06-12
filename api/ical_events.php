@@ -126,7 +126,19 @@ if ($useCron && !$forceSync) {
         $syncIfStale = true;
     }
     logMessage('INFO', 'ical_events sync check', ['sync_if_stale' => $syncIfStale, 'force_sync' => $forceSync, 'subscriptions_count' => count($subscriptions), 'use_cron' => $useCron]);
-    $r = icalEventsRunSyncSubscriptionsForPdo($pdo, $forceSync, $syncIfStale);
+    // Per-user lock file lives next to the user's SQLite DB. This is what
+    // gives us "one download at a time across devices" — multiple browser
+    // tabs / phones for the same user share this file path, so flock()
+    // serializes them. Different users use different lock files and never
+    // contend with each other.
+    $lockFilePath = null;
+    try {
+        $lockFilePath = getCurrentUserDbPath() . '.ical-sync.lock';
+    } catch (Throwable $e) {
+        // Auth/session not ready — fall through with no lock guard (the
+        // request will likely 401 elsewhere; we don't want to mask that).
+    }
+    $r = icalEventsRunSyncSubscriptionsForPdo($pdo, $forceSync, $syncIfStale, $lockFilePath);
     $allErrors = $r['allErrors'];
     $subscriptionSyncReport = $r['subscription_sync'];
 }

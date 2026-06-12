@@ -16,6 +16,8 @@ export type UiModalProps = {
   'aria-label'?: string;
   /** Semantic app hook (e.g. `dt-modal-foo`); merged with base modal classes */
   className?: string;
+  /** Stack above an open dialog (nested modal, e.g. color picker). */
+  nested?: boolean;
 };
 
 /** Supported kit ids — set `NEXT_PUBLIC_UI_KIT` to switch implementations at build time */

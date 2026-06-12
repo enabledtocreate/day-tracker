@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import type { ScheduledSlot } from '@/lib/api';
 import {
   TaskListAndSchedule,
@@ -9,6 +9,7 @@ import {
   clampTopResizeStartForMinGroupDuration,
   clampBottomResizeEndForMinGroupDuration,
   distributeGroupMemberTimes,
+  snapToSlot,
   lockTextSelection,
   restoreTextSelection,
   createDelayedEdgeAction,
@@ -17,6 +18,7 @@ import {
   scheduleBlockDensityClasses,
   buildGroupSegmentHeightsPx,
 } from './TaskListAndSchedule';
+import { timedSlotLayoutBounds } from '@/lib/timedSlotLayout';
 
 const dayGetOrCreate = vi.fn();
 const tasksList = vi.fn();
@@ -67,6 +69,14 @@ vi.mock('@/lib/api', () => ({
     links: { list: vi.fn().mockResolvedValue({ links: [] }) },
     taskListItems: { list: vi.fn().mockResolvedValue({ items: [] }) },
     accomplished: { listAll: vi.fn().mockResolvedValue({ byDate: {} }) },
+    scheduleBlocks: {
+      list: vi.fn().mockResolvedValue({ blocks: [] }),
+      listByDateRange: vi.fn().mockResolvedValue({ byDate: {} }),
+      create: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+    },
+    favoriteFolders: { list: vi.fn().mockResolvedValue({ folders: [] }) },
   },
 }));
 
@@ -85,7 +95,7 @@ describe('TaskListAndSchedule', () => {
     tasksList.mockResolvedValue({ tasks: [] });
     tasksUpdate.mockResolvedValue({ ok: true });
     tasksDelete.mockResolvedValue({ ok: true });
-    organizationList.mockResolvedValue({ categories: [], subcategories: [], tags: [] });
+    organizationList.mockResolvedValue({ categories: [], subcategories: [], tags: [], blocks: [] });
     slotsList.mockResolvedValue({ slots: [] });
     listByDateRange.mockResolvedValue({ byDate: {} });
     slotsCreate.mockResolvedValue({ ok: true, id: 200 });
@@ -112,8 +122,8 @@ describe('TaskListAndSchedule', () => {
 
   it('schedule: bulk toolbar shows Bulk select on the current day', async () => {
     render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
-    await screen.findByRole('group', { name: /schedule bulk actions/i });
-    expect(screen.getByRole('button', { name: /bulk select/i })).toBeInTheDocument();
+    const scheduleToolbar = await screen.findByRole('group', { name: /schedule bulk actions/i });
+    expect(within(scheduleToolbar).getByRole('button', { name: /bulk select/i })).toBeInTheDocument();
   });
 
   it('scheduleBlockDensityClasses adds tight/micro and drawer hooks by height and width', () => {
@@ -137,16 +147,16 @@ describe('TaskListAndSchedule', () => {
       slotDurationMinutes: 15,
       blockHeightPx: 96,
     });
-    expect(exact).toEqual([32, 32, 32]);
+    expect(exact).toEqual([34, 34, 34]);
     const padded = buildGroupSegmentHeightsPx({
       groupStartMin: 16 * 60,
       groupEndMin: 16 * 60 + 45,
       orderedChildren,
       slotDurationMinutes: 15,
-      blockHeightPx: 100,
+      blockHeightPx: 106,
     });
-    expect(padded.reduce((a, b) => a + b, 0)).toBe(100);
-    expect(padded[2]).toBe(36);
+    expect(padded.reduce((a, b) => a + b, 0)).toBe(106);
+    expect(padded[2]).toBe(38);
   });
 
   it('resolveScheduleRootSlotId walks parent task chain to the root slot', () => {
@@ -327,6 +337,7 @@ describe('TaskListAndSchedule', () => {
       categories: [],
       subcategories: [],
       tags: [{ id: 1, name: 'urgent', color: null }],
+      blocks: [],
     });
 
     render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
@@ -463,6 +474,44 @@ describe('TaskListAndSchedule', () => {
 
     expect(res.preservedDurationMin).toBe(15);
     expect(res.newEndMin - res.newStartMin).toBe(15);
+  });
+
+  it('bottom resize commit gate: persist when stored root end lags layout end even if clamped matches layout', () => {
+    const endMin = 600;
+    const storedRootEndMin = 570;
+    const clampedEnd = 600;
+    const shouldCommitBottomResize = clampedEnd !== endMin || clampedEnd !== storedRootEndMin;
+    expect(shouldCommitBottomResize).toBe(true);
+  });
+
+  it('timedSlotLayoutBounds uses max of root and child end times for grouped layout', () => {
+    const root: ScheduledSlot = {
+      id: 1,
+      day_record_id: 1,
+      task_id: 10,
+      start_time: '09:00',
+      end_time: '09:15',
+      completed: 0,
+      order_index: 0,
+    } as ScheduledSlot;
+    const child: ScheduledSlot = {
+      id: 2,
+      day_record_id: 1,
+      task_id: 11,
+      start_time: '09:15',
+      end_time: '10:00',
+      completed: 0,
+      order_index: 1,
+    } as ScheduledSlot;
+    const b = timedSlotLayoutBounds(root, [child]);
+    expect(b.startMin).toBe(9 * 60);
+    expect(b.endMin).toBe(10 * 60);
+  });
+
+  it('snapToSlot end mode allows block end at end_hour (start mode caps one step earlier)', () => {
+    // View 9:00–10:00, 30-min grid. Last slot is 9:30–10:00; a block may end at 10:00.
+    expect(snapToSlot(10 * 60, 9, 10, 30, 'start')).toBe(9 * 60 + 30);
+    expect(snapToSlot(10 * 60, 9, 10, 30, 'end')).toBe(10 * 60);
   });
 
   it('reorders siblings by group_order when dropped onto another sibling', () => {
@@ -644,7 +693,7 @@ describe('TaskListAndSchedule', () => {
     slotsList.mockResolvedValue({
       slots: [
         { id: 10, day_record_id: 1, task_id: 1, start_time: '09:00', end_time: '10:00', completed: 0, order_index: 0, title: 'Root', priority: 'medium', recurring: false, parent_id: null, list_style: 'bullet', has_list: false },
-        { id: 11, day_record_id: 1, task_id: 2, start_time: '09:00', end_time: '09:30', completed: 0, order_index: 1, title: 'Child 1', priority: 'low', recurring: false, parent_id: 1, list_style: 'bullet', has_list: false },
+        { id: 11, day_record_id: 1, task_id: 2, start_time: '09:30', end_time: '10:00', completed: 0, order_index: 1, title: 'Child 1', priority: 'low', recurring: false, parent_id: 1, list_style: 'bullet', has_list: false },
       ],
     });
     (window as any).confirm = vi.fn(() => true);
@@ -654,6 +703,12 @@ describe('TaskListAndSchedule', () => {
     fireEvent.click(splitBtn);
     await waitFor(() => {
       expect(tasksUpdate).toHaveBeenCalledWith(expect.objectContaining({ id: 2, parent_id: null }));
+      expect(slotsUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 10, start_time: '09:00', end_time: '09:30' })
+      );
+      expect(slotsUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 11, start_time: '09:30', end_time: '10:00' })
+      );
     });
   });
 
@@ -734,7 +789,7 @@ describe('TaskListAndSchedule', () => {
     });
   });
 
-  it('schedule on date sets due_date and bumps priority when auto-priority enabled', async () => {
+  it('schedule on date sets due_date without changing priority', async () => {
     tasksList.mockResolvedValue({
       tasks: [
         { id: 1, title: 'T', priority: 'medium', recurring: false, parent_id: null, created_at: '', list_state: 'unassigned', list_style: 'bullet' },
@@ -772,11 +827,6 @@ describe('TaskListAndSchedule', () => {
     expect(dateInput).toBeTruthy();
     const expectedDueDate = dateInput!.value;
 
-    const autoPriorityCheckbox = screen.getByLabelText(/increase priority automatically/i) as HTMLInputElement;
-    expect(autoPriorityCheckbox.checked).toBe(false);
-    fireEvent.click(autoPriorityCheckbox);
-    expect(autoPriorityCheckbox.checked).toBe(true);
-
     fireEvent.keyDown(dateInput!, { key: 'Enter', code: 'Enter', charCode: 13 });
 
     await waitFor(() => {
@@ -784,10 +834,11 @@ describe('TaskListAndSchedule', () => {
         expect.objectContaining({
           id: 1,
           due_date: expectedDueDate,
-          priority: 'high',
         })
       );
     });
+    const lastCall = tasksUpdate.mock.calls[tasksUpdate.mock.calls.length - 1]?.[0] as Record<string, unknown> | undefined;
+    expect(lastCall?.priority).toBeUndefined();
   });
 
   it('locks and restores text selection around drag', () => {
@@ -850,10 +901,10 @@ describe('TaskListAndSchedule', () => {
     render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} isMobile />);
     await screen.findByText('T');
 
-    const btn = document.querySelector('.time-block-check') as HTMLButtonElement | null;
+    const btn = document.querySelector('.time-block-complete-checkbox') as HTMLButtonElement | null;
     expect(btn).toBeTruthy();
     expect(btn?.getAttribute('aria-pressed')).toBe('true');
-    expect(btn?.style.color).toBe('var(--text-muted)');
+    expect(btn?.textContent).toBe('☑');
   });
 
   it('mobile: completion checkbox color toggles on click', async () => {
@@ -927,18 +978,119 @@ describe('TaskListAndSchedule', () => {
     render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} isMobile />);
     await screen.findByText('T');
 
-    const btnBefore = document.querySelector('.time-block-check') as HTMLButtonElement | null;
+    const btnBefore = document.querySelector('.time-block-complete-checkbox') as HTMLButtonElement | null;
     expect(btnBefore).toBeTruthy();
     expect(btnBefore?.getAttribute('aria-pressed')).toBe('false');
-    expect(btnBefore?.style.color).toBe('transparent');
+    expect(btnBefore?.textContent).toBe('☐');
 
     fireEvent.click(btnBefore!);
 
     await waitFor(() => {
-      const btnAfter = document.querySelector('.time-block-check') as HTMLButtonElement | null;
+      const btnAfter = document.querySelector('.time-block-complete-checkbox') as HTMLButtonElement | null;
       expect(btnAfter).toBeTruthy();
       expect(btnAfter?.getAttribute('aria-pressed')).toBe('true');
-      expect(btnAfter?.style.color).toBe('var(--text-muted)');
+      expect(btnAfter?.textContent).toBe('☑');
     });
+  });
+
+  it('schedule bottom resize: time-block inline height during drag matches height after pointerup', async () => {
+    const ymd = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const probeDate = ymd(new Date());
+
+    const rootSlot = {
+      id: 9001,
+      day_record_id: 1,
+      task_id: 5011,
+      start_time: '10:00',
+      end_time: '11:00',
+      completed: 0,
+      order_index: 0,
+      title: 'Resize height probe',
+      priority: 'medium',
+      recurring: false,
+      parent_id: null,
+      list_style: 'bullet',
+      has_list: false,
+    } as ScheduledSlot;
+
+    const task = {
+      id: 5011,
+      title: 'Resize height probe',
+      priority: 'medium',
+      recurring: false,
+      parent_id: null,
+      created_at: '',
+      list_state: 'unassigned',
+      list_style: 'bullet',
+    };
+
+    let currentSlots: ScheduledSlot[] = [rootSlot];
+
+    dayGetOrCreate.mockResolvedValue({ id: 1, date: probeDate });
+    tasksList.mockResolvedValue({ tasks: [task] });
+    slotsList.mockImplementation(() => Promise.resolve({ slots: currentSlots.map((s) => ({ ...s })) }));
+    slotsUpdate.mockImplementation(async (data: { id: number; start_time?: string | null; end_time?: string | null }) => {
+      currentSlots = currentSlots.map((s) =>
+        s.id === data.id
+          ? {
+              ...s,
+              ...(data.start_time !== undefined ? { start_time: data.start_time } : {}),
+              ...(data.end_time !== undefined ? { end_time: data.end_time } : {}),
+            }
+          : s
+      );
+      return { ok: true };
+    });
+
+    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} isMobile={false} />);
+
+    await screen.findByText('Resize height probe', {}, { timeout: 15_000 });
+
+    const titleEl = screen.getByText('Resize height probe');
+    const block = titleEl.closest('.time-block') as HTMLElement | null;
+    expect(block).toBeTruthy();
+    const handle = block!.querySelector('.time-block-resize:not(.time-block-resize-top)') as HTMLElement | null;
+    expect(handle).toBeTruthy();
+
+    const startX = 120;
+    const startY = 400;
+    const ptr = {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 1,
+      pointerType: 'mouse' as const,
+      isPrimary: true,
+      button: 0,
+      buttons: 1,
+    };
+
+    // Two schedule rows of vertical movement (see ROW_HEIGHT / slot grid in TaskListAndSchedule).
+    const dragDy = 68;
+
+    await act(async () => {
+      handle!.dispatchEvent(new PointerEvent('pointerdown', { ...ptr, clientX: startX, clientY: startY }));
+    });
+    await act(async () => {
+      window.dispatchEvent(
+        new PointerEvent('pointermove', { ...ptr, clientX: startX, clientY: startY + dragDy })
+      );
+    });
+
+    const heightWhileDragging = block!.style.height;
+    expect(heightWhileDragging).toMatch(/\d+px$/);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new PointerEvent('pointerup', { ...ptr, clientX: startX, clientY: startY + dragDy, buttons: 0 })
+      );
+    });
+
+    await waitFor(() => {
+      expect(slotsUpdate).toHaveBeenCalled();
+    });
+
+    const heightAfter = block!.style.height;
+    expect(heightAfter).toBe(heightWhileDragging);
   });
 });

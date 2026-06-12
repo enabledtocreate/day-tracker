@@ -2,28 +2,95 @@
 
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { useDrag } from '@use-gesture/react';
 import type { AuthUser } from '@/lib/auth';
 import { api } from '@/lib/api';
 import type {
   Task,
   ScheduledSlot,
+  ScheduleBlock,
   IcalFeedEvent,
   IcalSubscriptionSyncEntry,
   TimeSettings,
-  Priority,
   TaskLink,
   TaskListItem,
+  FavoriteFolder,
 } from '@/lib/api';
 import { icalEventToLocal, icalEventLocalStartDate } from '@/lib/icalTimezone';
 import { Modal } from '@/components/Modal';
 import { Button } from '@/components/Button';
 import { CompletedPanel } from '@/components/CompletedPanel';
+import { ScheduleSlotCompleteCheckbox } from '@/components/ScheduleSlotCompleteCheckbox';
+import { BulkAddModal } from '@/components/BulkAddModal';
+import { CreateTaskFromTemplateModal } from '@/components/CreateTaskFromTemplateModal';
+import { AutoBlockModal } from '@/components/AutoBlockModal';
+import { MobileModeDebugOverlay } from '@/components/MobileModeDebugOverlay';
+import { MobileAwareSelect } from '@/components/mobile/MobileAwareSelect';
+import { MobileMoveBanner } from '@/components/mobile/MobileMoveBanner';
+import { useMobileMode } from '@/lib/mobileMode';
+import { useTaskListMobileGestures } from '@/lib/useTaskListMobileGestures';
+import { useMobileGestures } from '@/lib/mobileGestures';
+import {
+  ICAL_FEED_BLOCK_BG,
+  SCHEDULE_UNTIMED_CHIP_BG,
+  scheduleBlockBgColor,
+} from '@/lib/scheduleBlockColors';
+import {
+  blockColorWithAlpha,
+  scheduleBlockLabelStyle,
+  scheduleBlockStripBackground,
+  scheduleCategoryMetaStyle,
+  scheduleTagPillStyle,
+} from '@/lib/scheduleMetaContrast';
+import { useScheduleContrastSurface } from '@/lib/useScheduleContrastSurface';
 import { AIPanel } from '@/components/AIPanel';
 import { LinkModal } from '@/components/LinkModal';
 import { TaskListItemsModal } from '@/components/TaskListItemsModal';
 import { WeekColumnBlocks } from '@/components/WeekColumnBlocks';
+import {
+  ScheduleCalendarGrid,
+  ScheduleCalendarNav,
+  buildScheduleCalendarDayCells,
+} from '@/lib/schedule-calendar-grid';
+import {
+  ArrowDown,
+  ArrowUp,
+  Calendar,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Eye,
+  EyeOff,
+  Flag,
+  FolderPlus,
+  LayoutGrid,
+  ListChecks,
+  ListPlus,
+  Plus,
+  Star,
+  Type,
+} from 'lucide-react';
+import { OrgLucideIcon } from '@/components/OrgLucideIcon';
 import { DT, DT_ID } from '@/lib/uiIdentifiers';
+import { priorityDisplayFromSettings, type PriorityDisplay } from '@/lib/priorityTheme';
+import { bucketLayoutFromSettings, canDropTaskOnBucketZone } from '@/lib/taskBuckets';
+import { SCHEDULE_SLOT_ROW_HEIGHT_PX } from '@/lib/scheduleSlotMetrics';
+import { timedSlotLayoutBounds, computeGroupMemberSlotTimes } from '@/lib/timedSlotLayout';
+import { computeAddTaskGhostPlacement, type AddTaskGhostPlacement } from '@/lib/scheduleAddTaskGhost';
+import { buildDayScheduleOccupiedRects, computeOverlapMaps } from '@/lib/scheduleOccupiedRects';
+import { useScheduleWeather } from '@/lib/useScheduleWeather';
+import { weatherTempUnitFromSettings } from '@/lib/weatherDisplay';
+import { useFloatingMenuPosition } from '@/lib/useFloatingMenuPosition';
+import { ScheduleWeatherDayRows, ScheduleWeatherWeekHeads } from '@/components/ScheduleWeatherLane';
+import { lastRecurringSeriesDayBefore, mergeRecurrenceRuleEndDate } from '@/lib/recurrenceSeriesEnd';
+import { contactLinkPrefsFromSettings, normalizeContactUrlInput } from '@/lib/contactLinks';
+import {
+  isSpecialTaskLink,
+  openTaskLink,
+  taskLinkGlyph,
+  taskLinkHref,
+  type ContactLinkPrefs,
+} from '@/lib/taskLinks';
 
 type Props = {
   user: AuthUser;
@@ -95,7 +162,32 @@ function formatTimeAMPM(totalMinutes: number): string {
   return h12 + ':' + String(m).padStart(2, '0') + ' ' + period;
 }
 
-const ROW_HEIGHT = 32;
+const ROW_HEIGHT = SCHEDULE_SLOT_ROW_HEIGHT_PX;
+
+const TASK_VIEW_HEIGHT_KEY = 'daytracker_task_view_height';
+const TASK_BUCKETS_HIDDEN_IDS_KEY = 'daytracker_task_buckets_hidden_ids';
+const FAVORITES_COLLAPSED_KEY = 'daytracker_favorites_collapsed';
+
+/** Debug: console filter `[schedule-task-resize]`; copy JSON lines from DevTools when reporting resize bugs. */
+function logScheduleTaskResize(
+  phase: 'pointerdown' | 'ghost' | 'pointerup',
+  detail: {
+    edge: 'top' | 'bottom';
+    slotId: number;
+    taskId: number;
+    taskTitle: string;
+    /** Current span in minutes (what the block represents while resizing). */
+    durationMinutes: number;
+    startMin: number;
+    endMin: number;
+    /** Rounded `getBoundingClientRect().height` of the `.time-block` root. */
+    uiHeightPx: number;
+    slotDurationMinutes: number;
+    recurringPreview: boolean;
+  }
+) {
+  console.info('[schedule-task-resize]', JSON.stringify({ phase, iso: new Date().toISOString(), ...detail }));
+}
 
 /** §5.12: CSS hooks for short/narrow schedule blocks (font scale, hide tags, action drawer). */
 export function scheduleBlockDensityClasses(heightPx: number, widthPctSlot: number): string {
@@ -105,6 +197,19 @@ export function scheduleBlockDensityClasses(heightPx: number, widthPctSlot: numb
   // Drawer mode should be driven by horizontal crowding, not short duration alone.
   if (widthPctSlot < 34) parts.push('time-block-density-actions-drawer');
   return parts.length ? ' ' + parts.join(' ') : '';
+}
+
+function enrichScheduleBlockFromOrg(
+  block: ScheduleBlock,
+  organizationBlocks: Array<{ id: number; name: string; color?: string | null; icon?: string | null }>
+): ScheduleBlock {
+  const ob = organizationBlocks.find((b) => b.id === block.block_id);
+  return {
+    ...block,
+    block_name: block.block_name ?? ob?.name ?? 'Block',
+    block_color: block.block_color ?? ob?.color ?? null,
+    block_icon: block.block_icon ?? ob?.icon ?? null,
+  };
 }
 
 /** Pixel height per stacked row in a grouped block from actual slot boundaries (+ min-duration padding, block min-height remainder). */
@@ -131,13 +236,25 @@ export function buildGroupSegmentHeightsPx(params: {
   return heights;
 }
 
-function snapToSlot(minutes: number, startHour: number, endHour: number, slotDuration: number): number {
+/**
+ * Snap absolute minutes to the schedule grid.
+ * Use `kind: 'end'` when snapping a block's `end_time`: it may equal `end_hour * 60` (bottom of the view).
+ * `kind: 'start'` keeps the legacy cap at `end_hour * 60 - step` (last slot *start* line).
+ */
+export function snapToSlot(
+  minutes: number,
+  startHour: number,
+  endHour: number,
+  slotDuration: number,
+  kind: 'start' | 'end' = 'start'
+): number {
   const start = startHour * 60;
   const end = endHour * 60;
   const step = Math.max(1, slotDuration);
   const offset = minutes - start;
   const slot = Math.round(offset / step) * step + start;
-  return Math.max(start, Math.min(end - step, slot));
+  const upperBound = kind === 'end' ? end : end - step;
+  return Math.max(start, Math.min(upperBound, slot));
 }
 
 export function calcMovedSlotTimes(params: {
@@ -322,20 +439,6 @@ export function createDelayedEdgeAction(delayMs: number, activate: () => void) {
   };
 }
 
-const PRIORITIES: readonly Priority[] = ['commitment', 'high', 'medium', 'low'];
-function priorityLabel(p: Priority): string {
-  if (p === 'commitment') return 'Commitment';
-  if (p === 'high') return 'High';
-  if (p === 'medium') return 'Medium';
-  return 'Low';
-}
-function priorityIcon(p: Priority | undefined): string {
-  if (p === 'commitment') return '★';
-  if (p === 'high') return '↑';
-  if (p === 'medium') return '●';
-  return '↓';
-}
-
 function extractUrlFromDrop(e: React.DragEvent): string | null {
   const uri = e.dataTransfer.getData('text/uri-list');
   if (uri) {
@@ -359,24 +462,8 @@ function getMonthRange(date: string): { from: string; to: string } {
   return { from: formatLocalYmd(first), to: formatLocalYmd(last) };
 }
 
-function buildCalendarDays(date: string): string[] {
-  const d = new Date(date + 'T00:00:00');
-  const y = d.getFullYear();
-  const m = d.getMonth();
-  const first = new Date(y, m, 1);
-  const last = new Date(y, m + 1, 0);
-  const startPad = first.getDay();
-  const days: string[] = [];
-  for (let i = 0; i < startPad; i++) days.push('');
-  for (let day = 1; day <= last.getDate(); day++) {
-    days.push(String(y) + '-' + String(m + 1).padStart(2, '0') + '-' + String(day).padStart(2, '0'));
-  }
-  return days;
-}
-
-const SWIPE_THRESHOLD = 60;
-
-const PANEL_EDGE_BUFFER_PX = 72;
+/** Width of the on-screen edge-buffer overlay (admin debug only). */
+const DEBUG_EDGE_BUFFER_PX = 72;
 
 export function TaskListAndSchedule({
   user,
@@ -392,6 +479,8 @@ export function TaskListAndSchedule({
   const debugHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const debugTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   const scheduleContentRef = useRef<HTMLDivElement | null>(null);
+  /** On mobile, only the timed grid scrolls; untimed tasks stay fixed above. */
+  const scheduleTimeBodyRef = useRef<HTMLDivElement | null>(null);
   const [debugZoneRects, setDebugZoneRects] = useState<{ task: DOMRect | null; schedule: DOMRect | null }>({ task: null, schedule: null });
   const [tasks, setTasks] = useState<Task[]>([]);
   const [slots, setSlots] = useState<ScheduledSlot[]>([]);
@@ -400,9 +489,29 @@ export function TaskListAndSchedule({
   const [icalIntervalFetch, setIcalIntervalFetch] = useState(true);
   const [icalClientTriggersSync, setIcalClientTriggersSync] = useState(true);
   const [icalSyncIntervalMinutes, setIcalSyncIntervalMinutes] = useState(15);
-  type IcalSyncPhase = 'idle' | 'downloading' | 'parsing' | 'saving' | 'loading' | 'synced';
+  // 'remote_sync' = the server reported another device/tab is currently
+  //   downloading feeds (subscription_sync[].skip_reason ===
+  //   'another_sync_in_progress'). We keep the spinner up and auto-refetch
+  //   ~10 min later so we eventually pick up the fresh events even if the
+  //   user never reloads.
+  type IcalSyncPhase = 'idle' | 'downloading' | 'parsing' | 'saving' | 'loading' | 'synced' | 'remote_sync';
   const [icalSyncPhase, setIcalSyncPhase] = useState<IcalSyncPhase>('idle');
   const icalPhaseTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // Pending auto-refetch after a 'remote_sync' response. Cleared on unmount /
+  // before any new fetch so we never stack timers.
+  const icalRemoteSyncRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // ms to wait before re-trying once we've been told another device is
+  // currently syncing. Spec: "it will refresh in 10 minutes (assuming no
+  // reload has happened)".
+  const ICAL_REMOTE_SYNC_RETRY_MS = 10 * 60 * 1000;
+  // Tracks the currently in-flight iCal fetch promise (single-flight guard).
+  // When set, additional calls to runIcalFetchWithPhase return this promise
+  // instead of starting a new network request.
+  const icalFetchInFlightRef = useRef<Promise<{
+    events: IcalFeedEvent[];
+    errors?: Array<{ feed_url: string; message: string }>;
+    subscription_sync?: IcalSubscriptionSyncEntry[];
+  }> | null>(null);
   const [settings, setSettings] = useState<TimeSettings>({
     start_hour: 6,
     end_hour: 23,
@@ -427,6 +536,15 @@ export function TaskListAndSchedule({
   const [feedEventsByDateForSchedule, setFeedEventsByDateForSchedule] = useState<Record<string, IcalFeedEvent[]>>({});
   const lastIcalMonthRef = useRef<string | null>(null);
   const weekDates = useMemo(() => buildWeekDates(weekAnchorSunday, weekScope), [weekAnchorSunday, weekScope]);
+  const priorityDisplay = useMemo(() => priorityDisplayFromSettings(settings), [settings]);
+  const contactLinkPrefs = useMemo(
+    () => contactLinkPrefsFromSettings(settings),
+    [settings?.contact_link_json]
+  );
+  const bucketDefs = useMemo(() => bucketLayoutFromSettings(settings), [settings]);
+  const primaryListId = bucketDefs[0]?.id ?? 'unassigned';
+  const secondaryListId = bucketDefs[1]?.id ?? 'pending';
+  const bucketListIds = useMemo(() => bucketDefs.map((b) => b.id), [bucketDefs]);
 
   /** Desktop only: tasks column left, schedule right; mobile always stacked. */
   const splitTaskScheduleLayout = useMemo(
@@ -443,20 +561,54 @@ export function TaskListAndSchedule({
           : (calendarFeedEventsByDate[viewDate] ?? []),
     [scheduleTab, viewDate, feedEventsByDateForSchedule, calendarFeedEventsByDate]
   );
+  // Calendar cells are computed AFTER tasks + organizationCategories are
+  // declared further below (see calendarTasksById / calendarCategoriesById).
+  // Placing the buildScheduleCalendarDayCells call here would reference those
+  // not-yet-initialized variables.
   const [taskSlideIndex, setTaskSlideIndex] = useState(0); // mobile: slide index into visible sections (Unassigned | Pending)
+  const [hiddenBucketIds, setHiddenBucketIds] = useState<Set<string>>(() => {
+    if (typeof window === 'undefined') return new Set();
+    try {
+      const raw = localStorage.getItem(TASK_BUCKETS_HIDDEN_IDS_KEY);
+      if (!raw) return new Set();
+      const arr = JSON.parse(raw) as unknown;
+      if (!Array.isArray(arr)) return new Set();
+      return new Set(arr.filter((x): x is string => typeof x === 'string'));
+    } catch {
+      return new Set();
+    }
+  });
+  const [collapsedFavoriteFolderKeys, setCollapsedFavoriteFolderKeys] = useState<Set<string>>(() => {
+    if (typeof window === 'undefined') return new Set();
+    try {
+      const raw = localStorage.getItem(FAVORITES_COLLAPSED_KEY);
+      if (!raw) return new Set();
+      const arr = JSON.parse(raw) as unknown;
+      if (!Array.isArray(arr)) return new Set();
+      return new Set(arr.filter((x): x is string => typeof x === 'string'));
+    } catch {
+      return new Set();
+    }
+  });
   const [newTaskTitle, setNewTaskTitle] = useState('');
+  const [bulkAddOpen, setBulkAddOpen] = useState(false);
+  const [createFromFavoriteId, setCreateFromFavoriteId] = useState<number | null>(null);
+  const [autoBlockBucketId, setAutoBlockBucketId] = useState<string | null>(null);
   const [newCommonTaskTitle, setNewCommonTaskTitle] = useState('');
   const [commonTasks, setCommonTasks] = useState<Task[]>([]);
+  const [favoriteFolders, setFavoriteFolders] = useState<FavoriteFolder[]>([]);
+  /** New favorite row: optional folder (empty string = unfiled). */
+  const [newCommonTaskFolderId, setNewCommonTaskFolderId] = useState<number | ''>('');
   const [addOptionsOpen, setAddOptionsOpen] = useState(false);
   const [addOptionsTitle, setAddOptionsTitle] = useState('');
-  const [addOptionsPriority, setAddOptionsPriority] = useState<Priority>('low');
+  const [addOptionsPriority, setAddOptionsPriority] = useState<string>('low');
   const [addOptionsRecurring, setAddOptionsRecurring] = useState(false);
+  const [addOptionsDueDate, setAddOptionsDueDate] = useState('');
   const [scheduleDateOpen, setScheduleDateOpen] = useState(false);
   const [scheduleDateTaskId, setScheduleDateTaskId] = useState<number | null>(null);
   const [scheduleDateValue, setScheduleDateValue] = useState('');
   const [scheduleTimeValue, setScheduleTimeValue] = useState('09:00');
   const [scheduleNoTime, setScheduleNoTime] = useState(false);
-  const [scheduleDueAutoPriority, setScheduleDueAutoPriority] = useState(false);
   const [scheduleSlotIdToReplace, setScheduleSlotIdToReplace] = useState<number | null>(null);
   const [editingTaskId, setEditingTaskId] = useState<number | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
@@ -464,17 +616,13 @@ export function TaskListAndSchedule({
   const [linkModalInitialUrl, setLinkModalInitialUrl] = useState('');
   const [urlDragOverTaskId, setUrlDragOverTaskId] = useState<number | null>(null);
   const [listModalTaskId, setListModalTaskId] = useState<number | null>(null);
-  const [incompleteRootIds, setIncompleteRootIds] = useState<Set<number>>(new Set());
   const [accomplishedTaskIds, setAccomplishedTaskIds] = useState<Set<number>>(new Set());
   const [scheduledTaskIdsFromTodayOnward, setScheduledTaskIdsFromTodayOnward] = useState<Set<number>>(new Set());
   const [rightPanelWidth, setRightPanelWidth] = useState(320);
   /** Desktop: Smart Planning column expanded (mobile uses mainSlideIndex). */
   const [aiPanelDesktopOpen, setAiPanelDesktopOpen] = useState(false);
-  const TASK_VIEW_HEIGHT_KEY = 'daytracker_task_view_height';
   const TASK_VIEW_MIN_PX = 120;
   const TASK_VIEW_SCHEDULE_MIN_PX = 200;
-  const TASK_ROW_ESTIMATE_PX = 44;
-  const TASK_VIEW_HEADER_ESTIMATE_PX = 100;
   const [taskViewHeightPx, setTaskViewHeightPx] = useState(() => {
     if (typeof window === 'undefined') return 280;
     const s = localStorage.getItem('daytracker_task_view_height');
@@ -490,36 +638,195 @@ export function TaskListAndSchedule({
   const [newTaskIdToBlink, setNewTaskIdToBlink] = useState<number | null>(null);
   const taskListScrollRef = useRef<HTMLDivElement>(null);
   const [openPrioritySlotId, setOpenPrioritySlotId] = useState<number | null>(null);
-  const [schedulePriorityPickerPosition, setSchedulePriorityPickerPosition] = useState<{ top: number; left: number } | null>(null);
   const schedulePriorityButtonRef = useRef<HTMLButtonElement>(null);
+  const schedulePriorityPickerPosition = useFloatingMenuPosition(
+    schedulePriorityButtonRef,
+    openPrioritySlotId != null,
+    openPrioritySlotId
+  );
+  useEffect(() => {
+    if (openPrioritySlotId == null) return;
+    const onDoc = (e: PointerEvent) => {
+      const t = e.target as HTMLElement;
+      if (t.closest('.priority-picker') || t.closest('.time-block-priority-btn')) return;
+      setOpenPrioritySlotId(null);
+    };
+    document.addEventListener('pointerdown', onDoc, true);
+    return () => document.removeEventListener('pointerdown', onDoc, true);
+  }, [openPrioritySlotId]);
   const [editingScheduleTaskId, setEditingScheduleTaskId] = useState<number | null>(null);
   const [editingScheduleTitle, setEditingScheduleTitle] = useState('');
+  const scheduleDraftRef = useRef<{
+    taskId: number;
+    slotId: number;
+    columnDate: string;
+    start_time: string;
+    end_time: string;
+  } | null>(null);
+
+  const isScheduleDraftTaskId = (id: number) => id < 0;
+
+  const cancelScheduleDraft = useCallback(() => {
+    const draft = scheduleDraftRef.current;
+    if (!draft) return;
+    setTasks((prev) => prev.filter((t) => t.id !== draft.taskId));
+    setSlots((prev) => prev.filter((s) => s.id !== draft.slotId));
+    setEditingScheduleTaskId((cur) => (cur === draft.taskId ? null : cur));
+    setEditingScheduleTitle('');
+    scheduleDraftRef.current = null;
+  }, []);
+
+  const commitScheduleDraft = useCallback(
+    async (title: string) => {
+      const draft = scheduleDraftRef.current;
+      if (!draft) return;
+      const trimmed = title.trim();
+      if (!trimmed) {
+        cancelScheduleDraft();
+        return;
+      }
+      const { taskId: tempTaskId, slotId: tempSlotId, columnDate, start_time, end_time } = draft;
+      scheduleDraftRef.current = null;
+      try {
+        const created = await api.tasks.create({ title: trimmed, priority: 'low' });
+        const day = await api.day.getOrCreate(columnDate);
+        const slot = await api.slots.create({
+          day_record_id: day.id,
+          task_id: created.id,
+          start_time,
+          end_time,
+        });
+        setSlotDayByRecordId((prev) => ({ ...prev, [day.id]: columnDate }));
+        setTasks((prev) => prev.map((t) => (t.id === tempTaskId ? created : t)));
+        const mergedSlot: ScheduledSlot = {
+          ...slot,
+          start_time: slot.start_time ?? start_time,
+          end_time: slot.end_time ?? end_time,
+          title: created.title ?? trimmed,
+          priority: created.priority ?? 'low',
+          completed: slot.completed ?? 0,
+          order_index: slot.order_index ?? 0,
+        };
+        setSlots((prev) => prev.map((s) => (s.id === tempSlotId ? mergedSlot : s)));
+        setEditingScheduleTaskId((cur) => (cur === tempTaskId ? created.id : cur));
+        if (scheduleTab === 'calendar') {
+          setCalendarSlotsByDate((prev) => ({
+            ...prev,
+            [columnDate]: [...(prev[columnDate] ?? []).filter((s) => s.id !== tempSlotId), mergedSlot],
+          }));
+        }
+      } catch (err) {
+        cancelScheduleDraft();
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [cancelScheduleDraft, scheduleTab]
+  );
+
+  const handleScheduleTitleCommit = useCallback(
+    (taskId: number, title: string) => {
+      if (isScheduleDraftTaskId(taskId)) {
+        void commitScheduleDraft(title);
+        return;
+      }
+      const t = title.trim();
+      if (t) {
+        api.tasks.update({ id: taskId, title: t }).then(() => {
+          setTasks((prev) => prev.map((task) => (task.id === taskId ? { ...task, title: t } : task)));
+        });
+      }
+      setEditingScheduleTaskId(null);
+    },
+    [commitScheduleDraft]
+  );
+
+  useEffect(() => {
+    const onPointerDown = (e: PointerEvent) => {
+      if (!scheduleDraftRef.current) return;
+      const target = e.target as HTMLElement;
+      if (target.closest('.schedule-draft-title-input')) return;
+      cancelScheduleDraft();
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [cancelScheduleDraft]);
+
   const [openScheduleDrawerSlotId, setOpenScheduleDrawerSlotId] = useState<number | null>(null);
   const [currentTimeMinutes, setCurrentTimeMinutes] = useState<number>(() => {
     const d = new Date();
     return d.getHours() * 60 + d.getMinutes();
   });
-  const [dragState, setDragState] = useState<{ taskId: number; taskIds: number[]; source: 'unassigned' | 'pending' | 'schedule' | 'common' } | null>(null);
+  const [dragState, setDragState] = useState<{ taskId: number; taskIds: number[]; source: string } | null>(null);
   const [dragPreviewPosition, setDragPreviewPosition] = useState<{ x: number; y: number } | null>(null);
   const [draggingTaskId, setDraggingTaskId] = useState<number | null>(null);
   const [draggingTaskIds, setDraggingTaskIds] = useState<Set<number>>(new Set());
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<number>>(new Set());
+  const [taskBulkMode, setTaskBulkMode] = useState(false);
+  const [taskBulkPriorityOpen, setTaskBulkPriorityOpen] = useState(false);
   const [taskLinksByTaskId, setTaskLinksByTaskId] = useState<Record<number, TaskLink[]>>({});
   const [taskListItemsByTaskId, setTaskListItemsByTaskId] = useState<Record<number, TaskListItem[]>>({});
   const [taskSearchQuery, setTaskSearchQuery] = useState('');
-  const [organizationCategories, setOrganizationCategories] = useState<Array<{ id: number; name: string; color?: string | null }>>([]);
+  const [organizationCategories, setOrganizationCategories] = useState<Array<{ id: number; name: string; color?: string | null; icon?: string | null }>>([]);
   const [organizationSubcategories, setOrganizationSubcategories] = useState<Array<{ id: number; category_id: number; name: string }>>([]);
   const [organizationTags, setOrganizationTags] = useState<Array<{ id: number; name: string; color?: string | null }>>([]);
+  const [organizationBlocks, setOrganizationBlocks] = useState<Array<{ id: number; name: string; color?: string | null; icon?: string | null }>>([]);
+  // Lookups so the calendar grid can attach a category color stripe to each
+  // task row (see bug "Mobile - calendar has virtually no real estate"). We
+  // build maps once per render rather than per cell × per task.
+  const calendarTasksById = useMemo(() => {
+    const m = new Map<number, { category_id: number | null | undefined }>();
+    for (const t of tasks) m.set(t.id, { category_id: t.category_id });
+    return m;
+  }, [tasks]);
+  const calendarCategoriesById = useMemo(() => {
+    const m = new Map<number, { color?: string | null }>();
+    for (const c of organizationCategories) m.set(c.id, { color: c.color });
+    return m;
+  }, [organizationCategories]);
+  const scheduleCalendarCells = useMemo(
+    () =>
+      buildScheduleCalendarDayCells(
+        calendarMonth,
+        calendarSlotsByDate,
+        calendarFeedEventsByDate,
+        today(),
+        { tasksById: calendarTasksById, categoriesById: calendarCategoriesById }
+      ),
+    [
+      calendarMonth,
+      calendarSlotsByDate,
+      calendarFeedEventsByDate,
+      calendarTasksById,
+      calendarCategoriesById,
+    ]
+  );
+  const [scheduleBlocks, setScheduleBlocks] = useState<ScheduleBlock[]>([]);
+  const [selectedScheduleBlockTypeId, setSelectedScheduleBlockTypeId] = useState<number | ''>('');
+  /** Today block strip: snapped row index for add-block ghost (null = hidden). */
+  const [blockStripGhostSlotIndex, setBlockStripGhostSlotIndex] = useState<number | null>(null);
+  /** Block strip: which lane block is being edge-resized (highlight + UX). */
+  const [stripResizingBlockId, setStripResizingBlockId] = useState<number | null>(null);
+  const [stripDraggingBlockId, setStripDraggingBlockId] = useState<number | null>(null);
+  /** Block strip: inline block-type editor (click block without dragging). */
+  const [stripBlockTypePickerBlockId, setStripBlockTypePickerBlockId] = useState<number | null>(null);
+  /** Desktop schedule grid: add-task ghost (column date + placement). */
+  const [scheduleAddTaskGhost, setScheduleAddTaskGhost] = useState<{
+    columnDate: string;
+    placement: AddTaskGhostPlacement;
+  } | null>(null);
+  const weekPrefetchStartedRef = useRef(false);
+  const optimisticIdRef = useRef(-1);
   const [organizationModalTaskId, setOrganizationModalTaskId] = useState<number | null>(null);
+  const [organizationBulkTaskIds, setOrganizationBulkTaskIds] = useState<number[] | null>(null);
   const [hoverDropTaskId, setHoverDropTaskId] = useState<number | null>(null);
-  const [dropZoneHighlight, setDropZoneHighlight] = useState<'unassigned' | 'pending' | null>(null);
+  const [dropZoneHighlight, setDropZoneHighlight] = useState<string | null>(null);
   const [scheduleDropGhostMin, setScheduleDropGhostMin] = useState<number | null>(null);
   const [scheduleDropUntimedHighlight, setScheduleDropUntimedHighlight] = useState(false);
   const [lastUndoable, setLastUndoable] = useState<{ revert: () => Promise<void> } | null>(null);
   const undoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [orphanModal, setOrphanModal] = useState<{
     taskId: number;
-    targetListState: 'unassigned' | 'pending';
+    targetListState: string;
     rootSlotId: number;
     completedChildSlotIds: number[];
     incompleteChildSlotIds: number[];
@@ -528,6 +835,8 @@ export function TaskListAndSchedule({
     type: 'complete' | 'remove';
     slot: ScheduledSlot;
     childSlots: ScheduledSlot[];
+    /** Calendar day the action applies to (view date or week column). */
+    occurrenceDate: string;
   } | null>(null);
   const [futureCompleteModal, setFutureCompleteModal] = useState<{ slot: ScheduledSlot } | null>(null);
   const [recurringConfigModal, setRecurringConfigModal] = useState<{
@@ -557,14 +866,14 @@ export function TaskListAndSchedule({
   const dragStateRef = useRef<{
     taskId: number;
     taskIds: number[];
-    source: 'unassigned' | 'pending' | 'schedule' | 'common';
+    source: string;
     anchorTaskId?: number;
   } | null>(null);
   const scheduleDropStartMinRef = useRef<number | null>(null);
   const holdTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const holdPointerRef = useRef<{
     taskIds: number[];
-    source: 'unassigned' | 'pending' | 'schedule' | 'common';
+    source: string;
     clientX: number;
     clientY: number;
     onHoldStart?: () => void;
@@ -603,6 +912,77 @@ export function TaskListAndSchedule({
     });
   }, []);
 
+  const selectedListTaskIds = useMemo(
+    () =>
+      Array.from(selectedTaskIds).filter((id) => tasks.some((x) => x.id === id)),
+    [selectedTaskIds, tasks]
+  );
+  const selectedListTasks = useMemo(
+    () => selectedListTaskIds.map((id) => tasks.find((x) => x.id === id)).filter(Boolean) as Task[],
+    [selectedListTaskIds, tasks]
+  );
+  const selectedPrimaryTaskId = selectedListTasks[0]?.id ?? null;
+
+  const openOrganizationDetailsForTask = useCallback((taskId: number) => {
+    setOrganizationBulkTaskIds(null);
+    setOrganizationModalTaskId(taskId);
+  }, []);
+
+  async function runTaskListBulkDuplicate() {
+    if (selectedListTasks.length === 0) return;
+    try {
+      await Promise.all(
+        selectedListTasks.map((t) => api.tasks.create({ copy_from: t.id, list_state: t.list_state ?? primaryListId }))
+      );
+      setSelectedTaskIds(new Set());
+      setTaskBulkMode(false);
+      loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      loadData();
+    }
+  }
+
+  async function runTaskListBulkDelete() {
+    if (selectedListTasks.length === 0 || !confirm(`Delete ${selectedListTasks.length} selected task(s)?`)) return;
+    try {
+      await Promise.all(selectedListTasks.map((t) => api.tasks.delete(t.id)));
+      setSelectedTaskIds(new Set());
+      setTaskBulkMode(false);
+      loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      loadData();
+    }
+  }
+
+  async function runTaskListBulkAddToFavorites() {
+    if (selectedListTasks.length === 0) return;
+    try {
+      await Promise.all(selectedListTasks.map((t) => api.tasks.update({ id: t.id, is_common: true })));
+      setSelectedTaskIds(new Set());
+      setTaskBulkMode(false);
+      loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      loadData();
+    }
+  }
+
+  async function runTaskListBulkSetPriority(priority: string) {
+    if (selectedListTasks.length === 0) return;
+    try {
+      await Promise.all(selectedListTasks.map((t) => api.tasks.update({ id: t.id, priority })));
+      setSelectedTaskIds(new Set());
+      setTaskBulkPriorityOpen(false);
+      setTaskBulkMode(false);
+      loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      loadData();
+    }
+  }
+
   useEffect(() => {
     const w = typeof window !== 'undefined' ? localStorage.getItem('daytracker_right_panel_width') : null;
     if (w != null) {
@@ -625,8 +1005,40 @@ export function TaskListAndSchedule({
   }, []);
 
   useEffect(() => {
+    if (!priorityDisplay.levels.includes(addOptionsPriority)) {
+      setAddOptionsPriority(
+        priorityDisplay.levels.includes('low')
+          ? 'low'
+          : priorityDisplay.levels[priorityDisplay.levels.length - 1] ?? 'low'
+      );
+    }
+  }, [priorityDisplay.levels, addOptionsPriority]);
+
+  useEffect(() => {
     if (isMobile && scheduleTab === 'week') setScheduleTab('today');
   }, [isMobile, scheduleTab]);
+
+  useEffect(() => {
+    if (organizationBlocks.length === 0) {
+      setSelectedScheduleBlockTypeId('');
+      return;
+    }
+    if (selectedScheduleBlockTypeId === '' || !organizationBlocks.some((b) => b.id === selectedScheduleBlockTypeId)) {
+      setSelectedScheduleBlockTypeId(organizationBlocks[0]!.id);
+    }
+  }, [organizationBlocks, selectedScheduleBlockTypeId]);
+
+  useEffect(() => {
+    if (stripBlockTypePickerBlockId == null) return;
+    const onDoc = (ev: PointerEvent) => {
+      const t = ev.target as HTMLElement;
+      if (t.closest('.schedule-time-block-type-select')) return;
+      if (t.closest(`[data-strip-block-id="${stripBlockTypePickerBlockId}"]`)) return;
+      setStripBlockTypePickerBlockId(null);
+    };
+    document.addEventListener('pointerdown', onDoc, true);
+    return () => document.removeEventListener('pointerdown', onDoc, true);
+  }, [stripBlockTypePickerBlockId]);
 
   useEffect(() => {
     if (scheduleTab !== 'week' || isMobile) return;
@@ -669,13 +1081,13 @@ export function TaskListAndSchedule({
         const futureStr = formatLocalYmd(future);
 
         const withExt = 'links,list_items,organization';
-        const incompleteDay = isWeek ? todayStr : viewDate;
 
         let slotRes: {
           slots: ScheduledSlot[];
           linksByTaskId?: Record<number, TaskLink[]>;
           listItemsByTaskId?: Record<number, TaskListItem[]>;
         };
+        let scheduleBlockRes: { blocks: ScheduleBlock[] } = { blocks: [] };
         if (isWeek) {
           const results = await Promise.all(
             weekDatesList.map(async (ds) => {
@@ -705,8 +1117,10 @@ export function TaskListAndSchedule({
           }
           setSlotDayByRecordId(dayMap);
           slotRes = { slots: mergedSlots, linksByTaskId, listItemsByTaskId };
+          scheduleBlockRes = { blocks: [] };
         } else {
           slotRes = await api.slots.list(day!.id, { with: 'links,list_items' });
+          scheduleBlockRes = await api.scheduleBlocks.list(day!.id).catch(() => ({ blocks: [] }));
           const dm: Record<number, string> = {};
           slotRes.slots.forEach((s) => {
             const drId = Number(s.day_record_id);
@@ -715,25 +1129,20 @@ export function TaskListAndSchedule({
           setSlotDayByRecordId(dm);
         }
 
-        const [
-          allTasksRes,
-          unassignedRes,
-          pendingRes,
-          incompleteRes,
-          accomplishedRes,
-          scheduledRangeRes,
-          settingsRes,
-          organizationRes,
-        ] = await Promise.all([
-          api.tasks.list({ with: withExt }),
-          api.tasks.list({ list_state: 'unassigned', with: withExt }),
-          api.tasks.list({ list_state: 'pending', with: withExt }),
-          api.tasks.list({ view: 'incomplete', day: incompleteDay, with: withExt }),
-          api.accomplished.listAll({ with: 'links,list_items' }),
-          api.slots.listByDateRange(todayStr, futureStr),
-          api.settings.get(),
-          api.organization.list().catch(() => ({ categories: [], subcategories: [], tags: [] })),
-        ]);
+        const [allTasksRes, accomplishedRes, scheduledRangeRes, settingsRes, organizationRes, favoriteFoldersRes] =
+          await Promise.all([
+            api.tasks.list({ with: withExt }),
+            api.accomplished.listAll({ with: withExt }),
+            api.slots.listByDateRange(todayStr, futureStr),
+            api.settings.get(),
+            api.organization.list().catch(() => ({ categories: [], subcategories: [], tags: [], blocks: [] })),
+            api.favoriteFolders.list().catch(() => ({ folders: [] as FavoriteFolder[] })),
+          ]);
+
+        const bucketsForFetch = bucketLayoutFromSettings(settingsRes);
+        const bucketTaskRes = await Promise.all(
+          bucketsForFetch.map((b) => api.tasks.list({ list_state: b.id, with: withExt }))
+        );
 
         const allTasks = allTasksRes.tasks ?? [];
         setTasks(allTasks);
@@ -743,10 +1152,18 @@ export function TaskListAndSchedule({
         setOrganizationCategories(organizationRes.categories ?? []);
         setOrganizationSubcategories(organizationRes.subcategories ?? []);
         setOrganizationTags(organizationRes.tags ?? []);
+        setOrganizationBlocks(organizationRes.blocks ?? []);
+        setScheduleBlocks(scheduleBlockRes.blocks ?? []);
+        setFavoriteFolders(favoriteFoldersRes.folders ?? []);
 
         const linksByTaskId: Record<number, TaskLink[]> = {};
         const listItemsByTaskId: Record<number, TaskListItem[]> = {};
-        for (const res of [allTasksRes, unassignedRes, pendingRes, incompleteRes, accomplishedRes, slotRes as { linksByTaskId?: Record<number, TaskLink[]>; listItemsByTaskId?: Record<number, TaskListItem[]> }]) {
+        for (const res of [
+          allTasksRes,
+          ...bucketTaskRes,
+          accomplishedRes,
+          slotRes as { linksByTaskId?: Record<number, TaskLink[]>; listItemsByTaskId?: Record<number, TaskListItem[]> },
+        ]) {
           const links = (res as { linksByTaskId?: Record<number, TaskLink[]> }).linksByTaskId;
           if (links) Object.assign(linksByTaskId, links);
           const items = (res as { listItemsByTaskId?: Record<number, TaskListItem[]> }).listItemsByTaskId;
@@ -772,10 +1189,13 @@ export function TaskListAndSchedule({
         setTaskLinksByTaskId(linksByTaskId);
         setTaskListItemsByTaskId(sortedListItems);
 
-        setIncompleteRootIds(new Set(incompleteRes.incompleteRootIds ?? []));
-        const accIds = new Set<number>();
-        Object.values(accomplishedRes.byDate ?? {}).forEach((arr) => arr.forEach((a) => accIds.add(a.task_id)));
-        setAccomplishedTaskIds(accIds);
+        const permanentlyCompletedIds = new Set<number>();
+        Object.entries(accomplishedRes.byDate ?? {}).forEach(([day, arr]) => {
+          if (day < todayStr) {
+            arr.forEach((a) => permanentlyCompletedIds.add(a.task_id));
+          }
+        });
+        setAccomplishedTaskIds(permanentlyCompletedIds);
         const schedIds = new Set<number>();
         Object.values(scheduledRangeRes.byDate ?? {}).forEach((arr: ScheduledSlot[]) => arr.forEach((s) => schedIds.add(s.task_id)));
         setScheduledTaskIdsFromTodayOnward(schedIds);
@@ -819,6 +1239,12 @@ export function TaskListAndSchedule({
         .then((d) =>
           api.slots.list(d.id, { with: 'links,list_items' }).then((r) => {
             setSlots(r.slots);
+            const dm: Record<number, string> = {};
+            r.slots.forEach((s) => {
+              const drId = Number(s.day_record_id);
+              if (Number.isFinite(drId)) dm[drId] = date;
+            });
+            setSlotDayByRecordId((prev) => ({ ...prev, ...dm }));
             if (r.linksByTaskId) setTaskLinksByTaskId((prev) => ({ ...prev, ...r.linksByTaskId }));
             if (r.listItemsByTaskId) {
               setTaskListItemsByTaskId((prev) => {
@@ -853,6 +1279,15 @@ export function TaskListAndSchedule({
         return { ...x, ...p };
       })
     );
+    setCommonTasks((prev) =>
+      prev.map((x) => {
+        if (x.id !== patched.id) return x;
+        const p = { ...patched } as Task & { recurring?: boolean | number; is_common?: boolean | number };
+        if (typeof p.recurring === 'number') p.recurring = p.recurring !== 0;
+        if (typeof p.is_common === 'number') p.is_common = p.is_common !== 0;
+        return { ...x, ...p };
+      })
+    );
   }, []);
 
   const refetchOrganization = useCallback(() => {
@@ -860,6 +1295,7 @@ export function TaskListAndSchedule({
       setOrganizationCategories(r.categories ?? []);
       setOrganizationSubcategories(r.subcategories ?? []);
       setOrganizationTags(r.tags ?? []);
+      setOrganizationBlocks(r.blocks ?? []);
     }).catch(() => {});
   }, []);
 
@@ -891,6 +1327,39 @@ export function TaskListAndSchedule({
     loadData();
   }, [loadData]);
 
+  /** Prefetch current week slots (today first) so Week view is warm after load. */
+  useEffect(() => {
+    if (isMobile || weekPrefetchStartedRef.current) return;
+    weekPrefetchStartedRef.current = true;
+    const anchor = sundayOfWeekContaining(today());
+    const dates = buildWeekDates(anchor, weekScope);
+    const todayStr = today();
+    const ordered = [todayStr, ...dates.filter((d) => d !== todayStr)];
+    void (async () => {
+      const dayMap: Record<number, string> = {};
+      const merged: ScheduledSlot[] = [];
+      for (const ds of ordered) {
+        try {
+          const dr = await api.day.getOrCreate(ds);
+          const r = await api.slots.list(dr.id);
+          for (const s of r.slots) {
+            merged.push(s);
+            const drId = Number(s.day_record_id);
+            if (Number.isFinite(drId)) dayMap[drId] = ds;
+          }
+          setSlots((prev) => {
+            const byId = new Map(prev.map((s) => [s.id, s]));
+            merged.forEach((s) => byId.set(s.id, s));
+            return Array.from(byId.values());
+          });
+          setSlotDayByRecordId((prev) => ({ ...prev, ...dayMap }));
+        } catch {
+          /* ignore prefetch errors */
+        }
+      }
+    })();
+  }, [isMobile, weekScope]);
+
   useEffect(() => {
     if (viewDate < today()) {
       setScheduleBulkMode(false);
@@ -920,30 +1389,75 @@ export function TaskListAndSchedule({
     return () => {
       icalPhaseTimersRef.current.forEach(clearTimeout);
       icalPhaseTimersRef.current = [];
+      // Clear the pending 10-min remote-sync retry so it doesn't fire after
+      // the component unmounts (would set state on an unmounted tree).
+      if (icalRemoteSyncRetryRef.current != null) {
+        clearTimeout(icalRemoteSyncRetryRef.current);
+        icalRemoteSyncRetryRef.current = null;
+      }
     };
   }, []);
 
+  /**
+   * Only one iCal fetch can be in flight at a time (see TODO-mobile bug list).
+   * Re-entrant calls during a download return the existing promise so callers
+   * still see a resolution but no second network request fires.
+   */
+  type IcalFetchResult = {
+    events: IcalFeedEvent[];
+    errors?: Array<{ feed_url: string; message: string }>;
+    subscription_sync?: IcalSubscriptionSyncEntry[];
+  };
   function runIcalFetchWithPhase(
     from: string,
     to: string,
     opts?: { force_sync?: boolean; sync_if_stale?: boolean }
-  ): Promise<{
-    events: IcalFeedEvent[];
-    errors?: Array<{ feed_url: string; message: string }>;
-    subscription_sync?: IcalSubscriptionSyncEntry[];
-  }> {
+  ): Promise<IcalFetchResult> {
+    if (icalFetchInFlightRef.current) {
+      // Single-flight: surface the already-running fetch's promise so callers
+      // wait on the same network round-trip instead of stacking duplicates.
+      return icalFetchInFlightRef.current;
+    }
     icalPhaseTimersRef.current.forEach(clearTimeout);
     icalPhaseTimersRef.current = [];
+    // A new fetch is starting — cancel any pending remote-sync retry; if
+    // this fetch comes back with `another_sync_in_progress` again we'll
+    // schedule a fresh one below.
+    if (icalRemoteSyncRetryRef.current != null) {
+      clearTimeout(icalRemoteSyncRetryRef.current);
+      icalRemoteSyncRetryRef.current = null;
+    }
     setIcalSyncPhase('downloading');
     const t1 = setTimeout(() => setIcalSyncPhase('parsing'), 800);
     const t2 = setTimeout(() => setIcalSyncPhase('saving'), 1600);
     icalPhaseTimersRef.current = [t1, t2];
-    return api.icalEvents.get(from, to, opts).then(
+    const inflight = api.icalEvents.get(from, to, opts).then(
       (r) => {
         icalPhaseTimersRef.current.forEach(clearTimeout);
         icalPhaseTimersRef.current = [];
-        setIcalSyncPhase('loading');
-        setTimeout(() => setIcalSyncPhase('synced'), 100);
+        // Cross-device single-flight: server reports another tab/device is
+        // currently downloading. Stay in a "Syncing…" state (spinner) and
+        // schedule an auto-retry so we eventually pick up the fresh data.
+        const remoteSyncing =
+          (r.subscription_sync ?? []).some(
+            (s) => s.skip_reason === 'another_sync_in_progress'
+          );
+        if (remoteSyncing) {
+          setIcalSyncPhase('remote_sync');
+          icalRemoteSyncRetryRef.current = setTimeout(() => {
+            icalRemoteSyncRetryRef.current = null;
+            // Re-trigger the same fetch range; force a stale-eligible request
+            // so the server will actually try again (lock should be released
+            // by now in the common case).
+            runIcalFetchWithPhase(from, to, { sync_if_stale: true }).catch(() => {
+              // Swallow — the catch handler below already set 'idle' on the
+              // failing run; we don't want one bad retry to fight the UI.
+            });
+          }, ICAL_REMOTE_SYNC_RETRY_MS);
+        } else {
+          setIcalSyncPhase('loading');
+          setTimeout(() => setIcalSyncPhase('synced'), 100);
+        }
         setIcalSubscriptionSyncReport(r.subscription_sync ?? []);
         return r;
       },
@@ -954,6 +1468,14 @@ export function TaskListAndSchedule({
         throw err;
       }
     );
+    icalFetchInFlightRef.current = inflight;
+    inflight.finally(() => {
+      // Clear once settled so the next legitimate trigger can start a fresh fetch.
+      if (icalFetchInFlightRef.current === inflight) {
+        icalFetchInFlightRef.current = null;
+      }
+    });
+    return inflight;
   }
 
   // Today tab: fetch iCal feed events only when the visible month changes (not on every viewDate change)
@@ -1116,20 +1638,6 @@ export function TaskListAndSchedule({
     return () => cancelAnimationFrame(raf);
   }, [showDebugOverlays, isMobile]);
 
-  useLayoutEffect(() => {
-    if (openPrioritySlotId == null) {
-      setSchedulePriorityPickerPosition(null);
-      return;
-    }
-    const btn = schedulePriorityButtonRef.current;
-    if (btn) {
-      const r = btn.getBoundingClientRect();
-      setSchedulePriorityPickerPosition({ top: r.top, left: r.right + 6 });
-    } else {
-      setSchedulePriorityPickerPosition(null);
-    }
-  }, [openPrioritySlotId]);
-
   useEffect(() => {
     if (newTaskIdToBlink == null) return;
     const el = taskListScrollRef.current?.querySelector(`[data-task-id="${newTaskIdToBlink}"]`);
@@ -1162,15 +1670,17 @@ export function TaskListAndSchedule({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [lastUndoable]);
 
-  const slotDurationMinutes = settings.increment_unit === 'hr' ? settings.increment_value * 60 : settings.increment_value;
+  const rawIncrement = Number(settings.increment_value);
+  const safeIncrement =
+    Number.isFinite(rawIncrement) && rawIncrement > 0 ? rawIncrement : 15;
+  const slotDurationMinutes = settings.increment_unit === 'hr' ? safeIncrement * 60 : safeIncrement;
   const viewStartMinutes = settings.start_hour * 60;
   const slotLabels: string[] = [];
-  for (let m = viewStartMinutes; m < settings.end_hour * 60; m += slotDurationMinutes) {
+  for (let m = viewStartMinutes; m < settings.end_hour * 60; m = m + slotDurationMinutes) {
     slotLabels.push(formatTimeAMPM(m));
   }
   const totalHeight = slotLabels.length * ROW_HEIGHT;
 
-  const priorityRank = (p: Priority | undefined) => (p === 'commitment' ? 0 : p === 'high' ? 1 : p === 'medium' ? 2 : 3);
   const sortTasks = useCallback(
     (list: Task[]) => {
       const dir = orderDir === 'asc' ? 1 : -1;
@@ -1180,7 +1690,7 @@ export function TaskListAndSchedule({
           return dir * cmp;
         }
         if (orderBy === 'priority') {
-          const cmp = priorityRank(a.priority) - priorityRank(b.priority);
+          const cmp = priorityDisplay.priorityRank(a.priority) - priorityDisplay.priorityRank(b.priority);
           return dir * cmp;
         }
         const aDate = a.created_at ? new Date(a.created_at).getTime() : 0;
@@ -1188,30 +1698,10 @@ export function TaskListAndSchedule({
         return dir * (aDate - bDate);
       });
     },
-    [orderBy, orderDir]
+    [orderBy, orderDir, priorityDisplay]
   );
 
   const scheduledTaskIdsOnViewDay = new Set(slots.map((s) => s.task_id));
-  const unassigned = sortTasks(
-    tasks.filter(
-      (t) =>
-        (t.list_state ?? 'unassigned') === 'unassigned' &&
-        !t.parent_id &&
-        !t.is_common &&
-        !scheduledTaskIdsOnViewDay.has(t.id) &&
-        !scheduledTaskIdsFromTodayOnward.has(t.id) &&
-        !accomplishedTaskIds.has(t.id)
-    )
-  );
-  const pending = sortTasks(
-    tasks.filter(
-      (t) =>
-        (t.list_state ?? '') === 'pending' &&
-        !t.parent_id &&
-        !t.is_common &&
-        !scheduledTaskIdsFromTodayOnward.has(t.id)
-    )
-  );
   const taskMatchesSearch = useCallback(
     (task: Task, q: string): boolean => {
       if (!q.trim()) return true;
@@ -1225,11 +1715,63 @@ export function TaskListAndSchedule({
     },
     [taskLinksByTaskId, taskListItemsByTaskId]
   );
-  const unassignedFiltered = taskSearchQuery.trim() ? unassigned.filter((t) => taskMatchesSearch(t, taskSearchQuery)) : unassigned;
-  const pendingFiltered = taskSearchQuery.trim() ? pending.filter((t) => taskMatchesSearch(t, taskSearchQuery)) : pending;
+
+  const bucketTasksSorted = useMemo(() => {
+    const prim = bucketDefs[0]?.id ?? 'unassigned';
+    return bucketDefs.map((b, index) => ({
+      ...b,
+      tasks: sortTasks(
+        tasks.filter((t) => {
+          const ls = t.list_state ?? prim;
+          if (ls !== b.id || t.parent_id || t.is_common) return false;
+          // Past-day completions are permanent: hide from all list buckets unless the group
+          // still has incomplete members (group stays in its bucket until all work is done).
+          if (accomplishedTaskIds.has(t.id)) {
+            const hasIncompleteGroupMember = tasks.some(
+              (c) => c.parent_id === t.id && !accomplishedTaskIds.has(c.id)
+            );
+            if (!hasIncompleteGroupMember) return false;
+          }
+          if (index === 0) {
+            return (
+              !scheduledTaskIdsOnViewDay.has(t.id) &&
+              !scheduledTaskIdsFromTodayOnward.has(t.id)
+            );
+          }
+          return !scheduledTaskIdsFromTodayOnward.has(t.id);
+        })
+      ),
+    }));
+  }, [bucketDefs, tasks, sortTasks, slots, scheduledTaskIdsFromTodayOnward, accomplishedTaskIds]);
+
+  const bucketTasksFiltered = useMemo(
+    () =>
+      bucketTasksSorted.map((bt) => ({
+        ...bt,
+        tasks: taskSearchQuery.trim() ? bt.tasks.filter((t) => taskMatchesSearch(t, taskSearchQuery)) : bt.tasks,
+      })),
+    [bucketTasksSorted, taskSearchQuery, taskMatchesSearch]
+  );
+
   const commonFiltered = sortTasks(
     taskSearchQuery.trim() ? commonTasks.filter((t) => taskMatchesSearch(t, taskSearchQuery)) : commonTasks
   );
+
+  /** When not searching: group favorites by folder. Search uses flat `commonFiltered` only. */
+  const favoritesGroupedSections = useMemo(() => {
+    if (taskSearchQuery.trim()) return null;
+    const sorted = sortTasks(commonTasks);
+    const unfiled = sorted.filter((t) => t.favorite_folder_id == null || t.favorite_folder_id === undefined);
+    const sections = [
+      { folderId: null as number | null, label: 'Unfiled', tasks: unfiled },
+      ...favoriteFolders.map((f) => ({
+        folderId: f.id,
+        label: f.name,
+        tasks: sorted.filter((t) => Number(t.favorite_folder_id) === f.id),
+      })),
+    ];
+    return sections.filter((s) => s.tasks.length > 0);
+  }, [taskSearchQuery, commonTasks, favoriteFolders, sortTasks]);
 
   const getChildTaskIds = (taskId: number): number[] => {
     const children = tasks.filter((t) => t.parent_id === taskId);
@@ -1314,9 +1856,14 @@ export function TaskListAndSchedule({
     const title = newCommonTaskTitle.trim();
     if (!title) return;
     api.tasks
-      .create({ title, is_common: true })
+      .create({
+        title,
+        is_common: true,
+        ...(newCommonTaskFolderId !== '' ? { favorite_folder_id: newCommonTaskFolderId } : {}),
+      })
       .then(() => {
         setNewCommonTaskTitle('');
+        setNewCommonTaskFolderId('');
         loadData();
       })
       .catch((e) => {
@@ -1328,13 +1875,27 @@ export function TaskListAndSchedule({
   const handleAddTaskWithOptions = () => {
     const title = addOptionsTitle.trim();
     if (!title) return;
+    let due: string | undefined;
+    if (addOptionsDueDate.trim() !== '') {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(addOptionsDueDate.trim())) {
+        window.alert('Due date must be YYYY-MM-DD or empty.');
+        return;
+      }
+      due = addOptionsDueDate.trim();
+    }
     api.tasks
-      .create({ title, priority: addOptionsPriority, recurring: addOptionsRecurring })
+      .create({
+        title,
+        priority: addOptionsPriority,
+        recurring: addOptionsRecurring,
+        ...(due ? { due_date: due } : {}),
+      })
       .then(() => {
         loadData();
         setAddOptionsOpen(false);
         setAddOptionsTitle('');
-        setAddOptionsPriority('low');
+        setAddOptionsDueDate('');
+        setAddOptionsPriority(priorityDisplay.levels.includes('low') ? 'low' : priorityDisplay.levels[priorityDisplay.levels.length - 1] ?? 'low');
         setAddOptionsRecurring(false);
       })
       .catch(alert);
@@ -1347,7 +1908,7 @@ export function TaskListAndSchedule({
     let task = tasks.find((t) => t.id === scheduleTargetId);
     if (!task) return;
     if (task.is_common) {
-      const created = await api.tasks.create({ copy_from: scheduleTargetId, list_state: 'unassigned' });
+      const created = await api.tasks.create({ copy_from: scheduleTargetId, list_state: primaryListId });
       scheduleTargetId = created.id;
       task = { ...task, id: created.id, is_common: false, recurring: false };
     }
@@ -1369,14 +1930,12 @@ export function TaskListAndSchedule({
     const memberIds = isGroupRoot ? [task.id, ...orderedDirectChildren.map((c) => c.id)] : [task.id];
     const memberCount = memberIds.length;
 
-    // Due date + optional "increase priority" happens at schedule time.
-    // For grouped tasks, apply due_date (and priority bump if enabled) to all direct members.
+    // Due date is set at schedule time for all group members. Auto-prioritize is per-task in Task details.
     await Promise.all(
       memberIds.map((id) =>
         api.tasks.update({
           id,
           due_date: dateStr,
-          ...(scheduleDueAutoPriority ? { priority: 'high' as Priority } : {}),
         })
       )
     );
@@ -1438,26 +1997,56 @@ export function TaskListAndSchedule({
     setScheduleTimeValue('09:00');
     setScheduleNoTime(false);
     setScheduleSlotIdToReplace(null);
-    setScheduleDueAutoPriority(false);
     loadData();
     if (scheduleTab === 'calendar') setCalendarMonth(dateStr);
   };
 
   const handleUngroupGroup = async (rootTaskId: number) => {
-    // Ungroup means: remove grouping by setting all descendants' parent_id to NULL.
-    // Root tasks stay as their own independent tasks.
-    const ids = getChildTaskIds(rootTaskId);
-    if (ids.length === 0) return;
-    await Promise.all(ids.map((id) => api.tasks.update({ id, parent_id: null })));
+    const daySlots = slots.filter((s) => slotDayByRecordId[Number(s.day_record_id)] === viewDate);
+    const rootSlot = daySlots.find(
+      (s) =>
+        s.task_id === rootTaskId &&
+        (s.parent_id == null || !daySlots.some((o) => o.task_id === s.parent_id))
+    );
+    const childIds = getChildTaskIds(rootTaskId);
+    if (childIds.length === 0) return;
+
+    const updates: Promise<unknown>[] = childIds.map((id) =>
+      api.tasks.update({ id, parent_id: null, group_order: 0 })
+    );
+
+    if (rootSlot) {
+      const orderedChildren = daySlots
+        .filter((s) => s.parent_id === rootTaskId)
+        .slice()
+        .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0) || a.id - b.id);
+      const { startMin, endMin } = timedSlotLayoutBounds(rootSlot, orderedChildren);
+      const segments = computeGroupMemberSlotTimes(
+        rootSlot,
+        orderedChildren,
+        startMin,
+        endMin,
+        slotDurationMinutes
+      );
+      for (const seg of segments) {
+        if (seg.slot.id > 0) {
+          updates.push(
+            api.slots.update({
+              id: seg.slot.id,
+              start_time: minutesToTime(seg.startMin),
+              end_time: minutesToTime(seg.endMin),
+            })
+          );
+        }
+      }
+    }
+
+    await Promise.all(updates);
     loadData();
   };
 
   const handleDropOnListZone = useCallback(
-    async (
-      targetListState: 'unassigned' | 'pending',
-      taskIds: number[],
-      source: 'unassigned' | 'pending' | 'schedule' | 'common'
-    ) => {
+    async (targetListState: string, taskIds: number[], source: string) => {
       try {
         if (source === 'common') {
           for (const taskId of taskIds) {
@@ -1513,44 +2102,6 @@ export function TaskListAndSchedule({
           }
           continue;
         }
-        if ((source === 'unassigned' || source === 'pending') && incompleteRootIds.has(taskId)) {
-          const yesterday = new Date(viewDate + 'T12:00:00');
-          yesterday.setDate(yesterday.getDate() - 1);
-          const yesterdayStr = formatLocalYmd(yesterday);
-          try {
-            const day = await api.day.getOrCreate(yesterdayStr);
-            const res = await api.slots.list(day.id);
-            const daySlots = res.slots || [];
-            const rootSlot = daySlots.find((s) => s.task_id === taskId && (s.parent_id == null || !daySlots.some((o) => o.task_id === s.parent_id)));
-            if (!rootSlot) {
-              await api.tasks.update({ id: taskId, list_state: targetListState });
-              continue;
-            }
-            const childSlots = daySlots.filter((s) => s.parent_id === rootSlot.task_id);
-            const completedChildSlotIds = childSlots.filter((c) => c.completed === 1).map((c) => c.id);
-            const incompleteChildSlotIds = childSlots.filter((c) => c.completed !== 1).map((c) => c.id);
-            const someCompleted = completedChildSlotIds.length > 0 || rootSlot.completed === 1;
-            const someIncomplete = incompleteChildSlotIds.length > 0 || rootSlot.completed !== 1;
-            if (someCompleted && someIncomplete) {
-              if (taskIds.length === 1) {
-                setOrphanModal({
-                  taskId,
-                  targetListState,
-                  rootSlotId: rootSlot.id,
-                  completedChildSlotIds,
-                  incompleteChildSlotIds,
-                });
-                return;
-              }
-              await resolveOrphanAndMove(taskId, targetListState, 'no', rootSlot.id, completedChildSlotIds, incompleteChildSlotIds);
-            } else {
-              await api.tasks.update({ id: taskId, list_state: targetListState });
-            }
-          } catch {
-            await api.tasks.update({ id: taskId, list_state: targetListState });
-          }
-          continue;
-        }
         const task = tasks.find((t) => t.id === taskId);
         // Case 2: when moving a single task out of a group, remove it from the group.
         if (draggingSingle && task?.parent_id != null) {
@@ -1569,12 +2120,12 @@ export function TaskListAndSchedule({
         loadData();
       }
     },
-    [viewDate, incompleteRootIds, loadData]
+    [viewDate, loadData, tasks, bucketListIds]
   );
 
   const resolveOrphanAndMove = async (
     taskId: number,
-    targetListState: 'unassigned' | 'pending',
+    targetListState: string,
     choice: 'yes' | 'no' | 'cancel',
     rootSlotId: number,
     completedChildSlotIds: number[],
@@ -1846,23 +2397,25 @@ export function TaskListAndSchedule({
         return;
       }
 
-      const canDropSubtaskOnUnassigned =
-        source === 'unassigned' && taskIds.some((id) => tasks.find((t) => t.id === id)?.parent_id != null);
       // Resolve list zones on any ancestor first. Otherwise a drop on top of another task row
       // matches data-task-id before data-drop-zone and is treated as group-attach, leaving schedule
-      // slots and/or parent_id set so the task vanishes from Unassigned/Pending (!parent_id filters).
+      // slots and/or parent_id set so the task vanishes from list buckets (!parent_id filters).
       let zoneProbe: Element | null = el;
       while (zoneProbe) {
         const z = zoneProbe.getAttribute('data-drop-zone');
         if (
-          z === 'unassigned' &&
-          (source === 'pending' || source === 'schedule' || source === 'common' || canDropSubtaskOnUnassigned)
+          z != null &&
+          bucketListIds.includes(z) &&
+          canDropTaskOnBucketZone({
+            targetBucketId: z,
+            source,
+            primaryBucketId: primaryListId,
+            allBucketIds: bucketListIds,
+            taskIds,
+            tasks,
+          })
         ) {
-          handleDropOnListZone('unassigned', taskIds, source);
-          return;
-        }
-        if (z === 'pending' && (source === 'unassigned' || source === 'schedule' || source === 'common')) {
-          handleDropOnListZone('pending', taskIds, source);
+          handleDropOnListZone(z, taskIds, source);
           return;
         }
         zoneProbe = zoneProbe.parentElement;
@@ -1926,7 +2479,7 @@ export function TaskListAndSchedule({
                 const toAttach = taskIds.filter((id) => id !== targetId);
                 if (source === 'common') {
                   for (const tid of toAttach) {
-                    const created = await api.tasks.create({ copy_from: tid, list_state: 'unassigned' });
+                    const created = await api.tasks.create({ copy_from: tid, list_state: primaryListId });
                     await api.tasks.update({ id: created.id, parent_id: effectiveParentId });
                   }
                 } else {
@@ -1961,7 +2514,7 @@ export function TaskListAndSchedule({
                 let rootTaskId = origId;
                 let recurring = template.recurring;
                 if (source === 'common') {
-                  const created = await api.tasks.create({ copy_from: origId, list_state: 'unassigned' });
+                  const created = await api.tasks.create({ copy_from: origId, list_state: primaryListId });
                   rootTaskId = created.id;
                   recurring = false;
                 }
@@ -2020,7 +2573,7 @@ export function TaskListAndSchedule({
         const scheduleDropUntimed = node.getAttribute('data-schedule-drop-untimed');
         if (scheduleDropUntimed === 'true') {
           if (viewDate < today()) return;
-          if (source === 'unassigned' || source === 'pending' || source === 'common') {
+          if (bucketListIds.includes(source) || source === 'common') {
             (async () => {
               try {
                 const day = await api.day.getOrCreate(viewDate);
@@ -2035,7 +2588,7 @@ export function TaskListAndSchedule({
                   if (source !== 'common' && task.recurring && viewDate > today()) continue;
                   const ids =
                     source === 'common'
-                      ? [(await api.tasks.create({ copy_from: origId, list_state: 'unassigned' })).id]
+                      ? [(await api.tasks.create({ copy_from: origId, list_state: primaryListId })).id]
                       : task.parent_id == null
                         ? [task.id, ...getChildTaskIds(task.id)]
                         : [task.id];
@@ -2081,7 +2634,7 @@ export function TaskListAndSchedule({
         const scheduleDrop = node.getAttribute('data-schedule-drop');
         if (scheduleDrop === 'true') {
           if (dropTargetDate < today()) return;
-          if (source === 'unassigned' || source === 'pending' || source === 'common') {
+          if (bucketListIds.includes(source) || source === 'common') {
           (async () => {
             try {
               const day = await api.day.getOrCreate(dropTargetDate);
@@ -2099,7 +2652,7 @@ export function TaskListAndSchedule({
                 let rootTaskId = origId;
                 let recurring = template.recurring;
                 if (source === 'common') {
-                  const created = await api.tasks.create({ copy_from: origId, list_state: 'unassigned' });
+                  const created = await api.tasks.create({ copy_from: origId, list_state: primaryListId });
                   rootTaskId = created.id;
                   recurring = false;
                 }
@@ -2257,6 +2810,8 @@ export function TaskListAndSchedule({
       slotDurationMinutes,
       slotDayByRecordId,
       relocateTimedRootToDate,
+      primaryListId,
+      bucketListIds,
     ]
   );
 
@@ -2332,21 +2887,25 @@ export function TaskListAndSchedule({
         node = node.parentElement;
       }
       setHoverDropTaskId((prev) => (prev !== found ? found : prev));
-      let zone: 'unassigned' | 'pending' | null = null;
+      let zone: string | null = null;
       node = el;
       while (node) {
         const z = node.getAttribute('data-drop-zone');
-        if (z === 'unassigned' || z === 'pending') {
+        if (z != null && bucketListIds.includes(z)) {
           const src = info.source;
-          const canUnassigned =
-            src === 'pending' ||
-            src === 'schedule' ||
-            src === 'common' ||
-            (src === 'unassigned' && taskIds.some((id) => tasks.find((t) => t.id === id)?.parent_id != null));
-          const canPending = src === 'unassigned' || src === 'schedule' || src === 'common';
-          if (z === 'unassigned' && canUnassigned) zone = 'unassigned';
-          else if (z === 'pending' && canPending) zone = 'pending';
-          break;
+          if (
+            canDropTaskOnBucketZone({
+              targetBucketId: z,
+              source: src,
+              primaryBucketId: primaryListId,
+              allBucketIds: bucketListIds,
+              taskIds,
+              tasks,
+            })
+          ) {
+            zone = z;
+            break;
+          }
         }
         node = node.parentElement;
       }
@@ -2419,7 +2978,9 @@ export function TaskListAndSchedule({
         }
       }
       if (!scheduleScroll) {
-        scheduleScroll = document.querySelector('.left-bottom .schedule-content') as HTMLElement | null;
+        scheduleScroll =
+          (document.querySelector('.schedule-time-body[data-schedule-scroll-host]') as HTMLElement | null) ??
+          (document.querySelector('.left-bottom .schedule-content') as HTMLElement | null);
       }
       if (scheduleScroll && scheduleScroll.scrollHeight > scheduleScroll.clientHeight) {
         const rect = scheduleScroll.getBoundingClientRect();
@@ -2475,6 +3036,9 @@ export function TaskListAndSchedule({
     slotDurationMinutes,
     scheduleTab,
     isMobile,
+    tasks,
+    bucketListIds,
+    primaryListId,
   ]);
 
   const startBulkScheduleMoveHold = useCallback(
@@ -2531,11 +3095,12 @@ export function TaskListAndSchedule({
   const startHold = useCallback(
     (
       taskId: number,
-      source: 'unassigned' | 'pending' | 'schedule' | 'common',
+      source: string,
       clientX: number,
       clientY: number,
       onHoldStart?: () => void,
-      scheduleColumnDate?: string
+      scheduleColumnDate?: string,
+      onShortPress?: () => void
     ) => {
       if (source === 'schedule' && scheduleBulkMode && !scheduleBulkMoveMode) return;
       if (source === 'schedule') {
@@ -2557,7 +3122,9 @@ export function TaskListAndSchedule({
         }
       };
       const onPointerUp = () => {
+        const wasPending = holdTimeoutRef.current != null;
         cancelHold();
+        if (wasPending && onShortPress) onShortPress();
       };
       cancelMoveRef.current = cancelIfMoved;
       cancelUpRef.current = onPointerUp;
@@ -2585,6 +3152,236 @@ export function TaskListAndSchedule({
   const scheduleDayPast = viewDate < today();
   const weekHasFutureOrTodayDay = weekDates.some((d) => d >= today());
 
+  /** Instant UI for drag/resize; server sync in background. Revert via loadData on error. */
+  const patchScheduleBlockTimes = useCallback((blockId: number, start_time: string, end_time: string) => {
+    setScheduleBlocks((prev) => prev.map((b) => (b.id === blockId ? { ...b, start_time, end_time } : b)));
+  }, []);
+
+  const nextOptimisticId = useCallback(() => {
+    optimisticIdRef.current -= 1;
+    return optimisticIdRef.current;
+  }, []);
+
+  const getDayRecordIdForDate = useCallback(
+    (date: string): number | undefined => {
+      for (const [drId, d] of Object.entries(slotDayByRecordId)) {
+        if (d === date) return Number(drId);
+      }
+      if (date === viewDate && scheduleBlocks.length > 0) {
+        return scheduleBlocks[0]!.day_record_id;
+      }
+      const slot = slots.find((s) => slotDayByRecordId[Number(s.day_record_id)] === date);
+      return slot ? Number(slot.day_record_id) : undefined;
+    },
+    [slotDayByRecordId, scheduleBlocks, slots, viewDate]
+  );
+
+  const createScheduleBlockAt = useCallback(
+    async (startMin: number) => {
+      if (selectedScheduleBlockTypeId === '' || scheduleDayPast) return;
+      const blockTypeId = selectedScheduleBlockTypeId;
+      const endMin = Math.min(settings.end_hour * 60, startMin + slotDurationMinutes);
+      const start_time = minutesToTime(startMin);
+      const end_time = minutesToTime(Math.max(startMin + 1, endMin));
+      const tempId = nextOptimisticId();
+      const cachedDayId = getDayRecordIdForDate(viewDate);
+
+      setBlockStripGhostSlotIndex(null);
+      setScheduleBlocks((prev) => [
+        ...prev,
+        enrichScheduleBlockFromOrg(
+          {
+            id: tempId,
+            day_record_id: cachedDayId ?? 0,
+            block_id: blockTypeId,
+            start_time,
+            end_time,
+          },
+          organizationBlocks
+        ),
+      ]);
+
+      try {
+        const day = await api.day.getOrCreate(viewDate);
+        setSlotDayByRecordId((prev) => ({ ...prev, [day.id]: viewDate }));
+        const created = await api.scheduleBlocks.create({
+          day_record_id: day.id,
+          block_id: blockTypeId,
+          start_time,
+          end_time,
+        });
+        setScheduleBlocks((prev) =>
+          prev.map((b) =>
+            b.id === tempId
+              ? enrichScheduleBlockFromOrg(
+                  {
+                    ...created,
+                    day_record_id: day.id,
+                    block_id: blockTypeId,
+                    start_time: created.start_time ?? start_time,
+                    end_time: created.end_time ?? end_time,
+                  },
+                  organizationBlocks
+                )
+              : b
+          )
+        );
+      } catch (err) {
+        setScheduleBlocks((prev) => prev.filter((b) => b.id !== tempId));
+        setError(err instanceof Error ? err.message : String(err));
+        loadData();
+      }
+    },
+    [
+      selectedScheduleBlockTypeId,
+      scheduleDayPast,
+      settings.end_hour,
+      slotDurationMinutes,
+      organizationBlocks,
+      viewDate,
+      getDayRecordIdForDate,
+      nextOptimisticId,
+      loadData,
+    ]
+  );
+
+  const createScheduleTaskAt = useCallback(
+    async (columnDate: string, startMin: number) => {
+      if (columnDate < today()) return;
+      const viewEndMin = settings.end_hour * 60;
+      if (startMin >= viewEndMin - slotDurationMinutes) return;
+      if (scheduleDraftRef.current) {
+        cancelScheduleDraft();
+      }
+      const start_time = minutesToTime(startMin);
+      const end_time = minutesToTime(startMin + slotDurationMinutes);
+      const tempTaskId = nextOptimisticId();
+      const tempSlotId = nextOptimisticId();
+      const cachedDayId = getDayRecordIdForDate(columnDate);
+
+      setScheduleAddTaskGhost(null);
+      const optimisticTask: Task = {
+        id: tempTaskId,
+        title: '',
+        priority: 'low',
+        recurring: false,
+        parent_id: null,
+        created_at: new Date().toISOString(),
+        list_state: primaryListId,
+      };
+      const optimisticSlot: ScheduledSlot = {
+        id: tempSlotId,
+        day_record_id: cachedDayId ?? 0,
+        task_id: tempTaskId,
+        start_time,
+        end_time,
+        completed: 0,
+        order_index: 0,
+        title: '',
+        priority: 'low',
+      };
+      scheduleDraftRef.current = { taskId: tempTaskId, slotId: tempSlotId, columnDate, start_time, end_time };
+      setTasks((prev) => [...prev, optimisticTask]);
+      setSlots((prev) => [...prev, optimisticSlot]);
+      if (columnDate === viewDate || scheduleTab === 'week') {
+        setEditingScheduleTaskId(tempTaskId);
+        setEditingScheduleTitle('');
+      }
+    },
+    [
+      settings.end_hour,
+      slotDurationMinutes,
+      viewDate,
+      scheduleTab,
+      primaryListId,
+      getDayRecordIdForDate,
+      nextOptimisticId,
+      cancelScheduleDraft,
+    ]
+  );
+
+  const handleScheduleGridMouseMove = useCallback(
+    (columnDate: string, occupied: ReturnType<typeof buildDayScheduleOccupiedRects>, e: React.MouseEvent<HTMLElement>) => {
+      if (isMobile || columnDate < today() || dragState) {
+        setScheduleAddTaskGhost((g) => (g?.columnDate === columnDate ? null : g));
+        return;
+      }
+      const target = e.target as HTMLElement;
+      if (target.closest('button, a, input, select, textarea, .schedule-time-block-lane-item')) {
+        setScheduleAddTaskGhost((g) => (g?.columnDate === columnDate ? null : g));
+        return;
+      }
+      const container = e.currentTarget;
+      const rect = container.getBoundingClientRect();
+      const placement = computeAddTaskGhostPlacement({
+        relativeX: e.clientX - rect.left,
+        relativeY: e.clientY - rect.top,
+        containerWidthPx: rect.width,
+        rowHeightPx: ROW_HEIGHT,
+        slotCount: slotLabels.length,
+        occupied,
+      });
+      if (placement) {
+        setScheduleAddTaskGhost({ columnDate, placement });
+      } else {
+        setScheduleAddTaskGhost((g) => (g?.columnDate === columnDate ? null : g));
+      }
+    },
+    [isMobile, dragState, slotLabels.length]
+  );
+
+  const handleScheduleGridClick = useCallback(
+    (columnDate: string, e: React.MouseEvent<HTMLElement>) => {
+      if (isMobile || columnDate < today()) return;
+      if ((e.target as HTMLElement).closest('.time-block, button, a, .schedule-time-block-lane-item')) return;
+      if (!scheduleAddTaskGhost || scheduleAddTaskGhost.columnDate !== columnDate) return;
+      const startMin = snapToSlot(
+        viewStartMinutes + scheduleAddTaskGhost.placement.slotIndex * slotDurationMinutes,
+        settings.start_hour,
+        settings.end_hour,
+        slotDurationMinutes
+      );
+      void createScheduleTaskAt(columnDate, startMin);
+    },
+    [isMobile, scheduleAddTaskGhost, viewStartMinutes, slotDurationMinutes, settings.start_hour, settings.end_hour, createScheduleTaskAt]
+  );
+
+  const findNearestFreeBlockSlotIndex = useCallback(
+    (relativeY: number): number | null => {
+      const n = slotLabels.length;
+      if (n === 0) return null;
+      const viewEndMin = settings.end_hour * 60;
+      const isFree = (i: number) => {
+        const startMin = snapToSlot(
+          viewStartMinutes + i * slotDurationMinutes,
+          settings.start_hour,
+          settings.end_hour,
+          slotDurationMinutes
+        );
+        const endMin = startMin + slotDurationMinutes;
+        if (endMin > viewEndMin) return false;
+        for (const block of scheduleBlocks) {
+          const bs = timeToMinutes(block.start_time);
+          const be = timeToMinutes(block.end_time);
+          if (startMin < be && endMin > bs) return false;
+        }
+        return true;
+      };
+      const rawIdx = Math.floor(relativeY / ROW_HEIGHT);
+      const clamped = Math.max(0, Math.min(n - 1, rawIdx));
+      const tryIndices: number[] = [clamped];
+      for (let d = 1; d < n; d++) {
+        if (clamped + d < n) tryIndices.push(clamped + d);
+        if (clamped - d >= 0) tryIndices.push(clamped - d);
+      }
+      for (const i of tryIndices) {
+        if (isFree(i)) return i;
+      }
+      return null;
+    },
+    [slotLabels.length, viewStartMinutes, slotDurationMinutes, settings.start_hour, settings.end_hour, scheduleBlocks]
+  );
+
   const shiftWeekAnchorByWeeks = (deltaWeeks: number) => {
     const d = new Date(weekAnchorSunday + 'T12:00:00');
     d.setDate(d.getDate() + deltaWeeks * 7);
@@ -2597,24 +3394,63 @@ export function TaskListAndSchedule({
     [slots, slotDayByRecordId]
   );
 
-  const handleWeekColumnComplete = useCallback(
-    (columnDate: string, slot: ScheduledSlot, childSlots: ScheduledSlot[]) => {
-      if (columnDate !== today()) return;
+  const endRecurringSeriesFromDate = useCallback(
+    async (rootTaskId: number, fromDate: string, recurrenceRule: string | null | undefined) => {
+      const endInclusive = lastRecurringSeriesDayBefore(fromDate);
+      await api.tasks.update({
+        id: rootTaskId,
+        recurrence_rule: mergeRecurrenceRuleEndDate(recurrenceRule, endInclusive),
+      });
+      const toDelete: number[] = [];
+      for (const s of slots) {
+        if (s.id <= 0) continue;
+        const drId = Number(s.day_record_id);
+        const ds = slotDayByRecordId[drId];
+        if (!ds || ds < fromDate) continue;
+        if (s.task_id === rootTaskId || s.parent_id === rootTaskId) {
+          toDelete.push(s.id);
+        }
+      }
+      if (toDelete.length > 0) {
+        await Promise.all(toDelete.map((id) => api.slots.delete(id)));
+      }
+    },
+    [slots, slotDayByRecordId]
+  );
+
+  const applySlotsCompletedOptimistic = useCallback((updates: Array<{ id: number; completed: boolean }>) => {
+    if (updates.length === 0) return;
+    const byId = new Map(updates.map((u) => [u.id, u.completed]));
+    setSlots((prev) =>
+      prev.map((s) => {
+        const next = byId.get(s.id);
+        if (next === undefined) return s;
+        return { ...s, completed: next ? 1 : 0 };
+      })
+    );
+  }, []);
+
+  const handleScheduleSlotComplete = useCallback(
+    (occurrenceDate: string, slot: ScheduledSlot, childSlots: ScheduledSlot[]) => {
       const slotCompleted = Number(slot.completed) === 1;
       const newCompleted = slotCompleted ? 0 : 1;
-      if (newCompleted !== 1) {
+      const markIncomplete = () => {
+        applySlotsCompletedOptimistic([{ id: slot.id, completed: false }]);
         api.slots
           .update({ id: slot.id, completed: false })
-          .then(loadData)
           .catch((err) => {
             setError(err instanceof Error ? err.message : String(err));
             loadData();
           });
+      };
+      if (newCompleted !== 1) {
+        markIncomplete();
         return;
       }
       if (slot.is_recurring_occurrence && slot.id < 0) {
+        applySlotsCompletedOptimistic([{ id: slot.id, completed: true }]);
         api.slots
-          .completeOccurrence(slot.task_id, columnDate, slot.start_time ?? undefined, slot.end_time ?? undefined)
+          .completeOccurrence(slot.task_id, occurrenceDate, slot.start_time ?? undefined, slot.end_time ?? undefined)
           .then(loadData)
           .catch((err) => {
             setError(err instanceof Error ? err.message : String(err));
@@ -2623,33 +3459,64 @@ export function TaskListAndSchedule({
         return;
       }
       if (slot.recurring && slot.id > 0) {
-        setRecurringActionModal({ type: 'complete', slot, childSlots });
+        setRecurringActionModal({ type: 'complete', slot, childSlots, occurrenceDate });
         return;
       }
-      if (columnDate > today()) {
+      if (occurrenceDate > today()) {
         setFutureCompleteModal({ slot });
         return;
       }
-      if (childSlots.length > 0) {
+      const markComplete = () => {
+        applySlotsCompletedOptimistic([{ id: slot.id, completed: true }]);
         api.slots
           .update({ id: slot.id, completed: true })
-          .then(loadData)
           .catch((err) => {
             setError(err instanceof Error ? err.message : String(err));
             loadData();
           });
+      };
+      if (childSlots.length > 0) {
+        markComplete();
         return;
       }
-      api.slots
-        .update({ id: slot.id, completed: true })
-        .then(loadData)
-        .catch((err) => {
-          setError(err instanceof Error ? err.message : String(err));
-          loadData();
-        });
+      markComplete();
     },
-    [loadData]
+    [applySlotsCompletedOptimistic, loadData]
   );
+
+  const handleScheduleChildMemberComplete = useCallback(
+    (parentSlot: ScheduledSlot, childSlot: ScheduledSlot) => {
+      const newCompleted = Number(childSlot.completed) === 1 ? 0 : 1;
+      const optimistic: Array<{ id: number; completed: boolean }> = [
+        { id: childSlot.id, completed: newCompleted === 1 },
+      ];
+      if (newCompleted === 0 && Number(parentSlot.completed) === 1) {
+        optimistic.push({ id: parentSlot.id, completed: false });
+      }
+      applySlotsCompletedOptimistic(optimistic);
+      const updates = [api.slots.update({ id: childSlot.id, completed: newCompleted === 1 })];
+      if (newCompleted === 0 && Number(parentSlot.completed) === 1) {
+        updates.push(api.slots.update({ id: parentSlot.id, completed: false }));
+      }
+      Promise.all(updates).catch((err) => {
+        setError(err instanceof Error ? err.message : String(err));
+        loadData();
+      });
+    },
+    [applySlotsCompletedOptimistic, loadData]
+  );
+
+  const handleWeekColumnComplete = useCallback(
+    (columnDate: string, slot: ScheduledSlot, childSlots: ScheduledSlot[]) => {
+      if (columnDate !== today()) return;
+      handleScheduleSlotComplete(columnDate, slot, childSlots);
+    },
+    [handleScheduleSlotComplete]
+  );
+
+  const hideScheduleCategory = !!settings.schedule_hide_category_subcategory;
+  const hideScheduleTags = !!settings.schedule_hide_tags;
+  const { surface: scheduleContrastSurface } = useScheduleContrastSurface();
 
   /** Drag horizontal boundary between grouped child N and N+1; redistributes adjacent slice lengths. */
   const onGroupBoundaryPointerDown = useCallback(
@@ -2659,8 +3526,7 @@ export function TaskListAndSchedule({
       if (scheduleDayPast) return;
       if (slot.is_recurring_occurrence) return;
       const slotDur = Math.max(1, slotDurationMinutes);
-      const groupStartMin = timeToMinutes(slot.start_time);
-      const groupEndMin = timeToMinutes(slot.end_time);
+      const { startMin: groupStartMin, endMin: groupEndMin } = timedSlotLayoutBounds(slot, orderedChildren);
       const C = orderedChildren.length;
       if (boundaryChildIndex < 0 || boundaryChildIndex >= C) return;
       const handleEl = e.currentTarget as HTMLElement;
@@ -2736,12 +3602,64 @@ export function TaskListAndSchedule({
     [scheduleDayPast, slotDurationMinutes, settings.start_hour, settings.end_hour, setSlots, setError, loadData, refetchSlotsForViewDay]
   );
 
-  const rootSlots = slots.filter((s) => !s.parent_id || !slots.some((o) => o.task_id === s.parent_id));
+  const duplicateScheduleSlot = useCallback(
+    async (srcSlot: ScheduledSlot) => {
+      if (scheduleDayPast) return;
+      try {
+        const tk = tasks.find((x) => x.id === srcSlot.task_id);
+        const ls = tk?.list_state ?? primaryListId;
+        const created = await api.tasks.create({ copy_from: srcSlot.task_id, list_state: ls });
+        const dayRecord = await api.day.getOrCreate(viewDate);
+        await api.slots.create({
+          day_record_id: dayRecord.id,
+          task_id: created.id,
+          start_time: srcSlot.start_time ?? null,
+          end_time: srcSlot.end_time ?? null,
+          order_index: srcSlot.order_index,
+        });
+        setOpenScheduleDrawerSlotId(null);
+        await loadData();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        loadData();
+      }
+    },
+    [scheduleDayPast, tasks, primaryListId, viewDate, loadData, setError]
+  );
+
+  const removeScheduledTaskFromGroup = useCallback(
+    async (slot: ScheduledSlot) => {
+      if (scheduleDayPast) return;
+      try {
+        const updates: Array<Promise<unknown>> = [api.tasks.update({ id: slot.task_id, parent_id: null, group_order: 0 })];
+        if (slot.id > 0) updates.push(api.slots.update({ id: slot.id, parent_id: null }));
+        await Promise.all(updates);
+        setOpenScheduleDrawerSlotId(null);
+        loadData();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        loadData();
+      }
+    },
+    [scheduleDayPast, loadData]
+  );
+
+  /** Today (and mobile): only slots for viewDate. Desktop week prefetch merges other days into `slots`; week columns filter per date separately. */
+  const slotsForViewDay = useMemo(() => {
+    if (scheduleTab === 'week' && !isMobile) {
+      return slots;
+    }
+    return slots.filter((s) => slotDayByRecordId[Number(s.day_record_id)] === viewDate);
+  }, [slots, slotDayByRecordId, viewDate, scheduleTab, isMobile]);
+
+  const rootSlots = slotsForViewDay.filter(
+    (s) => !s.parent_id || !slotsForViewDay.some((o) => o.task_id === s.parent_id)
+  );
   const timedRootSlots = rootSlots.filter(slotHasTime);
   const untimedRootSlots = rootSlots.filter((s) => !slotHasTime(s));
   const childSlotsByParent = new Map<number, ScheduledSlot[]>();
   rootSlots.forEach((s) => {
-    const children = slots.filter((c) => c.parent_id === s.task_id);
+    const children = slotsForViewDay.filter((c) => c.parent_id === s.task_id);
     if (children.length) childSlotsByParent.set(s.task_id, children);
   });
   const timedFeedForOverlap = feedEvents
@@ -2751,22 +3669,50 @@ export function TaskListAndSchedule({
       return { key: 'feed-' + (e.id ?? e.uid + e.start), startMin: local.localStartMinutes, endMin: local.localEndMinutes };
     });
   const allBlocks = [
-    ...timedRootSlots.map((slot) => ({ key: slot.id as number, startMin: timeToMinutes(slot.start_time), endMin: timeToMinutes(slot.end_time) })),
+    ...timedRootSlots.map((slot) => {
+      const ch = childSlotsByParent.get(slot.task_id) ?? [];
+      const { startMin, endMin } = timedSlotLayoutBounds(slot, ch);
+      return { key: slot.id as number, startMin, endMin };
+    }),
     ...timedFeedForOverlap,
   ];
+  const overlapMap = computeOverlapMaps(allBlocks);
   const slotOverlapInfo = new Map<number, { col: number; total: number }>();
   const feedOverlapInfo = new Map<string, { col: number; total: number }>();
-  allBlocks.forEach((block) => {
-    const overlapping = allBlocks.filter((o) => o.startMin < block.endMin && o.endMin > block.startMin);
-    const sorted = [...overlapping].sort((a, b) => a.startMin - b.startMin);
-    const col = sorted.findIndex((o) => o.key === block.key);
-    const info = { col: col >= 0 ? col : 0, total: sorted.length };
+  for (const block of allBlocks) {
+    const info = overlapMap.get(block.key) ?? { col: 0, total: 1 };
     if (typeof block.key === 'number') slotOverlapInfo.set(block.key, info);
     else feedOverlapInfo.set(block.key, info);
-  });
+  }
 
   const untimedFeedEvents = feedEvents.filter(
     (e) => e.allDay && (icalEventLocalStartDate(e.start, true, settings.timezone) === viewDate || e.start.startsWith(viewDate))
+  );
+
+  const weatherDateFrom =
+    scheduleTab === 'week' && !isMobile ? weekDates[0]! : viewDate;
+  const weatherDateTo =
+    scheduleTab === 'week' && !isMobile ? weekDates[weekDates.length - 1]! : viewDate;
+  const weatherTempUnit = weatherTempUnitFromSettings(settings.weather_temp_unit);
+  const viewEndMinutes = settings.end_hour * 60;
+  const { hourlyByDate, dailyByDate, hasCoords: weatherHasCoords } = useScheduleWeather(
+    settings,
+    weatherDateFrom,
+    weatherDateTo
+  );
+
+  const dayViewOccupiedRects = useMemo(
+    () =>
+      buildDayScheduleOccupiedRects({
+        slots: slotsForViewDay,
+        feedEvents,
+        columnDate: viewDate,
+        timezone: settings.timezone ?? '',
+        viewStartMinutes,
+        slotDurationMinutes,
+        rowHeightPx: ROW_HEIGHT,
+      }),
+    [slotsForViewDay, feedEvents, viewDate, settings.timezone, viewStartMinutes, slotDurationMinutes]
   );
 
   const toggleScheduleRootInSelection = useCallback(
@@ -2792,7 +3738,7 @@ export function TaskListAndSchedule({
   }, []);
 
   const runBulkUnassignOrPending = useCallback(
-    async (listState: 'unassigned' | 'pending') => {
+    async (listState: string) => {
       const ids = Array.from(selectedScheduleRootSlotIds);
       if (ids.length === 0) return;
       try {
@@ -2839,7 +3785,7 @@ export function TaskListAndSchedule({
   }, [selectedScheduleRootSlotIds, slots, viewDate, loadData, exitScheduleBulkMode]);
 
   const runBulkSetPriority = useCallback(
-    async (p: Priority) => {
+    async (p: string) => {
       const ids = Array.from(selectedScheduleRootSlotIds);
       if (ids.length === 0) return;
       try {
@@ -2910,8 +3856,12 @@ export function TaskListAndSchedule({
             );
             return ta;
           }
-          const pa = priorityRank((tasks.find((t) => t.id === a.task_id)?.priority ?? (a.priority as Priority) ?? 'low') as Priority);
-          const pb = priorityRank((tasks.find((t) => t.id === b.task_id)?.priority ?? (b.priority as Priority) ?? 'low') as Priority);
+          const pa = priorityDisplay.priorityRank(
+            tasks.find((t) => t.id === a.task_id)?.priority ?? (a.priority as string | undefined) ?? 'low'
+          );
+          const pb = priorityDisplay.priorityRank(
+            tasks.find((t) => t.id === b.task_id)?.priority ?? (b.priority as string | undefined) ?? 'low'
+          );
           return pa - pb;
         });
         await Promise.all(ranked.map((s, idx) => api.slots.update({ id: s.id, order_index: idx })));
@@ -2922,7 +3872,7 @@ export function TaskListAndSchedule({
         loadData();
       }
     },
-    [selectedScheduleRootSlotIds, slots, viewDate, tasks, loadData, exitScheduleBulkMode]
+    [selectedScheduleRootSlotIds, slots, viewDate, tasks, loadData, exitScheduleBulkMode, priorityDisplay]
   );
 
   const runBulkReschedule = useCallback(async () => {
@@ -2983,82 +3933,142 @@ export function TaskListAndSchedule({
     setViewDate,
   ]);
 
-  const draggingSubtaskFromUnassigned =
-    !!dragState &&
-    dragState.source === 'unassigned' &&
-    (dragState.taskIds ?? [dragState.taskId]).some((id) => tasks.find((t) => t.id === id)?.parent_id != null);
-  const unassignedDropValid =
-    !!dragState &&
-    (dragState.source === 'pending' ||
-      dragState.source === 'schedule' ||
-      dragState.source === 'common' ||
-      draggingSubtaskFromUnassigned);
-  const pendingDropValid =
-    !!dragState &&
-    (dragState.source === 'unassigned' || dragState.source === 'schedule' || dragState.source === 'common');
+  const bucketDropValids = useMemo(() => {
+    if (!dragState) return bucketDefs.map(() => false);
+    const taskIds = dragState.taskIds ?? [dragState.taskId];
+    return bucketDefs.map((b) =>
+      canDropTaskOnBucketZone({
+        targetBucketId: b.id,
+        source: dragState.source,
+        primaryBucketId: primaryListId,
+        allBucketIds: bucketListIds,
+        taskIds,
+        tasks,
+      })
+    );
+  }, [dragState, bucketDefs, primaryListId, bucketListIds, tasks]);
 
-  const hasUnassigned = unassigned.length > 0 || unassignedDropValid;
-  const hasPending = pending.length > 0 || pendingDropValid;
+  const hasBucketAt = (i: number) =>
+    (bucketTasksSorted[i]?.tasks.length ?? 0) > 0 || (bucketDropValids[i] ?? false);
+
+  const persistHiddenBucketIds = useCallback((ids: Set<string>) => {
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem(TASK_BUCKETS_HIDDEN_IDS_KEY, JSON.stringify([...ids]));
+      } catch {
+        /* ignore quota */
+      }
+    }
+  }, []);
+
+  const hiddenBucketsForRestore = useMemo(
+    () => bucketDefs.filter((b) => hiddenBucketIds.has(b.id)),
+    [bucketDefs, hiddenBucketIds]
+  );
+
+  const toggleFavoriteFolderCollapsed = useCallback((key: string) => {
+    setCollapsedFavoriteFolderKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem(FAVORITES_COLLAPSED_KEY, JSON.stringify([...next]));
+        } catch {
+          /* ignore quota */
+        }
+      }
+      return next;
+    });
+  }, []);
+
   const visibleTaskSlideIndices = useMemo(() => {
-    if (isMobile) return [0, 1, 2];
+    const bucketVisible = (i: number) => !hiddenBucketIds.has(bucketDefs[i]!.id);
+    if (isMobile) {
+      return [...Array(bucketDefs.length + 1).keys()].filter(
+        (i) => i >= bucketDefs.length || bucketVisible(i)
+      );
+    }
     const v: number[] = [];
-    if (hasUnassigned) v.push(0);
-    if (hasPending) v.push(1);
+    for (let i = 0; i < bucketDefs.length; i++) {
+      if (bucketVisible(i) && hasBucketAt(i)) v.push(i);
+    }
     return v;
-  }, [isMobile, hasUnassigned, hasPending]);
+  }, [isMobile, bucketDefs, hiddenBucketIds, bucketTasksSorted, bucketDropValids]);
 
   const maxTaskSlideIndex = Math.max(0, visibleTaskSlideIndices.length - 1);
   const clampedTaskSlideIndex = Math.min(taskSlideIndex, maxTaskSlideIndex);
   const currentSectionIndex = visibleTaskSlideIndices[clampedTaskSlideIndex] ?? 0;
+  const mobileTaskSlideCount = visibleTaskSlideIndices.length;
+  const mobileTaskSlideSectionPct = mobileTaskSlideCount > 0 ? 100 / mobileTaskSlideCount : 100;
+  const mobileTaskSectionsStyle =
+    isMobile && mobileTaskSlideCount > 0
+      ? {
+          width: `${mobileTaskSlideCount * 100}%`,
+          transform: `translateX(-${clampedTaskSlideIndex * mobileTaskSlideSectionPct}%)`,
+        }
+      : undefined;
+  const mobileTaskSectionStyle =
+    isMobile && mobileTaskSlideCount > 0
+      ? {
+          flex: `0 0 ${mobileTaskSlideSectionPct}%`,
+          width: `${mobileTaskSlideSectionPct}%`,
+          minWidth: `${mobileTaskSlideSectionPct}%`,
+        }
+      : undefined;
 
-  const taskSlideStateRef = useRef({ clampedTaskSlideIndex, maxTaskSlideIndex, visibleLength: visibleTaskSlideIndices.length });
-  taskSlideStateRef.current = { clampedTaskSlideIndex, maxTaskSlideIndex, visibleLength: visibleTaskSlideIndices.length };
-  const scheduleTabRef = useRef(scheduleTab);
-  scheduleTabRef.current = scheduleTab;
-
-  const bindScheduleContentDrag = useDrag(
-    ({ movement: [mx], velocity: [vx], last }) => {
-      if (!last || !isMobile) return;
-      const tab = scheduleTabRef.current;
-      const threshold = SWIPE_THRESHOLD;
-      const minVelocity = 0.2;
-      if (mx > threshold || vx > minVelocity) {
-        if (tab === 'calendar') setScheduleTab('today');
-        else onMainSlideChange?.(0);
-      } else if (mx < -threshold || vx < -minVelocity) {
-        if (tab === 'today') setScheduleTab('calendar');
-        else if (aiEnabled) onMainSlideChange?.(2);
+  const toggleBucketHidden = useCallback(
+    (bucketId: string) => {
+      setHiddenBucketIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(bucketId)) next.delete(bucketId);
+        else next.add(bucketId);
+        persistHiddenBucketIds(next);
+        return next;
+      });
+      if (currentSectionIndex < bucketDefs.length && bucketDefs[currentSectionIndex]?.id === bucketId) {
+        setTaskSlideIndex(0);
       }
     },
-    { axis: 'x', pointer: { touch: true }, touch: true, filter: () => isMobile }
+    [bucketDefs, currentSectionIndex, persistHiddenBucketIds]
   );
 
-  const bindTaskSectionsDrag = useDrag(
-    ({ movement: [mx], velocity: [vx], last }) => {
-      if (!last || !isMobile) return;
-      const { clampedTaskSlideIndex: cur, maxTaskSlideIndex: max, visibleLength } = taskSlideStateRef.current;
-      if (visibleLength === 0) return;
-      const threshold = SWIPE_THRESHOLD;
-      const minVelocity = 0.2;
-      if (mx > threshold || vx > minVelocity) {
-        if (cur === 0) {
-          onMainSlideChange?.(0);
-        } else {
-          setTaskSlideIndex((i) => Math.max(0, i - 1));
+  // Mobile gesture wiring uses the new coordinator (`lib/mobileGestures.ts`).
+  // Step 4: bucket swipe + Long Press → Move mode (event-delegated on the task
+  // list scroll host). Step 5 wires schedule gestures separately.
+  const { mode: mobileMode } = useMobileMode();
+  useTaskListMobileGestures(taskListScrollRef, {
+    enabled: isMobile,
+    onSwipeLeft: () =>
+      setTaskSlideIndex((i) => Math.min(maxTaskSlideIndex, i + 1)),
+    onSwipeRight: () => setTaskSlideIndex((i) => Math.max(0, i - 1)),
+    source: 'list',
+    ignoreTargetSelector: 'button, input, textarea, select, a',
+  });
+
+  // Step 5 — Schedule swipe handler: Swipe Left in Today → Calendar tab;
+  // Swipe Right in Calendar → Today tab. Vertical swipes pass through to scroll.
+  useMobileGestures(
+    scheduleContentRef,
+    {
+      onSwipe: (ev) => {
+        if (scheduleTab === 'today') {
+          const d = new Date(viewDate + 'T12:00:00');
+          if (ev.direction === 'left') {
+            d.setDate(d.getDate() + 1);
+            setViewDate(formatLocalYmd(d));
+          } else if (ev.direction === 'right') {
+            d.setDate(d.getDate() - 1);
+            setViewDate(formatLocalYmd(d));
+          }
+        } else if (scheduleTab === 'calendar' && ev.direction === 'right') {
+          setScheduleTab('today');
         }
-      } else if (mx < -threshold || vx < -minVelocity) {
-        if (cur >= max) {
-          if (aiEnabled) onMainSlideChange?.(2);
-        } else {
-          setTaskSlideIndex((i) => Math.min(max, i + 1));
-        }
-      }
+      },
     },
     {
-      axis: 'x',
-      pointer: { touch: true },
-      touch: true,
-      filter: () => isMobile,
+      swipeAxis: 'x',
+      disabled: !isMobile,
     }
   );
 
@@ -3070,10 +4080,11 @@ export function TaskListAndSchedule({
 
   return (
     <>
+      <MobileModeDebugOverlay visible={isMobile && adminDebug && showDebugOverlays} />
       {isMobile && adminDebug && showDebugOverlays && (
         <div className="debug-swipe-overlays" aria-hidden>
-          <div className="debug-swipe-overlay debug-swipe-edge-left" style={{ left: 0, width: PANEL_EDGE_BUFFER_PX, top: 0, bottom: 0 }} />
-          <div className="debug-swipe-overlay debug-swipe-edge-right" style={{ right: 0, width: PANEL_EDGE_BUFFER_PX, top: 0, bottom: 0 }} />
+          <div className="debug-swipe-overlay debug-swipe-edge-left" style={{ left: 0, width: DEBUG_EDGE_BUFFER_PX, top: 0, bottom: 0 }} />
+          <div className="debug-swipe-overlay debug-swipe-edge-right" style={{ right: 0, width: DEBUG_EDGE_BUFFER_PX, top: 0, bottom: 0 }} />
           {debugZoneRects.task && (
             <div
               className="debug-swipe-overlay debug-swipe-zone-task"
@@ -3152,25 +4163,33 @@ export function TaskListAndSchedule({
                 zIndex: 10000,
               }}
             >
-              {PRIORITIES.map((p) => (
+              {priorityDisplay.levels.map((p) => (
                 <button
                   key={p}
                   type="button"
                   className={'priority-picker-option ' + (openSlot.priority === p ? 'selected' : '') + ' priority-' + p}
+                  style={priorityDisplay.colorStyle(p)}
                   onClick={() => {
                     api.tasks.update({ id: openSlot.task_id, priority: p }).then(loadData);
                     setOpenPrioritySlotId(null);
-                    setSchedulePriorityPickerPosition(null);
                   }}
                 >
-                  {priorityLabel(p)} {priorityIcon(p)}
+                  {priorityDisplay.label(p)} {priorityDisplay.icon(p)}
                 </button>
               ))}
             </div>,
             document.body
           );
         })()}
-      <div id={DT_ID.panelTasksSchedule} className={`panel-slide panel-slide-tasks ${DT.panelMainColumn}`}>
+      <div
+        id={DT_ID.panelTasksSchedule}
+        className={
+          `panel-slide panel-slide-tasks ${DT.panelMainColumn}` +
+          (isMobile && mobileMode.kind === 'move' ? ' panel-slide-tasks--move-mode' : '')
+        }
+        data-mobile-mode={isMobile ? mobileMode.kind : undefined}
+      >
+        {isMobile && <MobileMoveBanner visible={mobileMode.kind === 'move'} />}
         <div className="panel-slide-tasks-left">
           <div className={'left-main' + (splitTaskScheduleLayout ? ' left-main--split' : '')} ref={leftMainRef}>
           <div
@@ -3190,21 +4209,13 @@ export function TaskListAndSchedule({
                   }
                 : isMobile
                   ? {
-                      height: (() => {
-                        const n =
-                          currentSectionIndex === 0
-                            ? unassigned.length
-                            : currentSectionIndex === 1
-                              ? pending.length
-                              : commonFiltered.length;
-                        const h = TASK_VIEW_HEADER_ESTIMATE_PX + n * TASK_ROW_ESTIMATE_PX;
-                        const capped = Math.max(TASK_VIEW_MIN_PX, Math.min(taskViewHeightPx, h));
-                        return capped;
-                      })(),
-                      flex: '0 0 auto',
-                      minHeight: TASK_VIEW_MIN_PX,
-                      maxHeight: taskViewHeightPx,
-                      transition: 'height 0.25s ease-out',
+                      flex: '1 1 42%',
+                      minHeight: '9rem',
+                      maxHeight: '48vh',
+                      minWidth: 0,
+                      overflow: 'hidden',
+                      display: 'flex',
+                      flexDirection: 'column',
                     }
                   : { height: taskViewHeightPx, flex: `0 0 ${taskViewHeightPx}px`, minHeight: TASK_VIEW_MIN_PX }
             }
@@ -3217,23 +4228,73 @@ export function TaskListAndSchedule({
                 onChange={(e) => setNewTaskTitle(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleAddTask()}
               />
-              <button type="button" className="add-task-btn" onClick={handleAddTask} disabled={!newTaskTitle.trim()}>
-                Add
+              <button
+                type="button"
+                className={'add-task-btn' + (isMobile ? ' add-task-btn--icon' : '')}
+                onClick={handleAddTask}
+                disabled={!newTaskTitle.trim()}
+                title="Add task"
+                aria-label="Add task"
+              >
+                {isMobile ? <Plus size={16} aria-hidden strokeWidth={2.4} /> : 'Add'}
+              </button>
+              <button
+                type="button"
+                className={'add-task-btn' + (isMobile ? ' add-task-btn--icon' : '')}
+                onClick={() => setBulkAddOpen(true)}
+                title="Add multiple tasks"
+                aria-label="Add multiple tasks"
+              >
+                {isMobile ? <ListPlus size={16} aria-hidden strokeWidth={2} /> : 'Add Bulk'}
               </button>
             </div>
+            {hiddenBucketsForRestore.length > 0 && (
+              <div className="task-list-hidden-buckets-bar" role="region" aria-label="Hidden task buckets">
+                <span className="task-list-hidden-buckets-label">Hidden:</span>
+                {hiddenBucketsForRestore.map((b) => (
+                  <button
+                    key={b.id}
+                    type="button"
+                    className="task-list-hidden-bucket-restore-btn"
+                    title={`Show ${b.label}`}
+                    aria-label={`Show ${b.label}`}
+                    onClick={() => toggleBucketHidden(b.id)}
+                  >
+                    <Eye size={12} aria-hidden strokeWidth={2} />
+                    {b.label}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className={`task-list-sort-row ${DT.taskListToolbar}`} style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.35rem', fontSize: '0.85rem' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                Order by
-                <select
-                  value={orderBy}
-                  onChange={(e) => setOrderBy(e.target.value as 'title' | 'priority' | 'date_added')}
-                  style={{ padding: '0.2rem 0.4rem' }}
-                >
-                  <option value="title">Title</option>
-                  <option value="priority">Priority</option>
-                  <option value="date_added">Date Added</option>
-                </select>
-              </label>
+              <button
+                type="button"
+                className={
+                  'day-nav-btn' +
+                  (taskBulkMode ? ' schedule-bulk-mode-active' : '') +
+                  (isMobile ? ' day-nav-btn--icon' : '')
+                }
+                aria-pressed={taskBulkMode}
+                aria-label={taskBulkMode ? 'Exit task list multi-select mode' : 'Enter task list multi-select mode'}
+                title={taskBulkMode ? 'Exit bulk select' : 'Bulk select'}
+                onClick={() => {
+                  if (taskBulkMode) {
+                    setTaskBulkMode(false);
+                    setTaskBulkPriorityOpen(false);
+                    setSelectedTaskIds(new Set());
+                  } else {
+                    setTaskBulkMode(true);
+                  }
+                }}
+              >
+                {isMobile ? (
+                  <ListChecks size={16} aria-hidden strokeWidth={2} />
+                ) : taskBulkMode ? (
+                  'Exit bulk'
+                ) : (
+                  'Bulk select'
+                )}
+              </button>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flex: '1 1 auto', minWidth: 0 }}>
                 <span className="task-search-icon" aria-hidden style={{ opacity: 0.7 }}>🔍</span>
                 <input
@@ -3263,29 +4324,160 @@ export function TaskListAndSchedule({
                 )}
               </div>
               <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                <select
-                  value={orderDir}
-                  onChange={(e) => setOrderDir(e.target.value as 'asc' | 'desc')}
+                {/* "Order by" prefix is hidden on mobile — the icon in the trigger
+                    button conveys the same meaning, freeing up scarce row width. */}
+                {!isMobile && <span>Order by</span>}
+                <MobileAwareSelect<'title' | 'priority' | 'date_added'>
+                  value={orderBy}
+                  onChange={(v) => setOrderBy(v)}
+                  title="Order tasks by"
+                  ariaLabel="Order tasks by"
+                  options={[
+                    { value: 'title', label: 'Title' },
+                    { value: 'priority', label: 'Priority' },
+                    { value: 'date_added', label: 'Date Added' },
+                  ]}
                   style={{ padding: '0.2rem 0.4rem' }}
-                >
-                  <option value="asc">Ascending</option>
-                  <option value="desc">Descending</option>
-                </select>
+                  renderTriggerLabel={(sel) => {
+                    const v = sel?.value ?? orderBy;
+                    if (v === 'title') return <Type size={16} aria-hidden strokeWidth={2} />;
+                    if (v === 'priority') return <Flag size={16} aria-hidden strokeWidth={2} />;
+                    return <Calendar size={16} aria-hidden strokeWidth={2} />;
+                  }}
+                />
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                <MobileAwareSelect<'asc' | 'desc'>
+                  value={orderDir}
+                  onChange={(v) => setOrderDir(v)}
+                  title="Order direction"
+                  ariaLabel="Order direction"
+                  options={[
+                    { value: 'asc', label: 'Ascending' },
+                    { value: 'desc', label: 'Descending' },
+                  ]}
+                  style={{ padding: '0.2rem 0.4rem' }}
+                  renderTriggerLabel={(sel) =>
+                    (sel?.value ?? orderDir) === 'asc' ? (
+                      <ArrowUp size={16} aria-hidden strokeWidth={2} />
+                    ) : (
+                      <ArrowDown size={16} aria-hidden strokeWidth={2} />
+                    )
+                  }
+                />
               </label>
             </div>
+            {taskBulkMode && (
+              <div className="schedule-bulk-toolbar" style={{ marginBottom: '0.35rem' }}>
+                {selectedListTaskIds.length === 0 && (
+                  <span className="schedule-bulk-hint" style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    Tap tasks in any bucket to select.
+                  </span>
+                )}
+                {selectedListTaskIds.length > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      className="day-nav-btn"
+                      title="Task details"
+                      onClick={() => {
+                        if (selectedPrimaryTaskId == null) return;
+                        setOrganizationBulkTaskIds(selectedListTaskIds);
+                        setOrganizationModalTaskId(selectedPrimaryTaskId);
+                      }}
+                    >
+                      📁
+                    </button>
+                    <button type="button" className="day-nav-btn" title="Duplicate task" onClick={() => void runTaskListBulkDuplicate()}>
+                      <Copy size={14} aria-hidden strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
+                      className="day-nav-btn"
+                      title="Change priority"
+                      onClick={() => setTaskBulkPriorityOpen((v) => !v)}
+                    >
+                      {priorityDisplay.icon(priorityDisplay.levels[0])}
+                    </button>
+                    <button
+                      type="button"
+                      className="day-nav-btn"
+                      title="Schedule on date"
+                      onClick={() => {
+                        if (selectedPrimaryTaskId == null) return;
+                        setScheduleDateTaskId(selectedPrimaryTaskId);
+                        setScheduleDateValue(viewDate);
+                        setScheduleSlotIdToReplace(null);
+                        setScheduleDateOpen(true);
+                      }}
+                    >
+                      📅
+                    </button>
+                    <button type="button" className="day-nav-btn" title="Delete" onClick={() => void runTaskListBulkDelete()}>
+                      🗑
+                    </button>
+                    <button type="button" className="day-nav-btn" title="Add to favorites" onClick={() => void runTaskListBulkAddToFavorites()}>
+                      <Star size={14} aria-hidden strokeWidth={2} />
+                    </button>
+                    <button type="button" className="day-nav-btn" title="Clear selection" onClick={() => setSelectedTaskIds(new Set())}>
+                      ✖
+                    </button>
+                    {taskBulkPriorityOpen && (
+                      <>
+                        {priorityDisplay.levels.map((p) => (
+                          <button
+                            key={p}
+                            type="button"
+                            className="day-nav-btn"
+                            title={`Set priority: ${priorityDisplay.label(p)}`}
+                            style={priorityDisplay.colorStyle(p)}
+                            onClick={() => void runTaskListBulkSetPriority(p)}
+                          >
+                            {priorityDisplay.icon(p)}
+                          </button>
+                        ))}
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+            {isMobile && mobileTaskSlideCount > 1 && (
+              <nav
+                id="task-list-sections-mobile-nav"
+                className="task-list-sections-mobile-nav"
+                aria-label="Task list buckets"
+              >
+                {visibleTaskSlideIndices.map((sectionIdx, slideIdx) => {
+                  const label =
+                    sectionIdx < bucketDefs.length
+                      ? bucketDefs[sectionIdx]!.label
+                      : 'Favorites';
+                  return (
+                    <button
+                      key={sectionIdx}
+                      type="button"
+                      data-task-slide={slideIdx}
+                      className={slideIdx === clampedTaskSlideIndex ? 'active' : undefined}
+                      aria-current={slideIdx === clampedTaskSlideIndex ? 'true' : undefined}
+                      onClick={() => setTaskSlideIndex(slideIdx)}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </nav>
+            )}
             <div
               id="task-list-sections"
               className={
                 'task-list-sections task-swipe-zone ' +
                 DT.taskListSections +
-                (isMobile && visibleTaskSlideIndices.length > 0
-                  ? ` task-slides-${visibleTaskSlideIndices.length} mobile-task-slide-${clampedTaskSlideIndex}`
-                  : '') +
+                (isMobile && mobileTaskSlideCount > 0 ? ' task-list-sections--mobile-carousel' : '') +
                 (isMobile ? ' task-swipe-zone-active' : '')
               }
               ref={taskListScrollRef}
-              style={{ position: 'relative' }}
-              {...(isMobile ? bindTaskSectionsDrag() : {})}
+              style={{ position: 'relative', ...mobileTaskSectionsStyle }}
             >
               {(!initialDataReady || loading) && (
                 <div className="loading-overlay">
@@ -3295,233 +4487,231 @@ export function TaskListAndSchedule({
               {initialDataReady && !loading && error && (
                 <p className="task-list-error" style={{ padding: '0.5rem' }}>{error}</p>
               )}
-              {initialDataReady && !loading && !error && (isMobile || unassigned.length > 0 || unassignedDropValid) && (
-                <div
-                  className={
-                    'task-list-section ' +
-                    DT.taskListSection +
-                    (unassignedDropValid ? ' task-list-section-drop-zone' : '') +
-                    (isMobile && !hasUnassigned ? ' task-list-section-hidden' : '')
-                  }
-                  data-drop-zone="unassigned"
-                  data-dt-section="unassigned"
-                >
-                  <div className="task-list-section-title">Unassigned</div>
-                  <div className="task-list-scroll">
-                    <ul className="task-list">
-                      {dropZoneHighlight === 'unassigned' && dragState && (
-                        <li className="drop-zone-placeholder" aria-hidden="true">
-                          {dragState.taskIds.length > 1
-                            ? `Drop ${dragState.taskIds.length} tasks here`
-                            : (tasks.find((t) => t.id === dragState!.taskId)?.title ?? slots.find((s) => s.task_id === dragState!.taskId)?.title ?? 'Drop here')}
-                        </li>
-                      )}
-                      {unassignedFiltered.map((t) => (
-                        <TaskCard
-                          key={t.id}
-                          task={t}
-                          tasks={tasks}
-                          links={taskLinksByTaskId[t.id] ?? []}
-                          listItems={taskListItemsByTaskId[t.id] ?? []}
-                          dragSource="unassigned"
-                          draggingTaskId={draggingTaskId}
-                          draggingTaskIds={draggingTaskIds}
-                          isDragging={draggingTaskIds.has(t.id)}
-                          isDropTarget={hoverDropTaskId === t.id}
-                          isSelected={selectedTaskIds.has(t.id)}
-                          onToggleSelect={toggleTaskSelection}
-                          onHoldStart={(e) => startHold(t.id, 'unassigned', e.clientX, e.clientY)}
-                          onHoldStartGroupMember={(e, taskId) => { e.stopPropagation(); startHold(taskId, 'unassigned', e.clientX, e.clientY); }}
-                          editingTaskId={editingTaskId}
-                          editingTitle={editingTitle}
-                          onEditingTitleChange={setEditingTitle}
-                          onEditStart={(id, title) => {
-                            setEditingTaskId(id);
-                            setEditingTitle(title);
-                          }}
-                          onEditSave={(id, title) => {
-                            api.tasks.update({ id, title }).then(loadData);
-                            setEditingTaskId(null);
-                          }}
-                          onEditCancel={() => setEditingTaskId(null)}
-                          onPriorityChange={(id, p) => api.tasks.update({ id, priority: p }).then(loadData)}
-                          onUngroupGroup={handleUngroupGroup}
-                          onRecurringToggle={(id) => {
-                            const task = tasks.find((x) => x.id === id) ?? t;
-                            let rule: { freq: string; time?: string; weekDays?: number[]; monthDays?: number[]; lastDayOfMonth?: boolean; count?: number; startDate?: string } = { freq: 'daily', time: '09:00' };
-                            try {
-                              if (task?.recurrence_rule) rule = { ...rule, ...JSON.parse(task.recurrence_rule) };
-                            } catch {}
-                            setRecurringConfigModal({
-                              taskId: id,
-                              recurring: !!task.recurring,
-                              freq: (rule.freq as 'daily' | 'weekly' | 'monthly' | 'yearly') || 'daily',
-                              time: rule.time ?? '09:00',
-                              weekDays: rule.weekDays ?? [],
-                              monthDays: rule.monthDays ?? [],
-                              lastDayOfMonth: !!rule.lastDayOfMonth,
-                              count: rule.count,
-                              startDate: rule.startDate ?? (task.created_at ? task.created_at.slice(0, 10) : viewDate),
-                            });
-                          }}
-                          onMoveToPending={undefined}
-                          onMoveToUnassigned={undefined}
-                          onScheduleDate={(id) => {
-                            setScheduleDateTaskId(id);
-                            setScheduleDateValue(viewDate);
-                            setScheduleSlotIdToReplace(null);
-                            setScheduleDueAutoPriority(false);
-                            setScheduleDateOpen(true);
-                          }}
-                          onDelete={(id) => {
-                            if (confirm('Delete this task?')) api.tasks.delete(id).then(loadData);
-                          }}
-                          onOpenLinks={(id, initialUrl) => {
-                            setLinkModalTaskId(id);
-                            setLinkModalInitialUrl(initialUrl ?? '');
-                          }}
-                          onOpenList={(id) => { setListModalTaskId(id); }}
-                          onRefresh={handleRefresh}
-                          onTaskPatched={mergeTaskFromPatch}
-                          highlightBlink={newTaskIdToBlink === t.id}
-                          isUrlDragOver={urlDragOverTaskId === t.id}
-                          onUrlDragEnter={() => setUrlDragOverTaskId(t.id)}
-                          onUrlDragLeave={() => setUrlDragOverTaskId(null)}
-                          taskLinksByTaskId={taskLinksByTaskId}
-                          taskListItemsByTaskId={taskListItemsByTaskId}
-                          isMobile={isMobile}
-                          onToggleComplete={handleToggleTaskComplete}
-                          organizationCategories={organizationCategories}
-                          organizationSubcategories={organizationSubcategories}
-                          organizationTags={organizationTags}
-                          onOpenOrganization={(id) => setOrganizationModalTaskId(id)}
-                          onTaskUpdate={loadData}
-                          onSetIsCommon={
-                            !t.parent_id && tasks.filter((x) => x.parent_id === t.id).length === 0 && !t.is_common
-                              ? (id, isCommon) => api.tasks.update({ id, is_common: isCommon }).then(loadData)
-                              : undefined
-                          }
-                        />
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-              )}
-              {initialDataReady && !loading && !error && (isMobile || pending.length > 0 || pendingDropValid) && (
-                <div
-                  className={
-                    'task-list-section ' +
-                    DT.taskListSection +
-                    (pendingDropValid ? ' task-list-section-drop-zone' : '') +
-                    (isMobile && !hasPending ? ' task-list-section-hidden' : '')
-                  }
-                  data-drop-zone="pending"
-                  data-dt-section="pending"
-                >
-                  <div className="task-list-section-title">Pending</div>
-                  <div className="task-list-scroll">
-                    <ul className="task-list">
-                      {dropZoneHighlight === 'pending' && dragState && (
-                        <li className="drop-zone-placeholder" aria-hidden="true">
-                          {dragState.taskIds.length > 1
-                            ? `Drop ${dragState.taskIds.length} tasks here`
-                            : (tasks.find((t) => t.id === dragState!.taskId)?.title ?? slots.find((s) => s.task_id === dragState!.taskId)?.title ?? 'Drop here')}
-                        </li>
-                      )}
-                      {pendingFiltered.map((t) => (
-                        <TaskCard
-                          key={t.id}
-                          task={t}
-                          tasks={tasks}
-                          links={taskLinksByTaskId[t.id] ?? []}
-                          listItems={taskListItemsByTaskId[t.id] ?? []}
-                          dragSource="pending"
-                          draggingTaskId={draggingTaskId}
-                          draggingTaskIds={draggingTaskIds}
-                          isDragging={draggingTaskIds.has(t.id)}
-                          isDropTarget={hoverDropTaskId === t.id}
-                          isSelected={selectedTaskIds.has(t.id)}
-                          onToggleSelect={toggleTaskSelection}
-                          onHoldStart={(e) => startHold(t.id, 'pending', e.clientX, e.clientY)}
-                          onHoldStartGroupMember={(e, taskId) => { e.stopPropagation(); startHold(taskId, 'pending', e.clientX, e.clientY); }}
-                          editingTaskId={editingTaskId}
-                          editingTitle={editingTitle}
-                          onEditingTitleChange={setEditingTitle}
-                          onEditStart={(id, title) => {
-                            setEditingTaskId(id);
-                            setEditingTitle(title);
-                          }}
-                          onEditSave={(id, title) => {
-                            api.tasks.update({ id, title }).then(loadData);
-                            setEditingTaskId(null);
-                          }}
-                          onEditCancel={() => setEditingTaskId(null)}
-                          onPriorityChange={(id, p) => api.tasks.update({ id, priority: p }).then(loadData)}
-                          onUngroupGroup={handleUngroupGroup}
-                          onRecurringToggle={(id) => {
-                            const task = tasks.find((x) => x.id === id) ?? t;
-                            let rule: { freq: string; time?: string; weekDays?: number[]; monthDays?: number[]; lastDayOfMonth?: boolean; count?: number; startDate?: string } = { freq: 'daily', time: '09:00' };
-                            try {
-                              if (task?.recurrence_rule) rule = { ...rule, ...JSON.parse(task.recurrence_rule) };
-                            } catch {}
-                            setRecurringConfigModal({
-                              taskId: id,
-                              recurring: !!task.recurring,
-                              freq: (rule.freq as 'daily' | 'weekly' | 'monthly' | 'yearly') || 'daily',
-                              time: rule.time ?? '09:00',
-                              weekDays: rule.weekDays ?? [],
-                              monthDays: rule.monthDays ?? [],
-                              lastDayOfMonth: !!rule.lastDayOfMonth,
-                              count: rule.count,
-                              startDate: rule.startDate ?? (task.created_at ? task.created_at.slice(0, 10) : viewDate),
-                            });
-                          }}
-                          onMoveToPending={undefined}
-                          onMoveToUnassigned={undefined}
-                          onScheduleDate={(id) => {
-                            setScheduleDateTaskId(id);
-                            setScheduleDateValue(viewDate);
-                            setScheduleDueAutoPriority(false);
-                            setScheduleDateOpen(true);
-                          }}
-                          onDelete={(id) => {
-                            if (confirm('Delete this task?')) api.tasks.delete(id).then(loadData);
-                          }}
-                          onOpenLinks={(id, initialUrl) => {
-                            setLinkModalTaskId(id);
-                            setLinkModalInitialUrl(initialUrl ?? '');
-                          }}
-                          onOpenList={(id) => { setListModalTaskId(id); }}
-                          onRefresh={handleRefresh}
-                          onTaskPatched={mergeTaskFromPatch}
-                          highlightBlink={newTaskIdToBlink === t.id}
-                          isUrlDragOver={urlDragOverTaskId === t.id}
-                          onUrlDragEnter={() => setUrlDragOverTaskId(t.id)}
-                          onUrlDragLeave={() => setUrlDragOverTaskId(null)}
-                          taskLinksByTaskId={taskLinksByTaskId}
-                          taskListItemsByTaskId={taskListItemsByTaskId}
-                          isMobile={isMobile}
-                          onToggleComplete={handleToggleTaskComplete}
-                          organizationCategories={organizationCategories}
-                          organizationSubcategories={organizationSubcategories}
-                          organizationTags={organizationTags}
-                          onOpenOrganization={(id) => setOrganizationModalTaskId(id)}
-                          onTaskUpdate={loadData}
-                          onSetIsCommon={
-                            !t.parent_id && tasks.filter((x) => x.parent_id === t.id).length === 0 && !t.is_common
-                              ? (id, isCommon) => api.tasks.update({ id, is_common: isCommon }).then(loadData)
-                              : undefined
-                          }
-                        />
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-              )}
+              {initialDataReady &&
+                !loading &&
+                !error &&
+                bucketTasksFiltered.map((bucket, bucketIndex) => {
+                  if (hiddenBucketIds.has(bucket.id)) return null;
+                  const dropV = bucketDropValids[bucketIndex] ?? false;
+                  const hasB = bucket.tasks.length > 0 || dropV;
+                  if (!isMobile && !hasB) return null;
+                  return (
+                    <div
+                      key={bucket.id}
+                      className={
+                        'task-list-section ' +
+                        DT.taskListSection +
+                        (dropV ? ' task-list-section-drop-zone' : '') +
+                        (!isMobile && !hasBucketAt(bucketIndex) ? ' task-list-section-hidden' : '')
+                      }
+                      style={mobileTaskSectionStyle}
+                      data-drop-zone={bucket.id}
+                      data-dt-section={bucket.id}
+                    >
+                      <div className="task-list-section-title-row">
+                        <div className="task-list-section-title">{bucket.label}</div>
+                        <div className="task-list-section-title-actions">
+                          <button
+                            type="button"
+                            className="task-list-bucket-autoblock-btn"
+                            title={`Auto Block — ${bucket.label}`}
+                            aria-label={`Auto Block tasks in ${bucket.label}`}
+                            onClick={() => setAutoBlockBucketId(bucket.id)}
+                          >
+                            <LayoutGrid size={14} aria-hidden strokeWidth={2} />
+                          </button>
+                          <button
+                            type="button"
+                            className="task-list-bucket-visibility-btn"
+                            title={`Hide ${bucket.label}`}
+                            aria-label={`Hide ${bucket.label}`}
+                            onClick={() => toggleBucketHidden(bucket.id)}
+                          >
+                            <EyeOff size={14} aria-hidden strokeWidth={2} />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="task-list-scroll">
+                        <ul className="task-list">
+                          {dropZoneHighlight === bucket.id && dragState && (
+                            <li className="drop-zone-placeholder" aria-hidden="true">
+                              {dragState.taskIds.length > 1
+                                ? `Drop ${dragState.taskIds.length} tasks here`
+                                : (tasks.find((t) => t.id === dragState!.taskId)?.title ??
+                                    slots.find((s) => s.task_id === dragState!.taskId)?.title ??
+                                    'Drop here')}
+                            </li>
+                          )}
+                          {bucket.tasks.map((t) => (
+                            <TaskCard
+                              key={t.id}
+                              task={t}
+                              tasks={tasks}
+                              priorityDisplay={priorityDisplay}
+                              links={taskLinksByTaskId[t.id] ?? []}
+                              listItems={taskListItemsByTaskId[t.id] ?? []}
+                              dragSource={bucket.id}
+                              draggingTaskId={draggingTaskId}
+                              draggingTaskIds={draggingTaskIds}
+                              isDragging={draggingTaskIds.has(t.id)}
+                              isDropTarget={hoverDropTaskId === t.id}
+                              isSelected={selectedTaskIds.has(t.id)}
+                              taskBulkMode={taskBulkMode}
+                              onToggleSelect={toggleTaskSelection}
+                              onToggleSelectGroup={(rootId) => {
+                                const groupIds = [rootId, ...tasks.filter((x) => x.parent_id === rootId).map((x) => x.id)];
+                                setSelectedTaskIds((prev) => {
+                                  const next = new Set(prev);
+                                  const allSelected = groupIds.every((id) => next.has(id));
+                                  if (allSelected) groupIds.forEach((id) => next.delete(id));
+                                  else groupIds.forEach((id) => next.add(id));
+                                  return next;
+                                });
+                              }}
+                              onHoldStart={(e) =>
+                                startHold(
+                                  t.id,
+                                  bucket.id,
+                                  e.clientX,
+                                  e.clientY,
+                                  undefined,
+                                  undefined,
+                                  taskBulkMode ? () => toggleTaskSelection(t.id) : undefined
+                                )
+                              }
+                              onHoldStartGroupMember={(e, taskId) => {
+                                e.stopPropagation();
+                                startHold(
+                                  taskId,
+                                  bucket.id,
+                                  e.clientX,
+                                  e.clientY,
+                                  undefined,
+                                  undefined,
+                                  taskBulkMode ? () => toggleTaskSelection(taskId) : undefined
+                                );
+                              }}
+                              editingTaskId={editingTaskId}
+                              editingTitle={editingTitle}
+                              onEditingTitleChange={setEditingTitle}
+                              onEditStart={(id, title) => {
+                                setEditingTaskId(id);
+                                setEditingTitle(title);
+                              }}
+                              onEditSave={(id, title) => {
+                                api.tasks.update({ id, title }).then(loadData);
+                                setEditingTaskId(null);
+                              }}
+                              onEditCancel={() => setEditingTaskId(null)}
+                              onPriorityChange={(id, p) => api.tasks.update({ id, priority: p }).then(loadData)}
+                              onUngroupGroup={handleUngroupGroup}
+                              onRecurringToggle={(id) => {
+                                const task = tasks.find((x) => x.id === id) ?? t;
+                                let rule: {
+                                  freq: string;
+                                  time?: string;
+                                  weekDays?: number[];
+                                  monthDays?: number[];
+                                  lastDayOfMonth?: boolean;
+                                  count?: number;
+                                  startDate?: string;
+                                } = { freq: 'daily', time: '09:00' };
+                                try {
+                                  if (task?.recurrence_rule) rule = { ...rule, ...JSON.parse(task.recurrence_rule) };
+                                } catch {}
+                                setRecurringConfigModal({
+                                  taskId: id,
+                                  recurring: !!task.recurring,
+                                  freq: (rule.freq as 'daily' | 'weekly' | 'monthly' | 'yearly') || 'daily',
+                                  time: rule.time ?? '09:00',
+                                  weekDays: rule.weekDays ?? [],
+                                  monthDays: rule.monthDays ?? [],
+                                  lastDayOfMonth: !!rule.lastDayOfMonth,
+                                  count: rule.count,
+                                  startDate: rule.startDate ?? (task.created_at ? task.created_at.slice(0, 10) : viewDate),
+                                });
+                              }}
+                              onMoveToPending={undefined}
+                              onMoveToUnassigned={undefined}
+                              onScheduleDate={(id) => {
+                                setScheduleDateTaskId(id);
+                                setScheduleDateValue(viewDate);
+                                if (bucketIndex === 0) setScheduleSlotIdToReplace(null);
+                                setScheduleDateOpen(true);
+                              }}
+                              onDelete={(id) => {
+                                if (!confirm('Delete this task?')) return;
+                                void api.tasks.delete(id).then(loadData);
+                              }}
+                              onOpenLinks={(id, initialUrl) => {
+                                setLinkModalTaskId(id);
+                                setLinkModalInitialUrl(initialUrl ?? '');
+                              }}
+                              onOpenList={(id) => {
+                                setListModalTaskId(id);
+                              }}
+                              onDuplicate={(id) => {
+                                const tk = tasks.find((x) => x.id === id);
+                                api.tasks
+                                  .create({ copy_from: id, list_state: tk?.list_state ?? bucket.id })
+                                  .then(loadData)
+                                  .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+                              }}
+                              onRefresh={handleRefresh}
+                              onTaskPatched={mergeTaskFromPatch}
+                              highlightBlink={newTaskIdToBlink === t.id}
+                              isUrlDragOver={urlDragOverTaskId === t.id}
+                              onUrlDragEnter={() => setUrlDragOverTaskId(t.id)}
+                              onUrlDragLeave={() => setUrlDragOverTaskId(null)}
+                              taskLinksByTaskId={taskLinksByTaskId}
+                              taskListItemsByTaskId={taskListItemsByTaskId}
+                              isMobile={isMobile}
+                              onToggleComplete={handleToggleTaskComplete}
+                              organizationCategories={organizationCategories}
+                              organizationSubcategories={organizationSubcategories}
+                              organizationTags={organizationTags}
+                              onOpenOrganization={openOrganizationDetailsForTask}
+                              onTaskUpdate={loadData}
+                              onSetIsCommon={(id, isCommon) => api.tasks.update({ id, is_common: isCommon }).then(loadData)}
+                              permanentlyCompletedTaskIds={accomplishedTaskIds}
+                              contactLinkPrefs={contactLinkPrefs}
+                            />
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  );
+                })}
               {initialDataReady && !loading && !error && (
-                <div className={`task-list-section ${DT.taskListSection}`} data-dt-section="common">
-                  <div className="task-list-section-title">Common Tasks</div>
-                  <div className={`add-task-row ${DT.taskNewRow}`} style={{ marginBottom: '0.35rem' }}>
+                <div
+                  className={`task-list-section task-list-section-common ${DT.taskListSection}`}
+                  data-dt-section="common"
+                  style={mobileTaskSectionStyle}
+                >
+                  <div className="task-list-section-title task-list-section-title--favorites">
+                    <span>Favorites</span>
+                    <Star size={12} className="favorites-star-icon" aria-hidden strokeWidth={2.2} />
+                  </div>
+                  {/* Single compact toolbar row: New folder | template input | folder dropdown | Add.
+                      Both the new-folder trigger and Add use icons in line with the rest of the
+                      mobile chrome; on desktop Add stays text per UX brief. */}
+                  <div className={`add-task-row task-list-favorites-add-row ${DT.taskNewRow}`}>
+                    <button
+                      type="button"
+                      className="add-task-btn add-task-btn--icon favorite-new-folder-btn"
+                      title="New folder"
+                      aria-label="New folder"
+                      onClick={() => {
+                        const n = window.prompt('New folder name');
+                        if (!n?.trim()) return;
+                        void api.favoriteFolders
+                          .create({ name: n.trim() })
+                          .then(loadData)
+                          .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+                      }}
+                    >
+                      <FolderPlus size={16} aria-hidden strokeWidth={2} />
+                    </button>
                     <input
                       type="text"
                       placeholder="New template…"
@@ -3529,17 +4719,52 @@ export function TaskListAndSchedule({
                       onChange={(e) => setNewCommonTaskTitle(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleAddCommonTask()}
                     />
-                    <button type="button" className="add-task-btn" onClick={handleAddCommonTask} disabled={!newCommonTaskTitle.trim()}>
-                      Add
+                    {favoriteFolders.length > 0 && (
+                      <select
+                        className="favorite-add-folder-select"
+                        aria-label="Add template to folder"
+                        value={newCommonTaskFolderId === '' ? '' : String(newCommonTaskFolderId)}
+                        onChange={(e) => setNewCommonTaskFolderId(e.target.value === '' ? '' : Number(e.target.value))}
+                      >
+                        <option value="">Unfiled</option>
+                        {favoriteFolders.map((f) => (
+                          <option key={f.id} value={f.id}>
+                            {f.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    <button
+                      type="button"
+                      className={'add-task-btn' + (isMobile ? ' add-task-btn--icon' : '')}
+                      onClick={handleAddCommonTask}
+                      disabled={!newCommonTaskTitle.trim()}
+                      title="Add template"
+                      aria-label="Add template"
+                    >
+                      {isMobile ? <Plus size={16} aria-hidden strokeWidth={2.4} /> : 'Add'}
                     </button>
                   </div>
                   <div className="task-list-scroll">
-                    <ul className="task-list">
-                      {commonFiltered.map((t) => (
+                    {(() => {
+                      const folderChange = (taskId: number, folderId: number | null) => {
+                        void api.tasks
+                          .update({ id: taskId, favorite_folder_id: folderId })
+                          .then((r) => {
+                            if (r.task) mergeTaskFromPatch(r.task as Task);
+                            else loadData();
+                          })
+                          .catch((err) => {
+                            setError(err instanceof Error ? err.message : String(err));
+                            loadData();
+                          });
+                      };
+                      const card = (t: Task) => (
                         <TaskCard
                           key={t.id}
                           task={t}
                           tasks={tasks}
+                          priorityDisplay={priorityDisplay}
                           links={taskLinksByTaskId[t.id] ?? []}
                           listItems={taskListItemsByTaskId[t.id] ?? []}
                           dragSource="common"
@@ -3548,9 +4773,41 @@ export function TaskListAndSchedule({
                           isDragging={draggingTaskIds.has(t.id)}
                           isDropTarget={hoverDropTaskId === t.id}
                           isSelected={selectedTaskIds.has(t.id)}
+                          taskBulkMode={taskBulkMode}
                           onToggleSelect={toggleTaskSelection}
-                          onHoldStart={(e) => startHold(t.id, 'common', e.clientX, e.clientY)}
-                          onHoldStartGroupMember={(e, taskId) => { e.stopPropagation(); startHold(taskId, 'common', e.clientX, e.clientY); }}
+                          onToggleSelectGroup={(rootId) => {
+                            const groupIds = [rootId, ...tasks.filter((x) => x.parent_id === rootId).map((x) => x.id)];
+                            setSelectedTaskIds((prev) => {
+                              const next = new Set(prev);
+                              const allSelected = groupIds.every((id) => next.has(id));
+                              if (allSelected) groupIds.forEach((id) => next.delete(id));
+                              else groupIds.forEach((id) => next.add(id));
+                              return next;
+                            });
+                          }}
+                          onHoldStart={(e) =>
+                            startHold(
+                              t.id,
+                              'common',
+                              e.clientX,
+                              e.clientY,
+                              undefined,
+                              undefined,
+                              taskBulkMode ? () => toggleTaskSelection(t.id) : undefined
+                            )
+                          }
+                          onHoldStartGroupMember={(e, taskId) => {
+                            e.stopPropagation();
+                            startHold(
+                              taskId,
+                              'common',
+                              e.clientX,
+                              e.clientY,
+                              undefined,
+                              undefined,
+                              taskBulkMode ? () => toggleTaskSelection(taskId) : undefined
+                            );
+                          }}
                           editingTaskId={editingTaskId}
                           editingTitle={editingTitle}
                           onEditingTitleChange={setEditingTitle}
@@ -3567,7 +4824,15 @@ export function TaskListAndSchedule({
                           onUngroupGroup={handleUngroupGroup}
                           onRecurringToggle={(id) => {
                             const task = tasks.find((x) => x.id === id) ?? t;
-                            let rule: { freq: string; time?: string; weekDays?: number[]; monthDays?: number[]; lastDayOfMonth?: boolean; count?: number; startDate?: string } = { freq: 'daily', time: '09:00' };
+                            let rule: {
+                              freq: string;
+                              time?: string;
+                              weekDays?: number[];
+                              monthDays?: number[];
+                              lastDayOfMonth?: boolean;
+                              count?: number;
+                              startDate?: string;
+                            } = { freq: 'daily', time: '09:00' };
                             try {
                               if (task?.recurrence_rule) rule = { ...rule, ...JSON.parse(task.recurrence_rule) };
                             } catch {}
@@ -3589,17 +4854,26 @@ export function TaskListAndSchedule({
                             setScheduleDateTaskId(id);
                             setScheduleDateValue(viewDate);
                             setScheduleSlotIdToReplace(null);
-                            setScheduleDueAutoPriority(false);
                             setScheduleDateOpen(true);
                           }}
                           onDelete={(id) => {
-                            if (confirm('Delete this template?')) api.tasks.delete(id).then(loadData);
+                            if (!confirm('Delete this template?')) return;
+                            void api.tasks.delete(id).then(loadData);
                           }}
                           onOpenLinks={(id, initialUrl) => {
                             setLinkModalTaskId(id);
                             setLinkModalInitialUrl(initialUrl ?? '');
                           }}
-                          onOpenList={(id) => { setListModalTaskId(id); }}
+                          onOpenList={(id) => {
+                            setListModalTaskId(id);
+                          }}
+                          onDuplicate={(id) =>
+                            api.tasks
+                              .create({ copy_from: id, list_state: primaryListId })
+                              .then(loadData)
+                              .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+                          }
+                          onAddToBucket={(id) => setCreateFromFavoriteId(id)}
                           onRefresh={handleRefresh}
                           onTaskPatched={mergeTaskFromPatch}
                           highlightBlink={newTaskIdToBlink === t.id}
@@ -3613,11 +4887,75 @@ export function TaskListAndSchedule({
                           organizationCategories={organizationCategories}
                           organizationSubcategories={organizationSubcategories}
                           organizationTags={organizationTags}
-                          onOpenOrganization={(id) => setOrganizationModalTaskId(id)}
+                          onOpenOrganization={openOrganizationDetailsForTask}
                           onTaskUpdate={loadData}
+                          favoriteFolders={favoriteFolders}
+                          onFavoriteFolderChange={folderChange}
+                          permanentlyCompletedTaskIds={accomplishedTaskIds}
+                          contactLinkPrefs={contactLinkPrefs}
                         />
-                      ))}
-                    </ul>
+                      );
+                      if (favoritesGroupedSections == null) {
+                        return <ul className="task-list">{commonFiltered.map(card)}</ul>;
+                      }
+                      if (favoritesGroupedSections.length === 0) {
+                        return <p className="task-list-empty-hint task-list-favorites-empty-hint">No favorites yet.</p>;
+                      }
+                      return (
+                        <div className="task-list-favorites-grouped">
+                          {favoritesGroupedSections.map((sec) => {
+                            const folderKey = sec.folderId == null ? 'unfiled' : String(sec.folderId);
+                            const collapsed = collapsedFavoriteFolderKeys.has(folderKey);
+                            return (
+                              <section
+                                key={sec.folderId ?? 'unfiled'}
+                                className={
+                                  'task-list-favorite-folder-block' +
+                                  (collapsed ? ' task-list-favorite-folder-block--collapsed' : '')
+                                }
+                              >
+                                <div className="task-list-favorite-folder-heading">
+                                  <button
+                                    type="button"
+                                    className="task-list-favorite-folder-heading-btn"
+                                    aria-expanded={!collapsed}
+                                    onClick={() => toggleFavoriteFolderCollapsed(folderKey)}
+                                  >
+                                    {collapsed ? (
+                                      <ChevronRight size={14} className="task-list-favorite-folder-chevron" aria-hidden />
+                                    ) : (
+                                      <ChevronDown size={14} className="task-list-favorite-folder-chevron" aria-hidden />
+                                    )}
+                                    <span>{sec.label}</span>
+                                    <span className="task-list-favorite-folder-count" aria-hidden>
+                                      ({sec.tasks.length})
+                                    </span>
+                                  </button>
+                                  {sec.folderId != null && (
+                                    <button
+                                      type="button"
+                                      className="trash-btn"
+                                      title="Delete folder (favorites become unfiled)"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (!confirm(`Delete folder "${sec.label}"? Templates stay; they move to Unfiled.`)) return;
+                                        void api.favoriteFolders
+                                          .delete(sec.folderId!)
+                                          .then(loadData)
+                                          .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+                                      }}
+                                    >
+                                      ×
+                                    </button>
+                                  )}
+                                </div>
+                                {!collapsed && <ul className="task-list">{sec.tasks.map(card)}</ul>}
+                              </section>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
               )}
@@ -3654,165 +4992,358 @@ export function TaskListAndSchedule({
           />
           )}
           <div className={`left-bottom ${DT.scheduleColumn}` + (splitTaskScheduleLayout ? ' left-bottom--split' : '')}>
-            <div className="schedule-header-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
-              <div className="schedule-header-tabs-row schedule-tabs">
-                <button type="button" className={'schedule-tab' + (scheduleTab === 'today' ? ' active' : '')} onClick={() => setScheduleTab('today')}>
-                  Today
-                </button>
-                {!isMobile && (
-                  <button
-                    type="button"
-                    className={'schedule-tab' + (scheduleTab === 'week' ? ' active' : '')}
-                    onClick={() => {
-                      setWeekAnchorSunday(sundayOfWeekContaining(viewDate));
-                      setScheduleTab('week');
-                    }}
-                  >
-                    Week
-                  </button>
-                )}
-                <button type="button" className={'schedule-tab' + (scheduleTab === 'calendar' ? ' active' : '')} onClick={() => setScheduleTab('calendar')}>
-                  Calendar
-                </button>
-              </div>
-              {scheduleTab === 'today' && (
-                <div className="schedule-header-day-row day-nav" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                  <button type="button" className="day-nav-btn" onClick={goPrev}>
-                    Prev
-                  </button>
-                  <span className="schedule-date" style={{ fontSize: '0.85rem' }}>
-                    {viewDate}
-                  </span>
-                  {scheduleDayPast && (
-                    <span className="schedule-past-badge" title="This day is read-only">
-                      Past
-                    </span>
-                  )}
-                  <button type="button" className="day-nav-btn" onClick={goNext}>
-                    Next
-                  </button>
-                  {!isToday && (
-                    <button type="button" className="day-nav-btn" onClick={() => setViewDate(today())}>
+            <div
+              className={'schedule-header-row' + (isMobile ? ' schedule-header-row--mobile' : '')}
+              style={
+                isMobile
+                  ? undefined
+                  : { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }
+              }
+            >
+              {isMobile && scheduleTab === 'today' ? (
+                <>
+                  <div className="schedule-header-compact-row">
+                    <div className="schedule-header-tabs-row schedule-tabs">
+                      <button type="button" className="schedule-tab active" onClick={() => setScheduleTab('today')}>
+                        Today
+                      </button>
+                      <button type="button" className="schedule-tab" onClick={() => setScheduleTab('calendar')}>
+                        Calendar
+                      </button>
+                    </div>
+                    <div className="schedule-header-day-row day-nav">
+                      <button type="button" className="day-nav-btn day-nav-btn--icon" onClick={goPrev} title="Previous day" aria-label="Previous day">
+                        <ChevronLeft size={16} aria-hidden strokeWidth={2} />
+                      </button>
+                      <span className="schedule-date">{viewDate}</span>
+                      {scheduleDayPast && (
+                        <span className="schedule-past-badge" title="This day is read-only">
+                          Past
+                        </span>
+                      )}
+                      <button type="button" className="day-nav-btn day-nav-btn--icon" onClick={goNext} title="Next day" aria-label="Next day">
+                        <ChevronRight size={16} aria-hidden strokeWidth={2} />
+                      </button>
+                      {!isToday && (
+                        <button type="button" className="day-nav-btn" onClick={() => setViewDate(today())}>
+                          Today
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="schedule-header-compact-row">
+                    <div className="time-settings schedule-header-time-settings">
+                      <div className="schedule-header-start-end">
+                        <label className="time-settings-label">
+                          Start
+                          <select
+                            className="time-settings-select"
+                            value={settings.start_hour}
+                            disabled={scheduleDayPast}
+                            onChange={(e) => {
+                              const v = parseInt(e.target.value, 10);
+                              api.settings.update({ start_hour: v }).then(() => setSettings((s) => ({ ...s, start_hour: v }))).catch(alert);
+                            }}
+                          >
+                            {Array.from({ length: 24 }, (_, i) => (
+                              <option key={i} value={i}>{i === 0 ? '12:00 AM' : i < 12 ? `${i}:00 AM` : i === 12 ? '12:00 PM' : `${i - 12}:00 PM`}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="time-settings-label">
+                          End
+                          <select
+                            className="time-settings-select"
+                            value={settings.end_hour}
+                            disabled={scheduleDayPast}
+                            onChange={(e) => {
+                              const v = parseInt(e.target.value, 10);
+                              api.settings.update({ end_hour: v }).then(() => setSettings((s) => ({ ...s, end_hour: v }))).catch(alert);
+                            }}
+                          >
+                            {Array.from({ length: 25 }, (_, i) => (
+                              <option key={i} value={i}>
+                                {i === 0 ? '12:00 AM' : i < 12 ? `${i}:00 AM` : i === 12 ? '12:00 PM' : i === 24 ? '12:00 AM (+1)' : `${i - 12}:00 PM`}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                    </div>
+                    <div className="schedule-synced-wrap">
+                      <span
+                        className={'ical-sync-status-btn' + (icalSyncPhase !== 'idle' && icalSyncPhase !== 'synced' ? ' ical-phase-' + icalSyncPhase : icalSyncPhase === 'synced' ? ' ical-phase-synced' : '')}
+                        title={
+                          icalSyncPhase === 'idle'
+                            ? 'iCal sync status'
+                            : icalSyncPhase === 'downloading'
+                              ? 'Downloading…'
+                              : icalSyncPhase === 'parsing'
+                                ? 'Parsing…'
+                                : icalSyncPhase === 'saving'
+                                  ? 'Saving…'
+                                  : icalSyncPhase === 'loading'
+                                    ? 'Loading into UI…'
+                                    : icalSyncPhase === 'remote_sync'
+                                      ? 'Syncing… (another session is downloading)'
+                                      : (() => {
+                                        if (icalSubscriptionSyncReport.length === 0) return 'Synced';
+                                        return (
+                                          'Synced\n' +
+                                          icalSubscriptionSyncReport
+                                            .map((s) => {
+                                              const label = (icalSubById[s.subscription_id]?.display_name?.trim()
+                                                ? icalSubById[s.subscription_id]!.display_name
+                                                : `Calendar #${s.subscription_id}`);
+                                              const status = !s.attempted
+                                                ? (s.skip_reason === 'another_sync_in_progress' ? 'syncing on another session' : 'using cache')
+                                                : s.feed_errors && s.feed_errors.length > 0
+                                                  ? `error — ${s.feed_errors[0]!.message}`
+                                                  : 'synced';
+                                              return `${label}: ${status}`;
+                                            })
+                                            .join('\n')
+                                        );
+                                      })()
+                        }
+                      >
+                        {icalSyncPhase !== 'idle' && icalSyncPhase !== 'synced' ? (
+                          <span className="ical-sync-spinner" aria-hidden />
+                        ) : icalSyncPhase === 'synced' ? (
+                          <>✓ Synced</>
+                        ) : (
+                          <>iCal</>
+                        )}
+                      </span>
+                      {isMobile && (
+                        <button
+                          type="button"
+                          className={
+                            'schedule-glance-toggle' +
+                            (settings.mobile_schedule_glance ? ' schedule-glance-toggle--on' : '')
+                          }
+                          aria-pressed={!!settings.mobile_schedule_glance}
+                          title={
+                            settings.mobile_schedule_glance
+                              ? 'Glance View on — tap to show full schedule'
+                              : 'Switch to Glance View (simplified, read-only)'
+                          }
+                          onClick={() => {
+                            const next = !settings.mobile_schedule_glance;
+                            api.settings
+                              .update({ mobile_schedule_glance: next })
+                              .then(() => setSettings((s) => ({ ...s, mobile_schedule_glance: next })))
+                              .catch((err: unknown) => alert(err instanceof Error ? err.message : String(err)));
+                          }}
+                          style={{
+                            marginLeft: '0.4rem',
+                            padding: '0.25rem 0.5rem',
+                            borderRadius: 4,
+                            border: '1px solid var(--border)',
+                            background: settings.mobile_schedule_glance ? 'var(--accent, #2563eb)' : 'transparent',
+                            color: settings.mobile_schedule_glance ? '#fff' : 'var(--text)',
+                            fontSize: '0.8rem',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {settings.mobile_schedule_glance ? '👁 Full' : '👁 Glance'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </>
+              ) : isMobile && scheduleTab === 'calendar' ? (
+                <div className="schedule-header-compact-row">
+                  <div className="schedule-header-tabs-row schedule-tabs">
+                    <button type="button" className="schedule-tab" onClick={() => setScheduleTab('today')}>
                       Today
                     </button>
-                  )}
-                </div>
-              )}
-              {scheduleTab === 'week' && !isMobile && (
-                <div className="schedule-header-day-row day-nav week-nav-header" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                  <button type="button" className="day-nav-btn" onClick={() => shiftWeekAnchorByWeeks(-1)}>
-                    Prev week
-                  </button>
-                  <span className="schedule-date" style={{ fontSize: '0.85rem' }}>
-                    {weekDates[0]} – {weekDates[weekDates.length - 1]}
-                  </span>
-                  <button type="button" className="day-nav-btn" onClick={() => shiftWeekAnchorByWeeks(1)}>
-                    Next week
-                  </button>
-                  {weekAnchorSunday !== sundayOfWeekContaining(today()) && (
-                    <button type="button" className="day-nav-btn" onClick={() => setWeekAnchorSunday(sundayOfWeekContaining(today()))}>
-                      This week
+                    <button type="button" className="schedule-tab active" onClick={() => setScheduleTab('calendar')}>
+                      Calendar
                     </button>
-                  )}
-                </div>
-              )}
-              {scheduleTab === 'calendar' && (
-                <div className="schedule-header-day-row calendar-month-nav-header" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                  <button
-                    type="button"
-                    className="day-nav-btn calendar-month-prev"
-                    onClick={() => {
+                  </div>
+                  <ScheduleCalendarNav
+                    monthLabel={new Date(calendarMonth + 'T00:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+                    onPrevMonth={() => {
                       const d = new Date(calendarMonth + 'T12:00:00');
                       d.setMonth(d.getMonth() - 1);
                       setCalendarMonth(formatLocalYmd(d));
                     }}
-                  >
-                    Prev
-                  </button>
-                  <span className="calendar-month-label" style={{ fontSize: '0.85rem' }}>
-                    {new Date(calendarMonth + 'T00:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
-                  </span>
-                  <button
-                    type="button"
-                    className="day-nav-btn calendar-month-next"
-                    onClick={() => {
+                    onNextMonth={() => {
                       const d = new Date(calendarMonth + 'T12:00:00');
                       d.setMonth(d.getMonth() + 1);
                       setCalendarMonth(formatLocalYmd(d));
                     }}
-                  >
-                    Next
-                  </button>
+                  />
                 </div>
-              )}
-              {scheduleTab === 'today' && (
-                <div className="time-settings time-settings-top-right schedule-header-time-settings" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', fontSize: '0.85rem' }}>
-                  <div className="schedule-header-start-end" style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
-                    <label className="time-settings-label">
-                      Start
-                    <select
-                      className="time-settings-select"
-                      value={settings.start_hour}
-                      disabled={scheduleDayPast}
-                      onChange={(e) => {
-                        const v = parseInt(e.target.value, 10);
-                        api.settings.update({ start_hour: v }).then(() => setSettings((s) => ({ ...s, start_hour: v }))).catch(alert);
-                      }}
-                    >
-                      {Array.from({ length: 24 }, (_, i) => (
-                        <option key={i} value={i}>{i === 0 ? '12:00 AM' : i < 12 ? `${i}:00 AM` : i === 12 ? '12:00 PM' : `${i - 12}:00 PM`}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="time-settings-label">
-                    End
-                    <select
-                      className="time-settings-select"
-                      value={settings.end_hour}
-                      disabled={scheduleDayPast}
-                      onChange={(e) => {
-                        const v = parseInt(e.target.value, 10);
-                        api.settings.update({ end_hour: v }).then(() => setSettings((s) => ({ ...s, end_hour: v }))).catch(alert);
-                      }}
-                    >
-                      {Array.from({ length: 25 }, (_, i) => (
-                        <option key={i} value={i}>
-                          {i === 0 ? '12:00 AM' : i < 12 ? `${i}:00 AM` : i === 12 ? '12:00 PM' : i === 24 ? '12:00 AM (+1)' : `${i - 12}:00 PM`}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+              ) : (
+                <>
+                  <div className="schedule-header-tabs-row schedule-tabs">
+                    <button type="button" className={'schedule-tab' + (scheduleTab === 'today' ? ' active' : '')} onClick={() => setScheduleTab('today')}>
+                      Today
+                    </button>
+                    {!isMobile && (
+                      <button
+                        type="button"
+                        className={'schedule-tab' + (scheduleTab === 'week' ? ' active' : '')}
+                        onClick={() => {
+                          setWeekAnchorSunday(sundayOfWeekContaining(viewDate));
+                          setScheduleTab('week');
+                        }}
+                      >
+                        Week
+                      </button>
+                    )}
+                    <button type="button" className={'schedule-tab' + (scheduleTab === 'calendar' ? ' active' : '')} onClick={() => setScheduleTab('calendar')}>
+                      Calendar
+                    </button>
                   </div>
-                </div>
-              )}
-              {scheduleTab === 'today' && (
-                <div className="schedule-synced-wrap" style={{ marginLeft: 'auto' }}>
-                <span
-                  className={'ical-sync-status-btn' + (icalSyncPhase !== 'idle' && icalSyncPhase !== 'synced' ? ' ical-phase-' + icalSyncPhase : icalSyncPhase === 'synced' ? ' ical-phase-synced' : '')}
-                  title={
-                    icalSyncPhase === 'idle'
-                      ? 'iCal sync status'
-                      : icalSyncPhase === 'downloading'
-                        ? 'Downloading…'
-                        : icalSyncPhase === 'parsing'
-                          ? 'Parsing…'
-                          : icalSyncPhase === 'saving'
-                            ? 'Saving…'
-                            : icalSyncPhase === 'loading'
-                              ? 'Loading into UI…'
-                              : 'Synced'
-                  }
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.9rem', color: icalSyncPhase === 'idle' ? 'var(--text-muted)' : undefined }}
-                >
-                  {icalSyncPhase !== 'idle' && icalSyncPhase !== 'synced' ? (
-                    <span className="ical-sync-spinner" aria-hidden />
-                  ) : icalSyncPhase === 'synced' ? (
-                    <>✓ Synced</>
-                  ) : (
-                    <>iCal</>
+                  {scheduleTab === 'today' && (
+                    <div className="schedule-header-day-row day-nav" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                      <button type="button" className="day-nav-btn day-nav-btn--icon" onClick={goPrev} title="Previous day" aria-label="Previous day">
+                        <ChevronLeft size={16} aria-hidden strokeWidth={2} />
+                      </button>
+                      <span className="schedule-date" style={{ fontSize: '0.85rem' }}>
+                        {viewDate}
+                      </span>
+                      {scheduleDayPast && (
+                        <span className="schedule-past-badge" title="This day is read-only">
+                          Past
+                        </span>
+                      )}
+                      <button type="button" className="day-nav-btn day-nav-btn--icon" onClick={goNext} title="Next day" aria-label="Next day">
+                        <ChevronRight size={16} aria-hidden strokeWidth={2} />
+                      </button>
+                      {!isToday && (
+                        <button type="button" className="day-nav-btn" onClick={() => setViewDate(today())}>
+                          Today
+                        </button>
+                      )}
+                    </div>
                   )}
-                </span>
-                </div>
+                  {scheduleTab === 'week' && !isMobile && (
+                    <div className="schedule-header-day-row day-nav week-nav-header" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                      <button type="button" className="day-nav-btn" onClick={() => shiftWeekAnchorByWeeks(-1)}>
+                        Prev week
+                      </button>
+                      <span className="schedule-date" style={{ fontSize: '0.85rem' }}>
+                        {weekDates[0]} – {weekDates[weekDates.length - 1]}
+                      </span>
+                      <button type="button" className="day-nav-btn" onClick={() => shiftWeekAnchorByWeeks(1)}>
+                        Next week
+                      </button>
+                      {weekAnchorSunday !== sundayOfWeekContaining(today()) && (
+                        <button type="button" className="day-nav-btn" onClick={() => setWeekAnchorSunday(sundayOfWeekContaining(today()))}>
+                          This week
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {scheduleTab === 'calendar' && (
+                    <ScheduleCalendarNav
+                      monthLabel={new Date(calendarMonth + 'T00:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+                      onPrevMonth={() => {
+                        const d = new Date(calendarMonth + 'T12:00:00');
+                        d.setMonth(d.getMonth() - 1);
+                        setCalendarMonth(formatLocalYmd(d));
+                      }}
+                      onNextMonth={() => {
+                        const d = new Date(calendarMonth + 'T12:00:00');
+                        d.setMonth(d.getMonth() + 1);
+                        setCalendarMonth(formatLocalYmd(d));
+                      }}
+                    />
+                  )}
+                  {scheduleTab === 'today' && (
+                    <div className="time-settings time-settings-top-right schedule-header-time-settings" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', fontSize: '0.85rem' }}>
+                      <div className="schedule-header-start-end" style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                        <label className="time-settings-label">
+                          Start
+                          <select
+                            className="time-settings-select"
+                            value={settings.start_hour}
+                            disabled={scheduleDayPast}
+                            onChange={(e) => {
+                              const v = parseInt(e.target.value, 10);
+                              api.settings.update({ start_hour: v }).then(() => setSettings((s) => ({ ...s, start_hour: v }))).catch(alert);
+                            }}
+                          >
+                            {Array.from({ length: 24 }, (_, i) => (
+                              <option key={i} value={i}>{i === 0 ? '12:00 AM' : i < 12 ? `${i}:00 AM` : i === 12 ? '12:00 PM' : `${i - 12}:00 PM`}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="time-settings-label">
+                          End
+                          <select
+                            className="time-settings-select"
+                            value={settings.end_hour}
+                            disabled={scheduleDayPast}
+                            onChange={(e) => {
+                              const v = parseInt(e.target.value, 10);
+                              api.settings.update({ end_hour: v }).then(() => setSettings((s) => ({ ...s, end_hour: v }))).catch(alert);
+                            }}
+                          >
+                            {Array.from({ length: 25 }, (_, i) => (
+                              <option key={i} value={i}>
+                                {i === 0 ? '12:00 AM' : i < 12 ? `${i}:00 AM` : i === 12 ? '12:00 PM' : i === 24 ? '12:00 AM (+1)' : `${i - 12}:00 PM`}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                    </div>
+                  )}
+                  {scheduleTab === 'today' && (
+                    <div className="schedule-synced-wrap" style={{ marginLeft: 'auto' }}>
+                      <span
+                        className={'ical-sync-status-btn' + (icalSyncPhase !== 'idle' && icalSyncPhase !== 'synced' ? ' ical-phase-' + icalSyncPhase : icalSyncPhase === 'synced' ? ' ical-phase-synced' : '')}
+                        title={
+                          icalSyncPhase === 'idle'
+                            ? 'iCal sync status'
+                            : icalSyncPhase === 'downloading'
+                              ? 'Downloading…'
+                              : icalSyncPhase === 'parsing'
+                                ? 'Parsing…'
+                                : icalSyncPhase === 'saving'
+                                  ? 'Saving…'
+                                  : icalSyncPhase === 'loading'
+                                    ? 'Loading into UI…'
+                                    : icalSyncPhase === 'remote_sync'
+                                      ? 'Syncing… (another session is downloading)'
+                                      : (() => {
+                                        if (icalSubscriptionSyncReport.length === 0) return 'Synced';
+                                        return (
+                                          'Synced\n' +
+                                          icalSubscriptionSyncReport
+                                            .map((s) => {
+                                              const label = (icalSubById[s.subscription_id]?.display_name?.trim()
+                                                ? icalSubById[s.subscription_id]!.display_name
+                                                : `Calendar #${s.subscription_id}`);
+                                              const status = !s.attempted
+                                                ? (s.skip_reason === 'another_sync_in_progress' ? 'syncing on another session' : 'using cache')
+                                                : s.feed_errors && s.feed_errors.length > 0
+                                                  ? `error — ${s.feed_errors[0]!.message}`
+                                                  : 'synced';
+                                              return `${label}: ${status}`;
+                                            })
+                                            .join('\n')
+                                        );
+                                      })()
+                        }
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.9rem', color: icalSyncPhase === 'idle' ? 'var(--text-muted)' : undefined }}
+                      >
+                        {icalSyncPhase !== 'idle' && icalSyncPhase !== 'synced' ? (
+                          <span className="ical-sync-spinner" aria-hidden />
+                        ) : icalSyncPhase === 'synced' ? (
+                          <>✓ Synced</>
+                        ) : (
+                          <>iCal</>
+                        )}
+                      </span>
+                    </div>
+                  )}
+                </>
               )}
             </div>
             {scheduleTab === 'today' && !scheduleDayPast && (
@@ -3822,6 +5353,26 @@ export function TaskListAndSchedule({
                 aria-label="Schedule bulk actions"
                 style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.35rem', padding: '0.35rem 0.25rem', borderBottom: '1px solid var(--border)' }}
               >
+                <select
+                  value={selectedScheduleBlockTypeId}
+                  onChange={(e) => setSelectedScheduleBlockTypeId(e.target.value === '' ? '' : Number(e.target.value))}
+                  style={{ padding: '0.25rem 0.35rem' }}
+                  title="Block type"
+                >
+                  <option value="">Block type</option>
+                  {organizationBlocks.map((b) => (
+                    <option key={b.id} value={b.id}>{b.name}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="day-nav-btn"
+                  disabled={selectedScheduleBlockTypeId === ''}
+                  onClick={() => void createScheduleBlockAt(Math.max(viewStartMinutes, 9 * 60))}
+                  title="Add schedule block"
+                >
+                  Add block
+                </button>
                 <button
                   type="button"
                   className={'day-nav-btn' + (scheduleBulkMode ? ' schedule-bulk-mode-active' : '')}
@@ -3867,11 +5418,11 @@ export function TaskListAndSchedule({
                     >
                       {scheduleBulkMoveMode ? 'Cancel move' : 'Move on schedule'}
                     </button>
-                    <button type="button" className="day-nav-btn" onClick={() => runBulkUnassignOrPending('unassigned')}>
-                      Unassign
+                    <button type="button" className="day-nav-btn" onClick={() => runBulkUnassignOrPending(primaryListId)}>
+                      {bucketDefs[0]?.label ?? 'Unassign'}
                     </button>
-                    <button type="button" className="day-nav-btn" onClick={() => runBulkUnassignOrPending('pending')}>
-                      Pending
+                    <button type="button" className="day-nav-btn" onClick={() => runBulkUnassignOrPending(secondaryListId)}>
+                      {bucketDefs[1]?.label ?? 'Pending'}
                     </button>
                     <button type="button" className="day-nav-btn" onClick={() => setScheduleBulkPriorityOpen(true)}>
                       Priority…
@@ -3957,11 +5508,11 @@ export function TaskListAndSchedule({
                     >
                       {scheduleBulkMoveMode ? 'Cancel move' : 'Move on schedule'}
                     </button>
-                    <button type="button" className="day-nav-btn" onClick={() => runBulkUnassignOrPending('unassigned')}>
-                      Unassign
+                    <button type="button" className="day-nav-btn" onClick={() => runBulkUnassignOrPending(primaryListId)}>
+                      {bucketDefs[0]?.label ?? 'Unassign'}
                     </button>
-                    <button type="button" className="day-nav-btn" onClick={() => runBulkUnassignOrPending('pending')}>
-                      Pending
+                    <button type="button" className="day-nav-btn" onClick={() => runBulkUnassignOrPending(secondaryListId)}>
+                      {bucketDefs[1]?.label ?? 'Pending'}
                     </button>
                     <button type="button" className="day-nav-btn" onClick={() => setScheduleBulkPriorityOpen(true)}>
                       Priority…
@@ -4039,10 +5590,16 @@ export function TaskListAndSchedule({
                 DT.scheduleContent +
                 (isMobile ? ' schedule-swipe-zone-active' : '') +
                 (scheduleAutoScrollBlink ? ' schedule-auto-scroll-blink' : '') +
-                (scheduleTab === 'week' && !isMobile && !weekTimeScrollLocked ? ' schedule-week-independent-cols' : '')
+                (scheduleTab === 'week' && !isMobile && !weekTimeScrollLocked ? ' schedule-week-independent-cols' : '') +
+                (isMobile && settings.mobile_schedule_glance ? ' schedule-content--glance' : '')
               }
-              {...(scheduleTab !== 'week' || isMobile || weekTimeScrollLocked ? { 'data-schedule-scroll-host': '' as const } : {})}
-              {...(isMobile ? bindScheduleContentDrag() : {})}
+              data-schedule-glance={isMobile && settings.mobile_schedule_glance ? 'true' : undefined}
+              {...(!isMobile && (scheduleTab !== 'week' || weekTimeScrollLocked)
+                ? { 'data-schedule-scroll-host': '' as const }
+                : isMobile && scheduleTab !== 'today'
+                  ? { 'data-schedule-scroll-host': '' as const }
+                  : {})}
+              {...(isMobile && scheduleTab === 'today' ? { 'data-schedule-mobile-split': '' as const } : {})}
             >
             {scheduleTab === 'today' && (
               <>
@@ -4061,23 +5618,6 @@ export function TaskListAndSchedule({
                       ))}
                     </div>
                   )}
-                  {icalSubscriptionSyncReport.length > 1 && (
-                    <div className="schedule-ical-sync-report" role="status" aria-label="iCal subscription sync status">
-                      {icalSubscriptionSyncReport.map((s) => (
-                        <span key={s.subscription_id} className="schedule-ical-sync-report-item">
-                          {(icalSubById[s.subscription_id]?.display_name?.trim()
-                            ? icalSubById[s.subscription_id]!.display_name
-                            : `Calendar #${s.subscription_id}`)}
-                          :{' '}
-                          {!s.attempted
-                            ? 'using cache'
-                            : s.feed_errors && s.feed_errors.length > 0
-                              ? `error — ${s.feed_errors[0]!.message}`
-                              : 'refreshed'}
-                        </span>
-                      ))}
-                    </div>
-                  )}
                   {(untimedRootSlots.length > 0 || untimedFeedEvents.length > 0) && (
                     <div className="schedule-untimed-feed">
                       {untimedRootSlots.map((slot) => {
@@ -4087,7 +5627,8 @@ export function TaskListAndSchedule({
                           key={slot.id}
                           className={
                             'schedule-untimed-feed-chip schedule-untimed-slot' +
-                            (slot.completed ? ' schedule-untimed-slot-completed' : '')
+                            (slot.completed ? ' schedule-untimed-slot-completed' : '') +
+                            (openScheduleDrawerSlotId === slot.id ? ' schedule-untimed-drawer-open' : '')
                           }
                           data-task-id={slot.task_id}
                           onDragOver={(e) => {
@@ -4107,43 +5648,37 @@ export function TaskListAndSchedule({
                             }
                           }}
                         >
-                          <span
-                            className="schedule-untimed-drag-handle time-block-drag-to-list"
-                            title="Hold to drag to list or schedule"
-                            onPointerDown={(e) => {
-                              if (e.button !== 0 || (e.target as HTMLElement).closest('button')) return;
-                              if (scheduleDayPast) return;
-                              e.stopPropagation();
-                              startHold(slot.task_id, 'schedule', e.clientX, e.clientY);
-                            }}
-                          >
-                            ⋮⋮
-                          </span>
+                          <ScheduleSlotCompleteCheckbox
+                            completed={Number(slot.completed) === 1}
+                            disabled={scheduleDayPast || scheduleBulkMode || isScheduleDraftTaskId(slot.task_id)}
+                            backgroundColor={
+                              utTask?.category_id != null
+                                ? scheduleBlockBgColor(
+                                    organizationCategories.find((c) => c.id === utTask.category_id)?.color
+                                  )
+                                : SCHEDULE_UNTIMED_CHIP_BG
+                            }
+                            onToggle={() => handleScheduleSlotComplete(viewDate, slot, [])}
+                          />
                           {editingScheduleTaskId === slot.task_id ? (
                             <input
-                              className="time-block-edit schedule-untimed-title-input"
+                              className={
+                                'time-block-edit schedule-untimed-title-input' +
+                                (isScheduleDraftTaskId(slot.task_id) ? ' schedule-draft-title-input' : '')
+                              }
                               value={editingScheduleTitle}
                               onChange={(e) => setEditingScheduleTitle(e.target.value)}
                               onPointerDown={(e) => e.stopPropagation()}
                               onClick={(e) => e.stopPropagation()}
                               onDoubleClick={(e) => e.stopPropagation()}
-                              onBlur={() => {
-                                const t = editingScheduleTitle.trim();
-                                if (t) {
-                                  api.tasks.update({ id: slot.task_id, title: t }).then(loadData);
-                                }
-                                setEditingScheduleTaskId(null);
-                              }}
+                              onBlur={() => handleScheduleTitleCommit(slot.task_id, editingScheduleTitle)}
                               onKeyDown={(e) => {
                                 if (e.key === 'Enter') {
-                                  const t = editingScheduleTitle.trim();
-                                  if (t) {
-                                    api.tasks.update({ id: slot.task_id, title: t }).then(loadData);
-                                  }
-                                  setEditingScheduleTaskId(null);
+                                  handleScheduleTitleCommit(slot.task_id, editingScheduleTitle);
                                 }
                                 if (e.key === 'Escape') {
-                                  setEditingScheduleTaskId(null);
+                                  if (isScheduleDraftTaskId(slot.task_id)) cancelScheduleDraft();
+                                  else setEditingScheduleTaskId(null);
                                 }
                               }}
                               placeholder="Task title"
@@ -4155,124 +5690,157 @@ export function TaskListAndSchedule({
                               onDoubleClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
-                                if (scheduleDayPast) return;
+                                if (scheduleDayPast || isScheduleDraftTaskId(slot.task_id)) return;
                                 setEditingScheduleTaskId(slot.task_id);
                                 setEditingScheduleTitle(slot.title ?? 'Task');
                               }}
                               title="Double-click to edit title"
                             >
-                              {slot.title ?? 'Task'}
+                              {isScheduleDraftTaskId(slot.task_id) ? 'New task…' : (slot.title ?? 'Task')}
                             </span>
                           )}
-                          {!scheduleDayPast && (
-                            <span className="schedule-untimed-actions">
-                              <button
-                                type="button"
-                                className="time-block-link"
-                                title="Add link"
-                                onClick={() => {
-                                  setLinkModalTaskId(slot.task_id);
-                                  setLinkModalInitialUrl('');
-                                }}
-                              >
-                                <span className="time-block-link-icon">🔗<sup>+</sup></span>
-                              </button>
-                              <button
-                                type="button"
-                                className="time-block-link"
-                                title="List items"
-                                onClick={() => setListModalTaskId(slot.task_id)}
-                              >
-                                <span className="time-block-link-icon">📋<sup>+</sup></span>
-                              </button>
-                              <button
-                                type="button"
-                                className="time-block-link task-list-add-btn"
-                                title="Category & tags"
-                                onClick={() => setOrganizationModalTaskId(slot.task_id)}
-                              >
-                                <span className="time-block-link-icon">📁<sup className="task-list-add-plus">+</sup></span>
-                              </button>
-                              <button
-                                type="button"
-                                className="time-block-date"
-                                title="Change date"
-                                onClick={() => {
-                                  setScheduleDateTaskId(slot.task_id);
-                                  setScheduleDateValue(viewDate);
-                                  setScheduleNoTime(!slotHasTime(slot));
-                                  setScheduleTimeValue(slot.start_time?.slice(0, 5) || '09:00');
-                                  setScheduleSlotIdToReplace(slot.id);
-                                  setScheduleDueAutoPriority(false);
-                                  setScheduleDateOpen(true);
-                                }}
-                              >
-                                📅
-                              </button>
-                              <button
-                                type="button"
-                                className={'time-block-recurring' + (utTask?.recurring ? ' depressed' : '')}
-                                title="Recurring"
-                                onClick={() => {
-                                  const task = utTask ?? tasks.find((t) => t.id === slot.task_id);
-                                  let rule: { freq: string; time?: string; weekDays?: number[]; monthDays?: number[]; lastDayOfMonth?: boolean; count?: number; startDate?: string } = {
-                                    freq: 'daily',
-                                    time: '09:00',
-                                  };
-                                  try {
-                                    if (task?.recurrence_rule) rule = { ...rule, ...JSON.parse(task.recurrence_rule) };
-                                  } catch {}
-                                  setRecurringConfigModal({
-                                    taskId: slot.task_id,
-                                    recurring: !!task?.recurring,
-                                    freq: (rule.freq as 'daily' | 'weekly' | 'monthly' | 'yearly') || 'daily',
-                                    time: rule.time ?? '09:00',
-                                    weekDays: rule.weekDays ?? [],
-                                    monthDays: rule.monthDays ?? [],
-                                    lastDayOfMonth: !!rule.lastDayOfMonth,
-                                    count: rule.count,
-                                    startDate: rule.startDate ?? viewDate,
-                                  });
-                                }}
-                              >
-                                ↻
-                              </button>
-                              <button
-                                type="button"
-                                className="time-block-check"
-                                title="Mark complete"
-                                aria-pressed={!!slot.completed}
-                                onClick={() => {
-                                  api.slots
-                                    .update({ id: slot.id, completed: !slot.completed })
-                                    .then(loadData)
-                                    .catch((err) => {
-                                      setError(err instanceof Error ? err.message : String(err));
-                                      loadData();
-                                    });
-                                }}
-                              >
-                                ✓
-                              </button>
-                              <button
-                                type="button"
-                                className="time-block-trash trash-btn"
-                                title="Delete task"
-                                onClick={() => {
-                                  if (!confirm('Delete this task?')) return;
-                                  api.slots
-                                    .delete(slot.id)
-                                    .then(() => api.tasks.delete(slot.task_id))
-                                    .then(loadData)
-                                    .catch((err) => {
-                                      setError(err instanceof Error ? err.message : String(err));
-                                      loadData();
-                                    });
-                                }}
-                              >
-                                🗑
-                              </button>
-                            </span>
+                          {!scheduleDayPast && !isScheduleDraftTaskId(slot.task_id) && (
+                              <span className="schedule-untimed-actions-drawer time-block-mobile-drawer" style={{ position: 'relative' }}>
+                                <button
+                                  type="button"
+                                  className="time-block-drawer-chevron"
+                                  title={openScheduleDrawerSlotId === slot.id ? 'Close' : 'Actions'}
+                                  aria-expanded={openScheduleDrawerSlotId === slot.id}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setOpenScheduleDrawerSlotId((id) => (id === slot.id ? null : slot.id));
+                                  }}
+                                >
+                                  {openScheduleDrawerSlotId === slot.id ? '▶' : '◀'}
+                                </button>
+                                {openScheduleDrawerSlotId === slot.id && (
+                                  <div className="time-block-actions-drawer">
+                                    <button
+                                      type="button"
+                                      title="Edit title"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setEditingScheduleTaskId(slot.task_id);
+                                        setEditingScheduleTitle(slot.title ?? 'Task');
+                                        setOpenScheduleDrawerSlotId(null);
+                                      }}
+                                    >
+                                      ✎
+                                    </button>
+                                    <button
+                                      type="button"
+                                      title="Add link"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setLinkModalTaskId(slot.task_id);
+                                        setLinkModalInitialUrl('');
+                                        setOpenScheduleDrawerSlotId(null);
+                                      }}
+                                    >
+                                      🔗
+                                    </button>
+                                    <button
+                                      type="button"
+                                      title="List items"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setListModalTaskId(slot.task_id);
+                                        setOpenScheduleDrawerSlotId(null);
+                                      }}
+                                    >
+                                      📋
+                                    </button>
+                                    <button
+                                      type="button"
+                                      title="Category & tags"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        openOrganizationDetailsForTask(slot.task_id);
+                                        setOpenScheduleDrawerSlotId(null);
+                                      }}
+                                    >
+                                      📁
+                                    </button>
+                                    <button
+                                      type="button"
+                                      title="Change date"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setScheduleDateTaskId(slot.task_id);
+                                        setScheduleDateValue(viewDate);
+                                        setScheduleNoTime(!slotHasTime(slot));
+                                        setScheduleTimeValue(slot.start_time?.slice(0, 5) || '09:00');
+                                        setScheduleSlotIdToReplace(slot.id);
+                                        setScheduleDateOpen(true);
+                                        setOpenScheduleDrawerSlotId(null);
+                                      }}
+                                    >
+                                      📅
+                                    </button>
+                                    <button
+                                      type="button"
+                                      title="Recurring"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        const task = utTask ?? tasks.find((t) => t.id === slot.task_id);
+                                        let rule: { freq: string; time?: string; weekDays?: number[]; monthDays?: number[]; lastDayOfMonth?: boolean; count?: number; startDate?: string } = {
+                                          freq: 'daily',
+                                          time: '09:00',
+                                        };
+                                        try {
+                                          if (task?.recurrence_rule) rule = { ...rule, ...JSON.parse(task.recurrence_rule) };
+                                        } catch {}
+                                        setRecurringConfigModal({
+                                          taskId: slot.task_id,
+                                          recurring: !!task?.recurring,
+                                          freq: (rule.freq as 'daily' | 'weekly' | 'monthly' | 'yearly') || 'daily',
+                                          time: rule.time ?? '09:00',
+                                          weekDays: rule.weekDays ?? [],
+                                          monthDays: rule.monthDays ?? [],
+                                          lastDayOfMonth: !!rule.lastDayOfMonth,
+                                          count: rule.count,
+                                          startDate: rule.startDate ?? viewDate,
+                                        });
+                                        setOpenScheduleDrawerSlotId(null);
+                                      }}
+                                    >
+                                      ↻
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="time-block-duplicate-btn"
+                                      title="Duplicate task"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setOpenScheduleDrawerSlotId(null);
+                                        void duplicateScheduleSlot(slot);
+                                      }}
+                                    >
+                                      <Copy size={14} aria-hidden strokeWidth={2} />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="trash-btn"
+                                      title="Delete task"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setOpenScheduleDrawerSlotId(null);
+                                        if (!confirm('Delete this task?')) return;
+                                        api.slots
+                                          .delete(slot.id)
+                                          .then(() => api.tasks.delete(slot.task_id))
+                                          .then(loadData)
+                                          .catch((err) => {
+                                            setError(err instanceof Error ? err.message : String(err));
+                                            loadData();
+                                          });
+                                      }}
+                                    >
+                                      🗑
+                                    </button>
+                                  </div>
+                                )}
+                              </span>
                           )}
                         </div>
                         );
@@ -4281,19 +5849,25 @@ export function TaskListAndSchedule({
                         const isToday = viewDate === today();
                         const canMarkCompleted = isToday && e.id != null;
                         return (
-                          <div key={e.id ?? e.uid + e.start} className="schedule-untimed-feed-chip schedule-untimed-feed-chip-with-check">
+                          <div
+                            key={e.id ?? e.uid + e.start}
+                            className={
+                              'schedule-untimed-feed-chip schedule-untimed-feed-chip-with-check' +
+                              (e.user_completed ? ' ical-feed-event-completed' : '')
+                            }
+                          >
                             <span style={e.user_completed ? { color: 'var(--text-muted)', textDecoration: 'line-through' } : undefined}>{e.title || 'Event'}</span>
                             {canMarkCompleted && (
-                              <button
-                                type="button"
-                                className="time-block-check"
-                                title={e.user_completed ? 'Mark incomplete' : 'Mark complete'}
-                                aria-pressed={!!e.user_completed}
-                                style={isMobile ? { color: e.user_completed ? 'var(--text-muted)' : 'transparent' } : undefined}
-                                onClick={() => api.icalEvents.setCompleted(e.id!, !e.user_completed).then(() => refetchIcalForScheduleView()).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
-                              >
-                                ✓
-                              </button>
+                              <ScheduleSlotCompleteCheckbox
+                                completed={!!e.user_completed}
+                                backgroundColor={SCHEDULE_UNTIMED_CHIP_BG}
+                                onToggle={() =>
+                                  api.icalEvents
+                                    .setCompleted(e.id!, !e.user_completed)
+                                    .then(() => refetchIcalForScheduleView())
+                                    .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+                                }
+                              />
                             )}
                             {e.uid && !scheduleDayPast && (
                               <button
@@ -4319,30 +5893,570 @@ export function TaskListAndSchedule({
                     </div>
                   )}
                 </div>
+                <div
+                  ref={scheduleTimeBodyRef}
+                  className="schedule-time-body"
+                  {...(isMobile ? { 'data-schedule-scroll-host': '' as const } : {})}
+                >
                 {(!initialDataReady || loading) ? (
                   <div className="time-view-placeholder" style={{ padding: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '120px' }}>
                     <div className="loading-spinner" aria-hidden />
                   </div>
                 ) : error ? (
                   <p className="task-list-error">{error}</p>
+                ) : (settings.mobile_schedule_glance && isMobile) ? (
+                  // Glance View (mobile, read-only): replaces the absolute-positioned time
+                  // grid with a simple vertical list. Each scheduled slot + iCal feed event
+                  // is one row, ordered by start time. Tasks at the same start time stack
+                  // vertically; only the first row of a group shows the time label so the
+                  // visual reads "Time, Title <hours>" → blank rows continue the cluster.
+                  // No drag, no drawer, no category meta — display only.
+                  <div className="schedule-glance-view" data-testid="schedule-glance-view">
+                    {(() => {
+                      type GlanceItem = {
+                        key: string;
+                        startMin: number;
+                        durationMin: number;
+                        title: string;
+                        completed: boolean;
+                        categoryColor: string | null;
+                        kind: 'slot' | 'feed';
+                        slotId?: number;
+                        isRecurringOccurrence?: boolean;
+                        feedId?: number | null;
+                      };
+                      const toMin = (t?: string | null): number | null => {
+                        if (!t) return null;
+                        const [h, m] = t.split(':').map(Number);
+                        if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+                        return (h ?? 0) * 60 + (m ?? 0);
+                      };
+                      const items: GlanceItem[] = [];
+                      for (const s of slotsForViewDay) {
+                        // Skip un-timed slots — Glance only shows timed entries.
+                        const startMin = toMin(s.start_time);
+                        const endMin = toMin(s.end_time);
+                        if (startMin == null || endMin == null || endMin <= startMin) continue;
+                        const task = tasks.find((t) => t.id === s.task_id);
+                        const cat = task?.category_id != null
+                          ? organizationCategories.find((c) => c.id === task.category_id)
+                          : null;
+                        items.push({
+                          key: 'slot-' + s.id,
+                          startMin,
+                          durationMin: endMin - startMin,
+                          title: s.title ?? 'Task',
+                          completed: Number(s.completed) === 1,
+                          categoryColor: cat?.color ?? null,
+                          kind: 'slot',
+                          slotId: s.id,
+                          isRecurringOccurrence: !!s.is_recurring_occurrence,
+                        });
+                      }
+                      for (const e of feedEvents) {
+                        if (e.allDay) continue;
+                        if (icalEventLocalStartDate(e.start, false, settings.timezone) !== viewDate) continue;
+                        const local = icalEventToLocal(e.start, e.end, false, settings.timezone);
+                        items.push({
+                          key: 'feed-' + (e.id ?? e.uid + e.start),
+                          startMin: local.localStartMinutes,
+                          durationMin: local.localEndMinutes - local.localStartMinutes,
+                          title: e.title ?? 'Event',
+                          completed: !!e.user_completed,
+                          categoryColor: null,
+                          kind: 'feed',
+                          feedId: e.id ?? null,
+                        });
+                      }
+                      // Stable sort by start (so order within same-start matches the DOM
+                      // insertion order above — slots first, then feed events).
+                      items.sort((a, b) => a.startMin - b.startMin);
+                      if (items.length === 0) {
+                        return (
+                          <div className="schedule-glance-empty">Nothing scheduled.</div>
+                        );
+                      }
+                      let prevStartMin: number | null = null;
+                      return items.map((it) => {
+                        const showTime = it.startMin !== prevStartMin;
+                        prevStartMin = it.startMin;
+                        const timeLabel = showTime ? formatTimeAMPM(it.startMin) : '';
+                        const h = it.durationMin / 60;
+                        const hoursLabel = (Number.isInteger(h) ? String(h) : h.toFixed(1).replace(/\.0$/, '')) + 'h';
+                        const rowBg = scheduleBlockBgColor(it.categoryColor);
+                        const disabled = scheduleDayPast || scheduleBulkMode || (it.isRecurringOccurrence && viewDate > today());
+                        return (
+                          <div
+                            key={it.key}
+                            className={'schedule-glance-row' + (it.completed ? ' schedule-glance-row--completed' : '')}
+                            style={{ backgroundColor: rowBg }}
+                          >
+                            <div className="schedule-glance-time">{timeLabel}</div>
+                            <ScheduleSlotCompleteCheckbox
+                              completed={it.completed}
+                              disabled={disabled}
+                              backgroundColor={rowBg}
+                              onToggle={() => {
+                                if (it.kind === 'slot' && it.slotId != null) {
+                                  api.slots
+                                    .update({ id: it.slotId, completed: !it.completed })
+                                    .then(loadData)
+                                    .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+                                } else if (it.kind === 'feed' && it.feedId != null) {
+                                  api.icalEvents
+                                    .setCompleted(it.feedId, !it.completed)
+                                    .then(() => refetchIcalForScheduleView())
+                                    .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+                                }
+                              }}
+                            />
+                            <div className="schedule-glance-title">{it.title}</div>
+                            <div className="schedule-glance-hours">{hoursLabel}</div>
+                          </div>
+                        );
+                      });
+                    })()}
+                  </div>
                 ) : (
                   <div className="time-view">
                     <div className="time-view-container" style={{ height: totalHeight + 'px' }}>
+                      {weatherHasCoords && scheduleTab === 'today' && (
+                        <ScheduleWeatherDayRows
+                          slotLabels={slotLabels}
+                          rowHeightPx={ROW_HEIGHT}
+                          viewStartMinutes={viewStartMinutes}
+                          viewEndMinutes={viewEndMinutes}
+                          slotDurationMinutes={slotDurationMinutes}
+                          hourly={hourlyByDate[viewDate]}
+                          daily={dailyByDate[viewDate]}
+                          tempUnit={weatherTempUnit}
+                        />
+                      )}
                       <div className="time-view-labels">
-                        {slotLabels.map((label, i) => (
-                          <div key={i} className="time-view-label-row" style={{ height: ROW_HEIGHT + 'px' }}>
-                            {label}
-                          </div>
-                        ))}
+                        {slotLabels.map((label, i) => {
+                          const labelMinutes = viewStartMinutes + i * slotDurationMinutes;
+                          const onHour = labelMinutes % 60 === 0;
+                          return (
+                            <div
+                              key={i}
+                              className="time-view-label-row"
+                              data-on-hour={onHour ? 'true' : 'false'}
+                              style={{ height: ROW_HEIGHT + 'px' }}
+                            >
+                              {label}
+                            </div>
+                          );
+                        })}
                       </div>
+                      {(organizationBlocks.length > 0 || scheduleBlocks.length > 0) && (
+                        <div
+                          className="schedule-block-strip"
+                          title="Hover empty time to preview a block; click to add"
+                          style={{
+                            height: totalHeight + 'px',
+                            cursor:
+                              !scheduleDayPast &&
+                              selectedScheduleBlockTypeId !== '' &&
+                              organizationBlocks.length > 0 &&
+                              blockStripGhostSlotIndex != null
+                                ? 'pointer'
+                                : undefined,
+                          }}
+                          onMouseMove={(e) => {
+                            if (scheduleDayPast || selectedScheduleBlockTypeId === '' || organizationBlocks.length === 0) {
+                              setBlockStripGhostSlotIndex(null);
+                              return;
+                            }
+                            const strip = e.currentTarget;
+                            const rect = strip.getBoundingClientRect();
+                            const relativeY = e.clientY - rect.top;
+                            setBlockStripGhostSlotIndex(findNearestFreeBlockSlotIndex(relativeY));
+                          }}
+                          onMouseLeave={() => setBlockStripGhostSlotIndex(null)}
+                          onClick={(e) => {
+                            setStripBlockTypePickerBlockId(null);
+                            if ((e.target as HTMLElement).closest('.schedule-time-block-lane-item')) return;
+                            if (scheduleDayPast || selectedScheduleBlockTypeId === '' || blockStripGhostSlotIndex == null) return;
+                            const startMin = snapToSlot(
+                              viewStartMinutes + blockStripGhostSlotIndex * slotDurationMinutes,
+                              settings.start_hour,
+                              settings.end_hour,
+                              slotDurationMinutes
+                            );
+                            void createScheduleBlockAt(startMin);
+                          }}
+                        >
+                          <div className="schedule-time-block-lane" aria-label="Blocked time lane">
+                            {blockStripGhostSlotIndex != null &&
+                              !scheduleDayPast &&
+                              selectedScheduleBlockTypeId !== '' &&
+                              organizationBlocks.length > 0 && (
+                                <div
+                                  className="schedule-block-strip-add-ghost"
+                                  style={{ top: blockStripGhostSlotIndex * ROW_HEIGHT, height: ROW_HEIGHT }}
+                                  aria-hidden
+                                >
+                                  <span className="schedule-block-strip-add-ghost-plus">+</span>
+                                </div>
+                              )}
+                            {scheduleBlocks.map((block) => {
+                              const startMin = timeToMinutes(block.start_time);
+                              const endMin = timeToMinutes(block.end_time);
+                              const top = ((startMin - viewStartMinutes) / slotDurationMinutes) * ROW_HEIGHT;
+                              const height = ((endMin - startMin) / slotDurationMinutes) * ROW_HEIGHT;
+                              const blockHeightPx = Math.max(ROW_HEIGHT, height);
+                              const laneColor = block.block_color ?? '#6e84a3';
+                              const blockTitle = block.block_name ?? 'Block';
+                              const blockOrgMeta = organizationBlocks.find((ob) => ob.id === block.block_id);
+                              const stripBlockIcon = (block.block_icon ?? blockOrgMeta?.icon) || null;
+                              const stripBlockIconOnly = blockHeightPx < 48 && stripBlockIcon != null;
+                              return (
+                                <div
+                                  key={block.id}
+                                  data-strip-block-id={block.id}
+                                  className={
+                                    'schedule-time-block-lane-item' +
+                                    (stripResizingBlockId === block.id ? ' schedule-time-block-lane-item--resize-active' : '') +
+                                    (stripDraggingBlockId === block.id ? ' schedule-time-block-lane-item--dragging' : '')
+                                  }
+                                  style={{
+                                    top: `${top}px`,
+                                    height: `${Math.max(ROW_HEIGHT, height)}px`,
+                                    background: scheduleBlockStripBackground(laneColor),
+                                    borderColor: blockColorWithAlpha(laneColor, 'cc'),
+                                  }}
+                                  title={`${blockTitle} (${block.start_time} - ${block.end_time}). Hold to move; release without dragging to change type.`}
+                                  onPointerDown={(e) => {
+                                    if (e.pointerType === 'mouse' && e.button !== 0) return;
+                                    const t = e.target as HTMLElement;
+                                    if (t.closest('.schedule-time-block-resize, .schedule-time-block-delete, .schedule-time-block-type-select')) return;
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setStripBlockTypePickerBlockId(null);
+                                    const itemEl = e.currentTarget as HTMLElement;
+                                    const pid = e.pointerId;
+                                    try {
+                                      itemEl.setPointerCapture(pid);
+                                    } catch {
+                                      /* ignore */
+                                    }
+                                    const startY = e.clientY;
+                                    const startX = e.clientX;
+                                    const origStart = startMin;
+                                    const origEnd = endMin;
+                                    let settled = false;
+                                    let dragActive = false;
+                                    let holdTimer: ReturnType<typeof setTimeout> | null = null;
+                                    const clearHold = () => {
+                                      if (holdTimer) {
+                                        clearTimeout(holdTimer);
+                                        holdTimer = null;
+                                      }
+                                    };
+                                    const moveBlock = (e2: PointerEvent) => {
+                                      const delta = Math.round((e2.clientY - startY) / ROW_HEIGHT) * slotDurationMinutes;
+                                      const duration = origEnd - origStart;
+                                      const newStart = Math.max(
+                                        viewStartMinutes,
+                                        Math.min(settings.end_hour * 60 - duration, origStart + delta)
+                                      );
+                                      const newEnd = newStart + duration;
+                                      patchScheduleBlockTimes(block.id, minutesToTime(newStart), minutesToTime(newEnd));
+                                    };
+                                    const detach = () => {
+                                      clearHold();
+                                      window.removeEventListener('pointermove', cancelHoldIfMoved);
+                                      window.removeEventListener('pointermove', moveBlock);
+                                      window.removeEventListener('pointerup', onUp);
+                                      window.removeEventListener('pointercancel', onCancel);
+                                      setStripDraggingBlockId((id) => (id === block.id ? null : id));
+                                      try {
+                                        itemEl.releasePointerCapture(pid);
+                                      } catch {
+                                        /* ignore */
+                                      }
+                                    };
+                                    const cancelHoldIfMoved = (e2: PointerEvent) => {
+                                      if (dragActive) return;
+                                      if (
+                                        Math.abs(e2.clientX - startX) > MOVE_THRESHOLD ||
+                                        Math.abs(e2.clientY - startY) > MOVE_THRESHOLD
+                                      ) {
+                                        clearHold();
+                                      }
+                                    };
+                                    const onUp = (e2: PointerEvent) => {
+                                      if (settled) return;
+                                      settled = true;
+                                      detach();
+                                      if (!dragActive) {
+                                        if (!scheduleDayPast && organizationBlocks.length > 0) {
+                                          setStripBlockTypePickerBlockId(block.id);
+                                        }
+                                        return;
+                                      }
+                                      const delta = Math.round((e2.clientY - startY) / ROW_HEIGHT) * slotDurationMinutes;
+                                      const duration = origEnd - origStart;
+                                      const newStart = Math.max(
+                                        viewStartMinutes,
+                                        Math.min(settings.end_hour * 60 - duration, origStart + delta)
+                                      );
+                                      const newEnd = newStart + duration;
+                                      const st = minutesToTime(newStart);
+                                      const et = minutesToTime(newEnd);
+                                      patchScheduleBlockTimes(block.id, st, et);
+                                      void api.scheduleBlocks
+                                        .update({ id: block.id, start_time: st, end_time: et })
+                                        .catch((err) => {
+                                          setError(err instanceof Error ? err.message : String(err));
+                                          loadData();
+                                        });
+                                    };
+                                    const onCancel = () => {
+                                      if (settled) return;
+                                      settled = true;
+                                      detach();
+                                      loadData();
+                                    };
+                                    holdTimer = setTimeout(() => {
+                                      holdTimer = null;
+                                      dragActive = true;
+                                      setStripDraggingBlockId(block.id);
+                                      window.addEventListener('pointermove', moveBlock);
+                                    }, HOLD_MS);
+                                    window.addEventListener('pointermove', cancelHoldIfMoved);
+                                    window.addEventListener('pointerup', onUp, { once: true });
+                                    window.addEventListener('pointercancel', onCancel, { once: true });
+                                  }}
+                                >
+                                  <button
+                                    type="button"
+                                    className="schedule-time-block-resize schedule-time-block-resize-top"
+                                    title="Resize block start"
+                                    aria-label="Resize block start"
+                                    onPointerDown={(e) => {
+                                      if (e.pointerType === 'mouse' && e.button !== 0) return;
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      setStripBlockTypePickerBlockId(null);
+                                      const handleEl = e.currentTarget as HTMLElement;
+                                      const pid = e.pointerId;
+                                      try {
+                                        handleEl.setPointerCapture(pid);
+                                      } catch {
+                                        /* ignore */
+                                      }
+                                      setStripResizingBlockId(block.id);
+                                      const startY = e.clientY;
+                                      const origStart = startMin;
+                                      const fixedEnd = endMin;
+                                      let settled = false;
+                                      const move = (e2: PointerEvent) => {
+                                        const delta = Math.round((e2.clientY - startY) / ROW_HEIGHT) * slotDurationMinutes;
+                                        const newStart = Math.max(
+                                          viewStartMinutes,
+                                          Math.min(fixedEnd - slotDurationMinutes, origStart + delta)
+                                        );
+                                        patchScheduleBlockTimes(block.id, minutesToTime(newStart), minutesToTime(fixedEnd));
+                                      };
+                                      const detach = () => {
+                                        setStripResizingBlockId((id) => (id === block.id ? null : id));
+                                        window.removeEventListener('pointermove', move);
+                                        window.removeEventListener('pointerup', onUp);
+                                        window.removeEventListener('pointercancel', onCancel);
+                                        try {
+                                          handleEl.releasePointerCapture(pid);
+                                        } catch {
+                                          /* ignore */
+                                        }
+                                      };
+                                      const onUp = (e2: PointerEvent) => {
+                                        if (settled) return;
+                                        settled = true;
+                                        detach();
+                                        const delta = Math.round((e2.clientY - startY) / ROW_HEIGHT) * slotDurationMinutes;
+                                        const newStart = Math.max(
+                                          viewStartMinutes,
+                                          Math.min(fixedEnd - slotDurationMinutes, origStart + delta)
+                                        );
+                                        const st = minutesToTime(newStart);
+                                        const et = minutesToTime(fixedEnd);
+                                        patchScheduleBlockTimes(block.id, st, et);
+                                        void api.scheduleBlocks
+                                          .update({ id: block.id, start_time: st, end_time: et })
+                                          .catch((err) => {
+                                            setError(err instanceof Error ? err.message : String(err));
+                                            loadData();
+                                          });
+                                      };
+                                      const onCancel = () => {
+                                        if (settled) return;
+                                        settled = true;
+                                        detach();
+                                        loadData();
+                                      };
+                                      window.addEventListener('pointermove', move);
+                                      window.addEventListener('pointerup', onUp, { once: true });
+                                      window.addEventListener('pointercancel', onCancel, { once: true });
+                                    }}
+                                  />
+                                  <span
+                                    className={
+                                      'schedule-time-block-label' +
+                                      (stripBlockIconOnly ? ' schedule-time-block-label--icon-only' : '')
+                                    }
+                                    style={scheduleBlockLabelStyle(laneColor, scheduleContrastSurface)}
+                                  >
+                                    {stripBlockIcon && (
+                                      <span
+                                        className="schedule-time-block-label-icon"
+                                        aria-hidden
+                                        style={scheduleBlockLabelStyle(laneColor, scheduleContrastSurface)}
+                                      >
+                                        <OrgLucideIcon name={stripBlockIcon} size={stripBlockIconOnly ? 18 : 14} />
+                                      </span>
+                                    )}
+                                    <span className="schedule-time-block-label-text">{blockTitle}</span>
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="schedule-time-block-resize schedule-time-block-resize-bottom"
+                                    title="Resize block end"
+                                    aria-label="Resize block end"
+                                    onPointerDown={(e) => {
+                                      if (e.pointerType === 'mouse' && e.button !== 0) return;
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      setStripBlockTypePickerBlockId(null);
+                                      const handleEl = e.currentTarget as HTMLElement;
+                                      const pid = e.pointerId;
+                                      try {
+                                        handleEl.setPointerCapture(pid);
+                                      } catch {
+                                        /* ignore */
+                                      }
+                                      setStripResizingBlockId(block.id);
+                                      const startY = e.clientY;
+                                      const origEnd = endMin;
+                                      const fixedStart = startMin;
+                                      let settled = false;
+                                      const move = (e2: PointerEvent) => {
+                                        const delta = Math.round((e2.clientY - startY) / ROW_HEIGHT) * slotDurationMinutes;
+                                        const newEnd = Math.max(
+                                          fixedStart + slotDurationMinutes,
+                                          Math.min(settings.end_hour * 60, origEnd + delta)
+                                        );
+                                        patchScheduleBlockTimes(block.id, minutesToTime(fixedStart), minutesToTime(newEnd));
+                                      };
+                                      const detach = () => {
+                                        setStripResizingBlockId((id) => (id === block.id ? null : id));
+                                        window.removeEventListener('pointermove', move);
+                                        window.removeEventListener('pointerup', onUp);
+                                        window.removeEventListener('pointercancel', onCancel);
+                                        try {
+                                          handleEl.releasePointerCapture(pid);
+                                        } catch {
+                                          /* ignore */
+                                        }
+                                      };
+                                      const onUp = (e2: PointerEvent) => {
+                                        if (settled) return;
+                                        settled = true;
+                                        detach();
+                                        const delta = Math.round((e2.clientY - startY) / ROW_HEIGHT) * slotDurationMinutes;
+                                        const newEnd = Math.max(
+                                          fixedStart + slotDurationMinutes,
+                                          Math.min(settings.end_hour * 60, origEnd + delta)
+                                        );
+                                        const st = minutesToTime(fixedStart);
+                                        const et = minutesToTime(newEnd);
+                                        patchScheduleBlockTimes(block.id, st, et);
+                                        void api.scheduleBlocks
+                                          .update({ id: block.id, start_time: st, end_time: et })
+                                          .catch((err) => {
+                                            setError(err instanceof Error ? err.message : String(err));
+                                            loadData();
+                                          });
+                                      };
+                                      const onCancel = () => {
+                                        if (settled) return;
+                                        settled = true;
+                                        detach();
+                                        loadData();
+                                      };
+                                      window.addEventListener('pointermove', move);
+                                      window.addEventListener('pointerup', onUp, { once: true });
+                                      window.addEventListener('pointercancel', onCancel, { once: true });
+                                    }}
+                                  />
+                                  {stripBlockTypePickerBlockId === block.id &&
+                                    !scheduleDayPast &&
+                                    organizationBlocks.length > 0 && (
+                                      <select
+                                        className="schedule-time-block-type-select"
+                                        aria-label="Block type"
+                                        autoFocus
+                                        value={block.block_id}
+                                        onPointerDown={(e) => e.stopPropagation()}
+                                        onClick={(e) => e.stopPropagation()}
+                                        onChange={(e) => {
+                                          const newId = Number(e.target.value);
+                                          void api.scheduleBlocks
+                                            .update({ id: block.id, block_id: newId })
+                                            .then(() => loadData())
+                                            .catch((err) => {
+                                              setError(err instanceof Error ? err.message : String(err));
+                                              loadData();
+                                            })
+                                            .finally(() => setStripBlockTypePickerBlockId(null));
+                                        }}
+                                      >
+                                        {organizationBlocks.map((b) => (
+                                          <option key={b.id} value={b.id}>
+                                            {b.name}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    )}
+                                  <button
+                                    type="button"
+                                    className="schedule-time-block-delete"
+                                    title="Delete block"
+                                    onClick={() => {
+                                      if (block.id < 0) {
+                                        setScheduleBlocks((prev) => prev.filter((b) => b.id !== block.id));
+                                        return;
+                                      }
+                                      setScheduleBlocks((prev) => prev.filter((b) => b.id !== block.id));
+                                      void api.scheduleBlocks
+                                        .delete(block.id)
+                                        .catch((err) => {
+                                          setError(err instanceof Error ? err.message : String(err));
+                                          loadData();
+                                        });
+                                    }}
+                                  >
+                                    ×
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                       <div
                         className="time-view-blocks"
                         style={{ height: totalHeight + 'px' }}
                         data-schedule-drop="true"
                         data-schedule-day={viewDate}
+                        onMouseMove={(e) => handleScheduleGridMouseMove(viewDate, dayViewOccupiedRects, e)}
+                        onMouseLeave={() =>
+                          setScheduleAddTaskGhost((g) => (g?.columnDate === viewDate ? null : g))
+                        }
+                        onClick={(e) => handleScheduleGridClick(viewDate, e)}
                         onDoubleClick={(e) => {
                           if (scheduleDayPast) return;
-                          if ((e.target as HTMLElement).closest('.time-block, button, a, .time-block-resize, .time-block-resize-top, .time-block-drag-to-list, .time-block-title, .time-block-edit, .schedule-untimed-drag-handle, .schedule-untimed-title, .schedule-untimed-title-input, .schedule-untimed-feed-chip')) return;
+                          if ((e.target as HTMLElement).closest('.time-block, .schedule-time-block-lane-item, button, a, .time-block-resize, .time-block-resize-top, .time-block-complete-rail, .time-block-complete-checkbox, .time-block-drag-to-list, .time-block-title, .time-block-edit, .schedule-untimed-title, .schedule-untimed-title-input, .schedule-untimed-feed-chip')) return;
                           const container = e.currentTarget as HTMLElement;
                           const rect = container.getBoundingClientRect();
                           const relativeY = e.clientY - rect.top;
@@ -4355,23 +6469,7 @@ export function TaskListAndSchedule({
                           );
                           const viewEndMin = settings.end_hour * 60;
                           if (startMin >= viewEndMin - slotDurationMinutes) return;
-                          const start_time = minutesToTime(startMin);
-                          const end_time = minutesToTime(startMin + slotDurationMinutes);
-                          api.tasks
-                            .create({ title: 'New task', priority: 'low' })
-                            .then((created) =>
-                              api.day.getOrCreate(viewDate).then((day) =>
-                                api.slots.create({ day_record_id: day.id, task_id: created.id, start_time, end_time }).then(() => {
-                                  loadData();
-                                  setEditingScheduleTaskId(created.id);
-                                  setEditingScheduleTitle('');
-                                })
-                              )
-                            )
-                            .catch((err) => {
-                            setError(err instanceof Error ? err.message : String(err));
-                            loadData();
-                          });
+                          void createScheduleTaskAt(viewDate, startMin);
                         }}
                       >
                         {viewDate === today() && currentTimeMinutes >= viewStartMinutes && currentTimeMinutes < settings.end_hour * 60 && (
@@ -4414,15 +6512,33 @@ export function TaskListAndSchedule({
                             </div>
                           </div>
                         )}
+                        {!isMobile &&
+                          scheduleAddTaskGhost?.columnDate === viewDate &&
+                          !scheduleDayPast && (
+                            <div
+                              className="schedule-add-task-ghost"
+                              style={{
+                                top: scheduleAddTaskGhost.placement.topPx,
+                                height: ROW_HEIGHT,
+                                left: scheduleAddTaskGhost.placement.leftPct + '%',
+                                width: scheduleAddTaskGhost.placement.widthPct + '%',
+                              }}
+                              aria-hidden
+                            >
+                              <span className="schedule-add-task-ghost-plus">+</span>
+                            </div>
+                          )}
                         {timedRootSlots.map((slot) => {
-                          const startMin = timeToMinutes(slot.start_time);
-                          const endMin = timeToMinutes(slot.end_time);
+                          const childSlots = childSlotsByParent.get(slot.task_id) ?? [];
+                          const { startMin, endMin } = timedSlotLayoutBounds(slot, childSlots);
                           const top = ((startMin - viewStartMinutes) / slotDurationMinutes) * ROW_HEIGHT;
-                          const height = ((endMin - startMin) / slotDurationMinutes) * ROW_HEIGHT;
+                          const height = Math.max(
+                            ROW_HEIGHT,
+                            ((endMin - startMin) / slotDurationMinutes) * ROW_HEIGHT
+                          );
                           const overlap = slotOverlapInfo.get(slot.id) ?? { col: 0, total: 1 };
                           const widthPctSlot = overlap.total > 0 ? 100 / overlap.total : 100;
                           const leftPct = overlap.col * widthPctSlot;
-                          const childSlots = childSlotsByParent.get(slot.task_id) ?? [];
                           const orderedGroupChildren = childSlots
                             .slice()
                             .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0) || a.id - b.id);
@@ -4435,11 +6551,10 @@ export function TaskListAndSchedule({
                           const slotCategory = slotTask?.category_id != null ? organizationCategories.find((c) => c.id === slotTask.category_id) : null;
                           const slotSubcategory = slotTask?.subcategory_id != null ? organizationSubcategories.find((s) => s.id === slotTask.subcategory_id) : null;
                           const slotTagList = (slotTask?.tag_ids ?? []).map((tid) => organizationTags.find((t) => t.id === tid)).filter(Boolean) as Array<{ id: number; name: string; color?: string | null }>;
-                          const slotBgColor = slotCategory?.color
-                            ? (slotCategory.color.startsWith('hsl')
-                              ? slotCategory.color.replace(/\)$/, ', 0.25)').replace(/^hsl\(/, 'hsla(')
-                              : slotCategory.color + '40')
-                            : 'rgba(220, 220, 220, 0.45)';
+                          const slotHasOrgMeta =
+                            (!hideScheduleCategory && (slotCategory != null || slotSubcategory != null)) ||
+                            (!hideScheduleTags && slotTagList.length > 0);
+                          const slotBgColor = scheduleBlockBgColor(slotCategory?.color);
                           const groupMemberCount = 1 + childSlots.length;
                           const blockHeightPx =
                             childSlots.length > 0 ? Math.max(height, groupMemberCount * ROW_HEIGHT) : height;
@@ -4455,11 +6570,9 @@ export function TaskListAndSchedule({
                                 })
                               : [];
                           const outerScheduleDensityClasses =
-                            childSlots.length > 0
-                              ? widthPctSlot < 34
-                                ? ' time-block-density-actions-drawer'
-                                : ''
-                              : scheduleBlockDensityClasses(blockHeightPx, widthPctSlot);
+                            (childSlots.length > 0
+                              ? scheduleBlockDensityClasses(groupSegHeightsPx[0] ?? ROW_HEIGHT, widthPctSlot)
+                              : scheduleBlockDensityClasses(blockHeightPx, widthPctSlot)) + ' time-block-density-actions-drawer';
                           return (
                             <div
                               key={slot.id}
@@ -4473,6 +6586,9 @@ export function TaskListAndSchedule({
                                 (scheduleDayPast ? ' time-block-readonly' : '') +
                                 (selectedScheduleRootSlotIds.has(slot.id) ? ' time-block-bulk-selected' : '') +
                                 (openScheduleDrawerSlotId === slot.id ? ' time-block-drawer-open' : '') +
+                                (childSlots.length === 0 && !(slot.is_recurring_occurrence && viewDate > today())
+                                  ? ' time-block-has-complete-rail'
+                                  : '') +
                                 outerScheduleDensityClasses
                               }
                               style={{
@@ -4483,6 +6599,11 @@ export function TaskListAndSchedule({
                                 backgroundColor: slotBgColor,
                                 ['--tb-h' as string]: `${Math.round(blockHeightPx)}px`,
                               } as React.CSSProperties}
+                              data-slot-hours={(() => {
+                                const h = (endMin - startMin) / 60;
+                                // Integer hours show as "2"; fractional as "1.5"
+                                return Number.isInteger(h) ? String(h) : h.toFixed(1).replace(/\.0$/, '');
+                              })()}
                               onDragOver={(e) => {
                                 if (scheduleDayPast) return;
                                 if (e.dataTransfer.types.includes('text/uri-list') || e.dataTransfer.types.includes('text/plain')) {
@@ -4520,7 +6641,7 @@ export function TaskListAndSchedule({
                                     scheduleBulkMoveMode &&
                                     selectedScheduleRootSlotIds.has(slot.id) &&
                                     !(e.target as HTMLElement).closest(
-                                      'button, a, .time-block-resize, .time-block-resize-top, .time-block-drag-to-list, .time-block-link-inline, .time-block-link, .time-block-title, .time-block-edit, .schedule-untimed-drag-handle, .time-block-group-boundary, .time-block-group-split-icon-btn'
+                                      'button, a, .time-block-resize, .time-block-resize-top, .time-block-complete-rail, .time-block-complete-checkbox, .time-block-drag-to-list, .time-block-link-inline, .time-block-link, .time-block-title, .time-block-edit, .time-block-group-boundary, .time-block-group-split-icon-btn'
                                     )
                                   ) {
                                     e.preventDefault();
@@ -4533,11 +6654,22 @@ export function TaskListAndSchedule({
                                   toggleScheduleRootInSelection(slot.id);
                                   return;
                                 }
-                                if ((e.target as HTMLElement).closest('button, a, .time-block-resize, .time-block-resize-top, .time-block-drag-to-list, .time-block-link-inline, .time-block-link, .time-block-title, .time-block-edit, .schedule-untimed-drag-handle, .time-block-group-boundary, .time-block-group-split-icon-btn')) return;
+                                if ((e.target as HTMLElement).closest('button, a, .time-block-resize, .time-block-resize-top, .time-block-complete-rail, .time-block-complete-checkbox, .time-block-drag-to-list, .time-block-link-inline, .time-block-link, .time-block-title, .time-block-edit, .time-block-group-boundary, .time-block-group-split-icon-btn')) return;
                                 e.preventDefault();
                                 startHold(slot.task_id, 'schedule', e.clientX, e.clientY);
                               }}
                               >
+                              {childSlots.length === 0 && (
+                                <div className="time-block-complete-rail">
+                                  <ScheduleSlotCompleteCheckbox
+                                    completed={slotCompleted}
+                                    disabled={scheduleDayPast || scheduleBulkMode}
+                                    hidden={slot.is_recurring_occurrence && viewDate > today()}
+                                    backgroundColor={slotBgColor}
+                                    onToggle={() => handleScheduleSlotComplete(viewDate, slot, childSlots)}
+                                  />
+                                </div>
+                              )}
                               {!scheduleDayPast && !slot.is_recurring_occurrence && (
                               <div
                                 className="time-block-resize time-block-resize-top"
@@ -4552,7 +6684,43 @@ export function TaskListAndSchedule({
                                   blockEl.classList.add('time-block-resizing');
                                   const startY = e.clientY;
                                   let lastStart = startMin;
+                                  let resizePointerFinished = false;
                                   const slotDur = Math.max(1, slotDurationMinutes);
+                                  const taskTitle = tasks.find((t) => t.id === slot.task_id)?.title ?? '';
+                                  const recurringPreview = !!(slot.recurring || slot.is_recurring_occurrence);
+                                  let lastGhostLogSig = '';
+                                  const logGhostTop = (start: number) => {
+                                    const durationMin = endMin - start;
+                                    const sig = `${start}|${durationMin}`;
+                                    if (sig === lastGhostLogSig) return;
+                                    lastGhostLogSig = sig;
+                                    requestAnimationFrame(() => {
+                                      logScheduleTaskResize('ghost', {
+                                        edge: 'top',
+                                        slotId: slot.id,
+                                        taskId: slot.task_id,
+                                        taskTitle,
+                                        durationMinutes: durationMin,
+                                        startMin: start,
+                                        endMin,
+                                        uiHeightPx: Math.round(blockEl.getBoundingClientRect().height),
+                                        slotDurationMinutes: slotDur,
+                                        recurringPreview,
+                                      });
+                                    });
+                                  };
+                                  logScheduleTaskResize('pointerdown', {
+                                    edge: 'top',
+                                    slotId: slot.id,
+                                    taskId: slot.task_id,
+                                    taskTitle,
+                                    durationMinutes: endMin - startMin,
+                                    startMin,
+                                    endMin,
+                                    uiHeightPx: Math.round(blockEl.getBoundingClientRect().height),
+                                    slotDurationMinutes: slotDur,
+                                    recurringPreview,
+                                  });
                                   const move = (e2: PointerEvent) => {
                                     const dy = e2.clientY - startY;
                                     const delta = Math.round(dy / ROW_HEIGHT) * slotDur;
@@ -4568,21 +6736,42 @@ export function TaskListAndSchedule({
                                       currentStartMin: startMin,
                                     });
                                     lastStart = newStart;
-                                    blockEl.style.top = Math.max(0, ((lastStart - viewStartMinutes) / slotDur) * ROW_HEIGHT) + 'px';
-                                    blockEl.style.height = Math.max(ROW_HEIGHT, ((endMin - lastStart) / slotDur) * ROW_HEIGHT) + 'px';
-                                  };
-                                  const cleanup = () => {
-                                    blockEl.classList.remove('time-block-resizing');
-                                    try { handleEl.releasePointerCapture(e.pointerId); } catch {}
-                                    window.removeEventListener('pointermove', move);
-                                    window.removeEventListener('pointerup', up);
-                                    window.removeEventListener('pointercancel', up);
-                                    handleEl.removeEventListener('lostpointercapture', up);
-                                    blockEl.style.top = '';
-                                    blockEl.style.height = '';
+                                    if (slot.recurring || slot.is_recurring_occurrence) {
+                                      blockEl.style.top = Math.max(0, ((lastStart - viewStartMinutes) / slotDur) * ROW_HEIGHT) + 'px';
+                                      blockEl.style.height = Math.max(ROW_HEIGHT, ((endMin - lastStart) / slotDur) * ROW_HEIGHT) + 'px';
+                                      logGhostTop(lastStart);
+                                      return;
+                                    }
+                                    const orderedChildren = childSlots
+                                      .slice()
+                                      .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0) || a.id - b.id);
+                                    const memberSlots = [{ id: slot.id }, ...orderedChildren.map((c) => ({ id: c.id }))];
+                                    const memberTimes = distributeGroupMemberTimes({
+                                      groupStartMin: lastStart,
+                                      groupEndMin: endMin,
+                                      slotDurationMinutes: slotDur,
+                                      memberCount,
+                                    });
+                                    const memberTimesById = new Map<number, { startMin: number; endMin: number }>();
+                                    memberSlots.forEach((ms, i) =>
+                                      memberTimesById.set(ms.id, {
+                                        startMin: i === 0 ? lastStart : memberTimes[i].startMin,
+                                        endMin: i === 0 ? endMin : memberTimes[i].endMin,
+                                      })
+                                    );
+                                    setSlots((prev) =>
+                                      prev.map((s) => {
+                                        const mt = memberTimesById.get(s.id);
+                                        if (!mt) return s;
+                                        return { ...s, start_time: minutesToTime(mt.startMin), end_time: minutesToTime(mt.endMin) };
+                                      })
+                                    );
+                                    logGhostTop(lastStart);
                                   };
                                   const up = () => {
-                                    cleanup();
+                                    if (resizePointerFinished) return;
+                                    resizePointerFinished = true;
+                                    window.removeEventListener('pointermove', move);
                                     const memberCount = 1 + childSlots.length;
                                     const clampedStart = clampTopResizeStartForMinGroupDuration({
                                       candidateStartMin: lastStart,
@@ -4593,6 +6782,22 @@ export function TaskListAndSchedule({
                                       endHour: settings.end_hour,
                                       currentStartMin: startMin,
                                     });
+                                    const logPointerUpTop = () => {
+                                      requestAnimationFrame(() => {
+                                        logScheduleTaskResize('pointerup', {
+                                          edge: 'top',
+                                          slotId: slot.id,
+                                          taskId: slot.task_id,
+                                          taskTitle,
+                                          durationMinutes: endMin - clampedStart,
+                                          startMin: clampedStart,
+                                          endMin,
+                                          uiHeightPx: Math.round(blockEl.getBoundingClientRect().height),
+                                          slotDurationMinutes: slotDur,
+                                          recurringPreview,
+                                        });
+                                      });
+                                    };
                                     if (clampedStart !== startMin) {
                                       const newStartTime = minutesToTime(clampedStart);
                                       const orderedChildren = childSlots
@@ -4637,6 +6842,20 @@ export function TaskListAndSchedule({
                                             loadData();
                                           });
                                       }
+                                    }
+                                    logPointerUpTop();
+                                    blockEl.classList.remove('time-block-resizing');
+                                    try {
+                                      handleEl.releasePointerCapture(e.pointerId);
+                                    } catch {
+                                      /* ignore */
+                                    }
+                                    window.removeEventListener('pointerup', up);
+                                    window.removeEventListener('pointercancel', up);
+                                    handleEl.removeEventListener('lostpointercapture', up);
+                                    if (slot.recurring || slot.is_recurring_occurrence) {
+                                      blockEl.style.top = '';
+                                      blockEl.style.height = '';
                                     }
                                   };
                                   window.addEventListener('pointermove', move);
@@ -4717,7 +6936,7 @@ export function TaskListAndSchedule({
                               <div
                                 className={
                                   childSlots.length > 0
-                                    ? 'time-block-group-segment' +
+                                    ? 'time-block-group-segment time-block-has-complete-rail' +
                                       scheduleBlockDensityClasses(groupSegHeightsPx[0] ?? ROW_HEIGHT, widthPctSlot)
                                     : 'time-block-group-root-flat'
                                 }
@@ -4736,6 +6955,17 @@ export function TaskListAndSchedule({
                                     : undefined
                                 }
                               >
+                              {childSlots.length > 0 && (
+                                <div className="time-block-complete-rail">
+                                  <ScheduleSlotCompleteCheckbox
+                                    completed={slotCompleted}
+                                    disabled={scheduleDayPast || scheduleBulkMode}
+                                    hidden={slot.is_recurring_occurrence && viewDate > today()}
+                                    backgroundColor={slotBgColor}
+                                    onToggle={() => handleScheduleSlotComplete(viewDate, slot, childSlots)}
+                                  />
+                                </div>
+                              )}
                               <div
                                 className={
                                   'time-block-header' +
@@ -4743,30 +6973,12 @@ export function TaskListAndSchedule({
                                 }
                               >
                                 <div className="time-block-header-leading">
-                                  {childSlots.length === 0 && (
-                                  <span
-                                    className="time-block-drag-to-list"
-                                    title="Hold to move to list"
-                                    onPointerDown={(e) => {
-                                      if (e.button === 0) {
-                                        if (scheduleBulkMode && !scheduleBulkMoveMode) return;
-                                        e.stopPropagation();
-                                        if (scheduleBulkMoveMode && selectedScheduleRootSlotIds.has(slot.id)) {
-                                          startBulkScheduleMoveHold(slot.task_id, e.clientX, e.clientY);
-                                        } else {
-                                          startHold(slot.task_id, 'schedule', e.clientX, e.clientY);
-                                        }
-                                      }
-                                    }}
-                                  >
-                                    ⋮⋮
-                                  </span>
-                                  )}
                                   <div className="time-block-priority-wrap">
                                     <button
                                       ref={openPrioritySlotId === slot.id ? schedulePriorityButtonRef : undefined}
                                       type="button"
                                       className={'time-block-priority time-block-priority-btn priority-' + (slot.priority || 'low')}
+                                      style={priorityDisplay.colorStyle((slot.priority as string | undefined) ?? 'low')}
                                       title="Priority"
                                       disabled={scheduleDayPast}
                                       onClick={(e) => {
@@ -4775,85 +6987,105 @@ export function TaskListAndSchedule({
                                         setOpenPrioritySlotId((id) => (id === slot.id ? null : slot.id));
                                       }}
                                     >
-                                      {priorityIcon((slot.priority as Priority) ?? 'low')}
+                                      {priorityDisplay.icon((slot.priority as string | undefined) ?? 'low')}
                                     </button>
                                   </div>
                                 </div>
-                                <div className="time-block-title-wrap">
-                                  {editingScheduleTaskId === slot.task_id ? (
-                                    <input
-                                      className="time-block-edit"
-                                      value={editingScheduleTitle}
-                                      onChange={(e) => setEditingScheduleTitle(e.target.value)}
-                                      onBlur={() => {
-                                        const t = editingScheduleTitle.trim();
-                                        if (t) {
-                                          api.tasks.update({ id: slot.task_id, title: t }).then(loadData);
-                                          setEditingScheduleTaskId(null);
+                                <div
+                                  className={
+                                    'time-block-title-wrap time-block-title-wrap-stacked' +
+                                    (slotHasOrgMeta ? ' time-block-title-wrap-with-meta' : ' time-block-title-wrap-no-meta')
+                                  }
+                                >
+                                  <div className="time-block-title-line">
+                                    {editingScheduleTaskId === slot.task_id ? (
+                                      <input
+                                        className={
+                                          'time-block-edit' +
+                                          (isScheduleDraftTaskId(slot.task_id) ? ' schedule-draft-title-input' : '')
                                         }
-                                      }}
-                                      onKeyDown={(e) => {
-                                        if (e.key === 'Enter') {
-                                          const t = editingScheduleTitle.trim();
-                                          if (t) {
-                                            api.tasks.update({ id: slot.task_id, title: t }).then(loadData);
-                                            setEditingScheduleTaskId(null);
+                                        value={editingScheduleTitle}
+                                        onChange={(e) => setEditingScheduleTitle(e.target.value)}
+                                        onBlur={() => handleScheduleTitleCommit(slot.task_id, editingScheduleTitle)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') {
+                                            handleScheduleTitleCommit(slot.task_id, editingScheduleTitle);
                                           }
-                                        }
-                                        if (e.key === 'Escape') {
-                                          setEditingScheduleTaskId(null);
-                                          api.tasks.delete(slot.task_id).then(() => loadData());
-                                        }
-                                      }}
-                                      placeholder="Task title (required)"
-                                      autoFocus
-                                    />
-                                  ) : (
-                                    <div
-                                      className="time-block-title"
-                                      onDoubleClick={(e) => {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        if (scheduleDayPast || (slot.is_recurring_occurrence && viewDate > today())) return;
-                                        setEditingScheduleTaskId(slot.task_id);
-                                        setEditingScheduleTitle(slot.title ?? 'Task');
-                                      }}
-                                      title="Double-click to edit title"
-                                    >
-                                      {slot.title ?? 'Task'}
-                                    </div>
-                                  )}
-                                  {(taskLinksByTaskId[slot.task_id] ?? []).map((link) => (
-                                    <a
-                                      key={link.id}
-                                      href={link.url}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="time-block-link-inline"
-                                      title={link.description || link.url}
-                                    >
-                                      🔗
-                                    </a>
-                                  ))}
-                                  {slotTagList.length > 0 && (
-                                    <span className="time-block-tags">
-                                      {slotTagList.map((t) => (
-                                        <span
-                                          key={t.id}
-                                          className="time-block-tag-pill"
-                                          style={{
-                                            backgroundColor: t.color ?? 'var(--surface)',
-                                            color: t.color ? (t.color.startsWith('hsl') && t.color.includes('65%') ? '#fff' : '#000') : 'var(--text)',
-                                          }}
+                                          if (e.key === 'Escape') {
+                                            if (isScheduleDraftTaskId(slot.task_id)) cancelScheduleDraft();
+                                            else setEditingScheduleTaskId(null);
+                                          }
+                                        }}
+                                        placeholder="Task title (required)"
+                                        autoFocus
+                                      />
+                                    ) : (
+                                      <div
+                                        className="time-block-title"
+                                        onDoubleClick={(e) => {
+                                          e.preventDefault();
+                                          e.stopPropagation();
+                                          if (scheduleDayPast || isScheduleDraftTaskId(slot.task_id) || (slot.is_recurring_occurrence && viewDate > today())) return;
+                                          setEditingScheduleTaskId(slot.task_id);
+                                          setEditingScheduleTitle(slot.title ?? 'Task');
+                                        }}
+                                        title="Double-click to edit title"
+                                      >
+                                        {isScheduleDraftTaskId(slot.task_id) ? 'New task…' : (slot.title ?? 'Task')}
+                                      </div>
+                                    )}
+                                    {(taskLinksByTaskId[slot.task_id] ?? []).map((link) => (
+                                      <a
+                                        key={link.id}
+                                        href={taskLinkHref(
+                                          link.url,
+                                          contactLinkPrefs,
+                                          isMobile ? { nativeContactHandlers: true } : undefined
+                                        )}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="time-block-link-inline"
+                                        title={link.description || link.url}
+                                        onClick={(e) => {
+                                          if (isSpecialTaskLink(link.url)) {
+                                            e.preventDefault();
+                                            openTaskLink(
+                                              link.url,
+                                              contactLinkPrefs,
+                                              isMobile ? { nativeContactHandlers: true } : undefined
+                                            );
+                                          }
+                                        }}
+                                      >
+                                        {taskLinkGlyph(link.url)}
+                                      </a>
+                                    ))}
+                                  </div>
+                                  {slotHasOrgMeta && (
+                                    <div className="time-block-meta-line">
+                                      {!hideScheduleCategory && (slotCategory != null || slotSubcategory != null) && (
+                                        <div
+                                          className="time-block-category-sub"
+                                          style={scheduleCategoryMetaStyle(slotBgColor, scheduleContrastSurface)}
                                         >
-                                          {t.name}
+                                          {slotCategory != null && <OrgLucideIcon name={slotCategory.icon} size={12} />}
+                                          {slotCategory?.name}
+                                          {slotSubcategory != null ? ` › ${slotSubcategory.name}` : ''}
+                                        </div>
+                                      )}
+                                      {!hideScheduleTags && slotTagList.length > 0 && (
+                                        <span className="time-block-tags">
+                                          {slotTagList.map((t) => (
+                                            <span
+                                              key={t.id}
+                                              className="time-block-tag-pill"
+                                              style={scheduleTagPillStyle(t.color, scheduleContrastSurface)}
+                                            >
+                                              {t.name}
+                                            </span>
+                                          ))}
                                         </span>
-                                      ))}
-                                    </span>
-                                  )}
-                                  {(slotCategory != null || slotSubcategory != null) && (
-                                    <div className="time-block-category-sub" style={{ fontSize: '0.7em', opacity: 0.9, marginTop: '0.1rem' }}>
-                                      {slotCategory?.name}{slotSubcategory != null ? ` › ${slotSubcategory.name}` : ''}
+                                      )}
                                     </div>
                                   )}
                                 </div>
@@ -4890,7 +7122,7 @@ export function TaskListAndSchedule({
                                     disabled={scheduleDayPast}
                                     onClick={() => {
                                       if (scheduleDayPast) return;
-                                      setOrganizationModalTaskId(slot.task_id);
+                                      openOrganizationDetailsForTask(slot.task_id);
                                     }}
                                   >
                                     <span className="time-block-link-icon">📁<sup className="task-list-add-plus">+</sup></span>
@@ -4907,7 +7139,6 @@ export function TaskListAndSchedule({
                                       setScheduleNoTime(!slotHasTime(slot));
                                       setScheduleTimeValue(slot.start_time?.slice(0, 5) || '09:00');
                                       setScheduleSlotIdToReplace(slot.id);
-                                      setScheduleDueAutoPriority(false);
                                       setScheduleDateOpen(true);
                                     }}
                                   >
@@ -4942,14 +7173,32 @@ export function TaskListAndSchedule({
                                   </button>
                                   <button
                                     type="button"
+                                    className="time-block-link time-block-duplicate-btn"
+                                    title="Duplicate task"
+                                    disabled={scheduleDayPast}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (scheduleDayPast) return;
+                                      void duplicateScheduleSlot(slot);
+                                    }}
+                                  >
+                                    <Copy size={14} aria-hidden strokeWidth={2} />
+                                  </button>
+                                  <button
+                                    type="button"
                                     className="time-block-trash trash-btn"
                                     title="Delete task"
                                     disabled={scheduleDayPast}
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       if (scheduleDayPast) return;
-                                      if (slot.recurring) {
-                                        setRecurringActionModal({ type: 'remove', slot, childSlots });
+                                      if (slot.recurring || slot.is_recurring_occurrence) {
+                                        setRecurringActionModal({
+                                          type: 'remove',
+                                          slot,
+                                          childSlots,
+                                          occurrenceDate: viewDate,
+                                        });
                                         return;
                                       }
                                       if (confirm('Delete this task?')) {
@@ -4966,55 +7215,6 @@ export function TaskListAndSchedule({
                                   >
                                     🗑
                                   </button>
-                                  {!(slot.is_recurring_occurrence && viewDate > today()) && (
-                                    <button
-                                      type="button"
-                                      className="time-block-check"
-                                      title="Mark complete"
-                                      aria-pressed={slotCompleted}
-                                      style={isMobile ? { color: slotCompleted ? 'var(--text-muted)' : 'transparent' } : undefined}
-                                      disabled={scheduleDayPast}
-                                      onClick={() => {
-                                        if (scheduleDayPast) return;
-                                        const newCompleted = slotCompleted ? 0 : 1;
-                                        if (newCompleted !== 1) {
-                                          api.slots.update({ id: slot.id, completed: false }).then(loadData).catch((err) => {
-                                            setError(err instanceof Error ? err.message : String(err));
-                                            loadData();
-                                          });
-                                          return;
-                                        }
-                                        if (slot.is_recurring_occurrence && slot.id < 0) {
-                                          api.slots.completeOccurrence(slot.task_id, viewDate, slot.start_time ?? undefined, slot.end_time ?? undefined).then(loadData).catch((err) => {
-                                            setError(err instanceof Error ? err.message : String(err));
-                                            loadData();
-                                          });
-                                          return;
-                                        }
-                                        if (slot.recurring && slot.id > 0) {
-                                          setRecurringActionModal({ type: 'complete', slot, childSlots });
-                                          return;
-                                        }
-                                        if (viewDate > today()) {
-                                          setFutureCompleteModal({ slot });
-                                          return;
-                                        }
-                                        if (childSlots.length > 0) {
-                                          api.slots.update({ id: slot.id, completed: true }).then(loadData).catch((err) => {
-                                            setError(err instanceof Error ? err.message : String(err));
-                                            loadData();
-                                          });
-                                          return;
-                                        }
-                                        api.slots.update({ id: slot.id, completed: true }).then(loadData).catch((err) => {
-                                          setError(err instanceof Error ? err.message : String(err));
-                                          loadData();
-                                        });
-                                      }}
-                                    >
-                                      ✓
-                                    </button>
-                                  )}
                                 </span>
                                 <span className="time-block-mobile-drawer" style={{ position: 'relative' }}>
                                   <button
@@ -5082,7 +7282,7 @@ export function TaskListAndSchedule({
                                         onClick={(e) => {
                                           e.stopPropagation();
                                           if (scheduleDayPast) return;
-                                          setOrganizationModalTaskId(slot.task_id);
+                                          openOrganizationDetailsForTask(slot.task_id);
                                           setOpenScheduleDrawerSlotId(null);
                                         }}
                                       >
@@ -5101,7 +7301,6 @@ export function TaskListAndSchedule({
                                           setScheduleNoTime(!slotHasTime(slot));
                                           setScheduleTimeValue(slot.start_time?.slice(0, 5) || '09:00');
                                           setScheduleSlotIdToReplace(slot.id);
-                                          setScheduleDueAutoPriority(false);
                                           setScheduleDateOpen(true);
                                           setOpenScheduleDrawerSlotId(null);
                                         }}
@@ -5140,6 +7339,21 @@ export function TaskListAndSchedule({
                                       {!isMobile && <span className="task-card-drawer-divider" aria-hidden>|</span>}
                                       <button
                                         type="button"
+                                        className="time-block-duplicate-btn"
+                                        title="Duplicate task"
+                                        disabled={scheduleDayPast}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (scheduleDayPast) return;
+                                          setOpenScheduleDrawerSlotId(null);
+                                          void duplicateScheduleSlot(slot);
+                                        }}
+                                      >
+                                        <Copy size={14} aria-hidden strokeWidth={2} />
+                                      </button>
+                                      {!isMobile && <span className="task-card-drawer-divider" aria-hidden>|</span>}
+                                      <button
+                                        type="button"
                                         className="trash-btn"
                                         title="Delete task"
                                         disabled={scheduleDayPast}
@@ -5147,8 +7361,13 @@ export function TaskListAndSchedule({
                                         e.stopPropagation();
                                         if (scheduleDayPast) return;
                                         setOpenScheduleDrawerSlotId(null);
-                                        if (slot.recurring) {
-                                          setRecurringActionModal({ type: 'remove', slot, childSlots });
+                                        if (slot.recurring || slot.is_recurring_occurrence) {
+                                          setRecurringActionModal({
+                                            type: 'remove',
+                                            slot,
+                                            childSlots,
+                                            occurrenceDate: viewDate,
+                                          });
                                           return;
                                         }
                                         if (confirm('Delete this task?')) {
@@ -5159,45 +7378,6 @@ export function TaskListAndSchedule({
                                             .catch((err) => { setError(err instanceof Error ? err.message : String(err)); loadData(); });
                                         }
                                       }}>🗑</button>
-                                      {!(slot.is_recurring_occurrence && viewDate > today()) && (
-                                        <>
-                                          {!isMobile && <span className="task-card-drawer-divider" aria-hidden>|</span>}
-                                          <button
-                                            type="button"
-                                            title="Mark complete"
-                                            disabled={scheduleDayPast}
-                                            onClick={(e) => {
-                                            e.stopPropagation();
-                                            if (scheduleDayPast) return;
-                                            setOpenScheduleDrawerSlotId(null);
-                                            const newCompleted = slotCompleted ? 0 : 1;
-                                            if (newCompleted !== 1) {
-                                              api.slots.update({ id: slot.id, completed: false }).then(loadData).catch((err) => { setError(err instanceof Error ? err.message : String(err)); loadData(); });
-                                              return;
-                                            }
-                                            if (slot.is_recurring_occurrence && slot.id < 0) {
-                                              api.slots.completeOccurrence(slot.task_id, viewDate, slot.start_time ?? undefined, slot.end_time ?? undefined).then(loadData).catch((err) => {
-                                                setError(err instanceof Error ? err.message : String(err));
-                                                loadData();
-                                              });
-                                              return;
-                                            }
-                                            if (slot.recurring && slot.id > 0) {
-                                              setRecurringActionModal({ type: 'complete', slot, childSlots });
-                                              return;
-                                            }
-                                            if (viewDate > today()) {
-                                              setFutureCompleteModal({ slot });
-                                              return;
-                                            }
-                                            if (childSlots.length > 0) {
-                                              api.slots.update({ id: slot.id, completed: true }).then(loadData).catch((err) => { setError(err instanceof Error ? err.message : String(err)); loadData(); });
-                                              return;
-                                            }
-                                            api.slots.update({ id: slot.id, completed: true }).then(loadData).catch((err) => { setError(err instanceof Error ? err.message : String(err)); loadData(); });
-                                          }}>✓</button>
-                                        </>
-                                      )}
                                       {!isMobile && (
                                         <span className="task-card-drawer-divider task-card-drawer-end" aria-hidden>&gt;</span>
                                       )}
@@ -5234,13 +7414,17 @@ export function TaskListAndSchedule({
                                     const chTagList = (childTask?.tag_ids ?? [])
                                       .map((tid) => organizationTags.find((x) => x.id === tid))
                                       .filter(Boolean) as Array<{ id: number; name: string; color?: string | null }>;
+                                    const chHasOrgMeta =
+                                      (!hideScheduleCategory && (chCat != null || chSub != null)) ||
+                                      (!hideScheduleTags && chTagList.length > 0);
                                     const segPx = groupSegHeightsPx[ci + 1] ?? ROW_HEIGHT;
                                     return (
                                       <div
                                         key={c.id}
                                         className={
-                                          'time-block-group-segment' +
-                                          scheduleBlockDensityClasses(segPx, widthPctSlot)
+                                          'time-block-group-segment time-block-has-complete-rail' +
+                                          scheduleBlockDensityClasses(segPx, widthPctSlot) +
+                                          ' time-block-density-actions-drawer'
                                         }
                                         style={
                                           {
@@ -5255,6 +7439,14 @@ export function TaskListAndSchedule({
                                           } as React.CSSProperties
                                         }
                                       >
+                                        <div className="time-block-complete-rail">
+                                          <ScheduleSlotCompleteCheckbox
+                                            completed={Number(c.completed) === 1}
+                                            disabled={scheduleDayPast || scheduleBulkMode}
+                                            backgroundColor={scheduleBlockBgColor(chCat?.color)}
+                                            onToggle={() => handleScheduleChildMemberComplete(slot, c)}
+                                          />
+                                        </div>
                                         <div
                                           className={
                                             'time-block-header time-block-group-member-header' +
@@ -5262,7 +7454,7 @@ export function TaskListAndSchedule({
                                           }
                                           onPointerDown={(e) => {
                                             if (!scheduleBulkMode || e.button !== 0) return;
-                                            if ((e.target as HTMLElement).closest('button, a, .time-block-group-boundary')) return;
+                                            if ((e.target as HTMLElement).closest('button, a, .time-block-group-boundary, .time-block-complete-rail, .time-block-complete-checkbox')) return;
                                             e.preventDefault();
                                             e.stopPropagation();
                                             toggleScheduleRootInSelection(slot.id);
@@ -5277,6 +7469,9 @@ export function TaskListAndSchedule({
                                                 'time-block-priority time-block-priority-btn priority-' +
                                                 ((c.priority as string) || childTask?.priority || 'low')
                                               }
+                                              style={priorityDisplay.colorStyle(
+                                                ((c.priority as string | undefined) ?? childTask?.priority) ?? 'low'
+                                              )}
                                               title="Priority"
                                               disabled={scheduleDayPast}
                                               onClick={(e) => {
@@ -5285,226 +7480,107 @@ export function TaskListAndSchedule({
                                                 setOpenPrioritySlotId((id) => (id === c.id ? null : c.id));
                                               }}
                                             >
-                                              {priorityIcon((((c.priority as Priority) ?? childTask?.priority) ?? 'low') as Priority)}
+                                              {priorityDisplay.icon(((c.priority as string | undefined) ?? childTask?.priority) ?? 'low')}
                                             </button>
                                           </div>
                                         </div>
-                                          <div className="time-block-title-wrap">
-                                            {editingScheduleTaskId === c.task_id ? (
-                                              <input
-                                                className="time-block-edit"
-                                                value={editingScheduleTitle}
-                                                onChange={(e) => setEditingScheduleTitle(e.target.value)}
-                                                onBlur={() => {
-                                                  const t = editingScheduleTitle.trim();
-                                                  if (t) {
-                                                    api.tasks.update({ id: c.task_id, title: t }).then(loadData);
-                                                    setEditingScheduleTaskId(null);
+                                          <div
+                                            className={
+                                              'time-block-title-wrap time-block-title-wrap-stacked' +
+                                              (chHasOrgMeta ? ' time-block-title-wrap-with-meta' : ' time-block-title-wrap-no-meta')
+                                            }
+                                          >
+                                            <div className="time-block-title-line">
+                                              {editingScheduleTaskId === c.task_id ? (
+                                                <input
+                                                  className={
+                                                    'time-block-edit' +
+                                                    (isScheduleDraftTaskId(c.task_id) ? ' schedule-draft-title-input' : '')
                                                   }
-                                                }}
-                                                onKeyDown={(e) => {
-                                                  if (e.key === 'Enter') {
-                                                    const t = editingScheduleTitle.trim();
-                                                    if (t) {
-                                                      api.tasks.update({ id: c.task_id, title: t }).then(loadData);
-                                                      setEditingScheduleTaskId(null);
+                                                  value={editingScheduleTitle}
+                                                  onChange={(e) => setEditingScheduleTitle(e.target.value)}
+                                                  onBlur={() => handleScheduleTitleCommit(c.task_id, editingScheduleTitle)}
+                                                  onKeyDown={(e) => {
+                                                    if (e.key === 'Enter') {
+                                                      handleScheduleTitleCommit(c.task_id, editingScheduleTitle);
                                                     }
-                                                  }
-                                                  if (e.key === 'Escape') setEditingScheduleTaskId(null);
-                                                }}
-                                                autoFocus
-                                              />
-                                            ) : (
-                                              <div
-                                                className="time-block-title"
-                                                onDoubleClick={(e) => {
-                                                  e.preventDefault();
-                                                  e.stopPropagation();
-                                                  if (scheduleDayPast || viewDate > today()) return;
-                                                  setEditingScheduleTaskId(c.task_id);
-                                                  setEditingScheduleTitle(c.title ?? 'Task');
-                                                }}
-                                                title="Double-click to edit title"
-                                              >
-                                                {c.title ?? 'Task'}
-                                              </div>
-                                            )}
-                                            {chLinks.map((link) => (
-                                              <a
-                                                key={link.id}
-                                                href={link.url}
-                                                target="_blank"
-                                                rel="noopener noreferrer"
-                                                className="time-block-link-inline"
-                                                title={link.description || link.url}
-                                              >
-                                                🔗
-                                              </a>
-                                            ))}
-                                            {chTagList.length > 0 && (
-                                              <span className="time-block-tags">
-                                                {chTagList.map((tg) => (
-                                                  <span
-                                                    key={tg.id}
-                                                    className="time-block-tag-pill"
-                                                    style={{
-                                                      backgroundColor: tg.color ?? 'var(--surface)',
-                                                      color: tg.color
-                                                        ? tg.color.startsWith('hsl') && tg.color.includes('65%')
-                                                          ? '#fff'
-                                                          : '#000'
-                                                        : 'var(--text)',
-                                                    }}
+                                                    if (e.key === 'Escape') {
+                                                      if (isScheduleDraftTaskId(c.task_id)) cancelScheduleDraft();
+                                                      else setEditingScheduleTaskId(null);
+                                                    }
+                                                  }}
+                                                  autoFocus
+                                                />
+                                              ) : (
+                                                <div
+                                                  className="time-block-title"
+                                                  onDoubleClick={(e) => {
+                                                    e.preventDefault();
+                                                    e.stopPropagation();
+                                                    if (scheduleDayPast || isScheduleDraftTaskId(c.task_id) || viewDate > today()) return;
+                                                    setEditingScheduleTaskId(c.task_id);
+                                                    setEditingScheduleTitle(c.title ?? 'Task');
+                                                  }}
+                                                  title="Double-click to edit title"
+                                                >
+                                                  {isScheduleDraftTaskId(c.task_id) ? 'New task…' : (c.title ?? 'Task')}
+                                                </div>
+                                              )}
+                                              {chLinks.map((link) => (
+                                                <a
+                                                  key={link.id}
+                                                  href={taskLinkHref(
+                                                    link.url,
+                                                    contactLinkPrefs,
+                                                    isMobile ? { nativeContactHandlers: true } : undefined
+                                                  )}
+                                                  target="_blank"
+                                                  rel="noopener noreferrer"
+                                                  className="time-block-link-inline"
+                                                  title={link.description || link.url}
+                                                  onClick={(e) => {
+                                                    if (isSpecialTaskLink(link.url)) {
+                                                      e.preventDefault();
+                                                      openTaskLink(
+                                                        link.url,
+                                                        contactLinkPrefs,
+                                                        isMobile ? { nativeContactHandlers: true } : undefined
+                                                      );
+                                                    }
+                                                  }}
+                                                >
+                                                  {taskLinkGlyph(link.url)}
+                                                </a>
+                                              ))}
+                                            </div>
+                                            {chHasOrgMeta && (
+                                              <div className="time-block-meta-line">
+                                                {!hideScheduleCategory && (chCat != null || chSub != null) && (
+                                                  <div
+                                                    className="time-block-category-sub"
+                                                    style={scheduleCategoryMetaStyle(slotBgColor, scheduleContrastSurface)}
                                                   >
-                                                    {tg.name}
+                                                    {chCat != null && <OrgLucideIcon name={chCat.icon} size={12} />}
+                                                    {chCat?.name}
+                                                    {chSub != null ? ` › ${chSub.name}` : ''}
+                                                  </div>
+                                                )}
+                                                {!hideScheduleTags && chTagList.length > 0 && (
+                                                  <span className="time-block-tags">
+                                                    {chTagList.map((tg) => (
+                                                      <span
+                                                        key={tg.id}
+                                                        className="time-block-tag-pill"
+                                                        style={scheduleTagPillStyle(tg.color, scheduleContrastSurface)}
+                                                      >
+                                                        {tg.name}
+                                                      </span>
+                                                    ))}
                                                   </span>
-                                                ))}
-                                              </span>
-                                            )}
-                                            {(chCat != null || chSub != null) && (
-                                              <div
-                                                className="time-block-category-sub"
-                                                style={{ fontSize: '0.65em', opacity: 0.9, marginTop: '0.08rem' }}
-                                              >
-                                                {chCat?.name}
-                                                {chSub != null ? ` › ${chSub.name}` : ''}
+                                                )}
                                               </div>
                                             )}
                                           </div>
-                                          <span className="time-block-desktop-actions">
-                                            <button
-                                              type="button"
-                                              className="time-block-link"
-                                              title="Add link"
-                                              disabled={scheduleDayPast}
-                                              onClick={() => {
-                                                if (scheduleDayPast) return;
-                                                setLinkModalTaskId(c.task_id);
-                                                setLinkModalInitialUrl('');
-                                              }}
-                                            >
-                                              <span className="time-block-link-icon">🔗<sup>+</sup></span>
-                                            </button>
-                                            <button
-                                              type="button"
-                                              className="time-block-link"
-                                              title="List items"
-                                              disabled={scheduleDayPast}
-                                              onClick={() => {
-                                                if (scheduleDayPast) return;
-                                                setListModalTaskId(c.task_id);
-                                              }}
-                                            >
-                                              <span className="time-block-link-icon">📋<sup>+</sup></span>
-                                            </button>
-                                            <button
-                                              type="button"
-                                              className="time-block-link task-list-add-btn"
-                                              title="Category & tags"
-                                              disabled={scheduleDayPast}
-                                              onClick={() => {
-                                                if (scheduleDayPast) return;
-                                                setOrganizationModalTaskId(c.task_id);
-                                              }}
-                                            >
-                                              <span className="time-block-link-icon">📁<sup className="task-list-add-plus">+</sup></span>
-                                            </button>
-                                            <button
-                                              type="button"
-                                              className="time-block-date"
-                                              title="Change date"
-                                              disabled={scheduleDayPast}
-                                              onClick={() => {
-                                                if (scheduleDayPast) return;
-                                                setScheduleDateTaskId(c.task_id);
-                                                setScheduleDateValue(viewDate);
-                                                setScheduleNoTime(!slotHasTime(c));
-                                                setScheduleTimeValue(c.start_time?.slice(0, 5) || '09:00');
-                                                setScheduleSlotIdToReplace(c.id);
-                                                setScheduleDueAutoPriority(false);
-                                                setScheduleDateOpen(true);
-                                              }}
-                                            >
-                                              📅
-                                            </button>
-                                            <button
-                                              type="button"
-                                              className={
-                                                'time-block-recurring' + ((childTask?.recurring || c.recurring) ? ' depressed' : '')
-                                              }
-                                              title="Recurring"
-                                              disabled={scheduleDayPast}
-                                              onClick={() => {
-                                                if (scheduleDayPast) return;
-                                                const task = childTask ?? tasks.find((t) => t.id === c.task_id);
-                                                let rule: { freq: string; time?: string; weekDays?: number[]; monthDays?: number[]; lastDayOfMonth?: boolean; count?: number; startDate?: string } = { freq: 'daily', time: '09:00' };
-                                                try {
-                                                  if (task?.recurrence_rule) rule = { ...rule, ...JSON.parse(task.recurrence_rule) };
-                                                } catch {}
-                                                setRecurringConfigModal({
-                                                  taskId: c.task_id,
-                                                  recurring: !!(task?.recurring || c.recurring),
-                                                  freq: (rule.freq as 'daily' | 'weekly' | 'monthly' | 'yearly') || 'daily',
-                                                  time: rule.time ?? '09:00',
-                                                  weekDays: rule.weekDays ?? [],
-                                                  monthDays: rule.monthDays ?? [],
-                                                  lastDayOfMonth: !!rule.lastDayOfMonth,
-                                                  count: rule.count,
-                                                  startDate: rule.startDate ?? viewDate,
-                                                });
-                                              }}
-                                            >
-                                              ↻
-                                            </button>
-                                            <button
-                                              type="button"
-                                              className="time-block-trash trash-btn"
-                                              title="Delete task"
-                                              disabled={scheduleDayPast}
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                if (scheduleDayPast) return;
-                                                if (childTask?.recurring || c.recurring) {
-                                                  setRecurringActionModal({ type: 'remove', slot: c, childSlots: [] });
-                                                  return;
-                                                }
-                                                if (confirm('Delete this task?')) {
-                                                  api.slots
-                                                    .delete(c.id)
-                                                    .then(() => api.tasks.delete(c.task_id))
-                                                    .then(loadData)
-                                                    .catch((err) => {
-                                                      setError(err instanceof Error ? err.message : String(err));
-                                                      loadData();
-                                                    });
-                                                }
-                                              }}
-                                            >
-                                              🗑
-                                            </button>
-                                            <button
-                                              type="button"
-                                              className="time-block-check"
-                                              title="Mark complete"
-                                              aria-pressed={!!c.completed}
-                                              disabled={scheduleDayPast}
-                                              onClick={() => {
-                                                const newCompleted = Number(c.completed) === 1 ? 0 : 1;
-                                                const updates = [api.slots.update({ id: c.id, completed: newCompleted === 1 })];
-                                                if (newCompleted === 0 && Number(slot.completed) === 1) {
-                                                  updates.push(api.slots.update({ id: slot.id, completed: false }));
-                                                }
-                                                Promise.all(updates)
-                                                  .then(loadData)
-                                                  .catch((err) => {
-                                                    setError(err instanceof Error ? err.message : String(err));
-                                                    loadData();
-                                                  });
-                                              }}
-                                            >
-                                              ✓
-                                            </button>
-                                          </span>
                                         <span className="time-block-mobile-drawer" style={{ position: 'relative' }}>
                                           <button
                                             type="button"
@@ -5568,7 +7644,7 @@ export function TaskListAndSchedule({
                                                 disabled={scheduleDayPast}
                                                 onClick={(e) => {
                                                   e.stopPropagation();
-                                                  setOrganizationModalTaskId(c.task_id);
+                                                  openOrganizationDetailsForTask(c.task_id);
                                                   setOpenScheduleDrawerSlotId(null);
                                                 }}
                                               >
@@ -5586,7 +7662,6 @@ export function TaskListAndSchedule({
                                                   setScheduleNoTime(!slotHasTime(c));
                                                   setScheduleTimeValue(c.start_time?.slice(0, 5) || '09:00');
                                                   setScheduleSlotIdToReplace(c.id);
-                                                  setScheduleDueAutoPriority(false);
                                                   setScheduleDateOpen(true);
                                                   setOpenScheduleDrawerSlotId(null);
                                                 }}
@@ -5632,12 +7707,50 @@ export function TaskListAndSchedule({
                                               {!isMobile && <span className="task-card-drawer-divider" aria-hidden>|</span>}
                                               <button
                                                 type="button"
+                                                className="time-block-duplicate-btn"
+                                                title="Duplicate task"
+                                                disabled={scheduleDayPast}
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  if (scheduleDayPast) return;
+                                                  setOpenScheduleDrawerSlotId(null);
+                                                  void duplicateScheduleSlot(c);
+                                                }}
+                                              >
+                                                <Copy size={14} aria-hidden strokeWidth={2} />
+                                              </button>
+                                              {!isMobile && <span className="task-card-drawer-divider" aria-hidden>|</span>}
+                                              <button
+                                                type="button"
+                                                title="Remove from group"
+                                                disabled={scheduleDayPast}
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  if (scheduleDayPast) return;
+                                                  void removeScheduledTaskFromGroup(c);
+                                                }}
+                                              >
+                                                ↩
+                                              </button>
+                                              {!isMobile && <span className="task-card-drawer-divider" aria-hidden>|</span>}
+                                              <button
+                                                type="button"
                                                 className="trash-btn"
                                                 title="Delete task"
                                                 disabled={scheduleDayPast}
                                                 onClick={(e) => {
                                                   e.stopPropagation();
+                                                  if (scheduleDayPast) return;
                                                   setOpenScheduleDrawerSlotId(null);
+                                                  if (childTask?.recurring || c.recurring) {
+                                                    setRecurringActionModal({
+                                                      type: 'remove',
+                                                      slot: c,
+                                                      childSlots: [],
+                                                      occurrenceDate: viewDate,
+                                                    });
+                                                    return;
+                                                  }
                                                   if (confirm('Delete this task?')) {
                                                     api.slots
                                                       .delete(c.id)
@@ -5687,11 +7800,53 @@ export function TaskListAndSchedule({
                                   blockEl.classList.add('time-block-resizing');
                                   const startY = e.clientY;
                                   let lastEnd = endMin;
+                                  let resizePointerFinished = false;
                                   const slotDur = Math.max(1, slotDurationMinutes);
+                                  const taskTitle = tasks.find((t) => t.id === slot.task_id)?.title ?? '';
+                                  const recurringPreview = !!(slot.recurring || slot.is_recurring_occurrence);
+                                  let lastGhostLogSig = '';
+                                  const logGhostBottom = (end: number) => {
+                                    const durationMin = end - startMin;
+                                    const sig = `${end}|${durationMin}`;
+                                    if (sig === lastGhostLogSig) return;
+                                    lastGhostLogSig = sig;
+                                    requestAnimationFrame(() => {
+                                      logScheduleTaskResize('ghost', {
+                                        edge: 'bottom',
+                                        slotId: slot.id,
+                                        taskId: slot.task_id,
+                                        taskTitle,
+                                        durationMinutes: durationMin,
+                                        startMin,
+                                        endMin: end,
+                                        uiHeightPx: Math.round(blockEl.getBoundingClientRect().height),
+                                        slotDurationMinutes: slotDur,
+                                        recurringPreview,
+                                      });
+                                    });
+                                  };
+                                  logScheduleTaskResize('pointerdown', {
+                                    edge: 'bottom',
+                                    slotId: slot.id,
+                                    taskId: slot.task_id,
+                                    taskTitle,
+                                    durationMinutes: endMin - startMin,
+                                    startMin,
+                                    endMin,
+                                    uiHeightPx: Math.round(blockEl.getBoundingClientRect().height),
+                                    slotDurationMinutes: slotDur,
+                                    recurringPreview,
+                                  });
                                   const move = (e2: PointerEvent) => {
                                     const dy = e2.clientY - startY;
                                     const delta = Math.round(dy / ROW_HEIGHT) * slotDur;
-                                    let newEnd = snapToSlot(endMin + delta, settings.start_hour, settings.end_hour, slotDur);
+                                    let newEnd = snapToSlot(
+                                      endMin + delta,
+                                      settings.start_hour,
+                                      settings.end_hour,
+                                      slotDur,
+                                      'end'
+                                    );
                                     const memberCount = 1 + childSlots.length;
                                     newEnd = clampBottomResizeEndForMinGroupDuration({
                                       startMin,
@@ -5700,20 +7855,42 @@ export function TaskListAndSchedule({
                                       memberCount,
                                     });
                                     lastEnd = newEnd;
-                                    blockEl.style.height =
-                                      Math.max(ROW_HEIGHT, ((lastEnd - startMin) / slotDur) * ROW_HEIGHT) + 'px';
-                                  };
-                                  const cleanup = () => {
-                                    blockEl.classList.remove('time-block-resizing');
-                                    try { handleEl.releasePointerCapture(e.pointerId); } catch {}
-                                    window.removeEventListener('pointermove', move);
-                                    window.removeEventListener('pointerup', up);
-                                    window.removeEventListener('pointercancel', up);
-                                    handleEl.removeEventListener('lostpointercapture', up);
-                                    blockEl.style.height = '';
+                                    if (slot.recurring || slot.is_recurring_occurrence) {
+                                      blockEl.style.height =
+                                        Math.max(ROW_HEIGHT, ((lastEnd - startMin) / slotDur) * ROW_HEIGHT) + 'px';
+                                      logGhostBottom(lastEnd);
+                                      return;
+                                    }
+                                    const orderedChildren = childSlots
+                                      .slice()
+                                      .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0) || a.id - b.id);
+                                    const memberSlots = [{ id: slot.id }, ...orderedChildren.map((c) => ({ id: c.id }))];
+                                    const memberTimes = distributeGroupMemberTimes({
+                                      groupStartMin: startMin,
+                                      groupEndMin: lastEnd,
+                                      slotDurationMinutes: slotDur,
+                                      memberCount,
+                                    });
+                                    const memberTimesById = new Map<number, { startMin: number; endMin: number }>();
+                                    memberSlots.forEach((ms, i) =>
+                                      memberTimesById.set(ms.id, {
+                                        startMin: i === 0 ? startMin : memberTimes[i].startMin,
+                                        endMin: i === 0 ? lastEnd : memberTimes[i].endMin,
+                                      })
+                                    );
+                                    setSlots((prev) =>
+                                      prev.map((s) => {
+                                        const mt = memberTimesById.get(s.id);
+                                        if (!mt) return s;
+                                        return { ...s, start_time: minutesToTime(mt.startMin), end_time: minutesToTime(mt.endMin) };
+                                      })
+                                    );
+                                    logGhostBottom(lastEnd);
                                   };
                                   const up = () => {
-                                    cleanup();
+                                    if (resizePointerFinished) return;
+                                    resizePointerFinished = true;
+                                    window.removeEventListener('pointermove', move);
                                     const memberCount = 1 + childSlots.length;
                                     const clampedEnd = clampBottomResizeEndForMinGroupDuration({
                                       startMin,
@@ -5721,7 +7898,30 @@ export function TaskListAndSchedule({
                                       slotDurationMinutes: slotDur,
                                       memberCount,
                                     });
-                                    if (clampedEnd !== endMin) {
+                                    // `endMin` is the painted span (layout max of root + children). The DB root row
+                                    // can still lag shorter children; if we only gate on `clampedEnd !== endMin`,
+                                    // releasing at the same visual end skips PATCH + final setSlots and the block
+                                    // collapses after refetch / style reset.
+                                    const storedRootEndMin = timeToMinutes(slot.end_time);
+                                    const shouldCommitBottomResize =
+                                      clampedEnd !== endMin || clampedEnd !== storedRootEndMin;
+                                    const logPointerUpBottom = () => {
+                                      requestAnimationFrame(() => {
+                                        logScheduleTaskResize('pointerup', {
+                                          edge: 'bottom',
+                                          slotId: slot.id,
+                                          taskId: slot.task_id,
+                                          taskTitle,
+                                          durationMinutes: clampedEnd - startMin,
+                                          startMin,
+                                          endMin: clampedEnd,
+                                          uiHeightPx: Math.round(blockEl.getBoundingClientRect().height),
+                                          slotDurationMinutes: slotDur,
+                                          recurringPreview,
+                                        });
+                                      });
+                                    };
+                                    if (shouldCommitBottomResize) {
                                       const newEndTime = minutesToTime(clampedEnd);
                                       const orderedChildren = childSlots
                                         .slice()
@@ -5766,6 +7966,19 @@ export function TaskListAndSchedule({
                                           });
                                       }
                                     }
+                                    logPointerUpBottom();
+                                    blockEl.classList.remove('time-block-resizing');
+                                    try {
+                                      handleEl.releasePointerCapture(e.pointerId);
+                                    } catch {
+                                      /* ignore */
+                                    }
+                                    window.removeEventListener('pointerup', up);
+                                    window.removeEventListener('pointercancel', up);
+                                    handleEl.removeEventListener('lostpointercapture', up);
+                                    if (slot.recurring || slot.is_recurring_occurrence) {
+                                      blockEl.style.height = '';
+                                    }
                                   };
                                   window.addEventListener('pointermove', move);
                                   window.addEventListener('pointerup', up, { once: true });
@@ -5794,35 +8007,45 @@ export function TaskListAndSchedule({
                             return (
                               <div
                                 key={e.id ?? e.uid + e.start}
-                                className="time-block time-block-feed"
+                                className={
+                                  'time-block time-block-feed' + (canMarkCompleted ? ' time-block-has-complete-rail' : '')
+                                }
                                 style={{
                                   top: top + 'px',
                                   height: Math.max(height, 20) + 'px',
                                   left: leftPct + '%',
                                   width: (widthPct > 0 ? widthPct - 0.5 : 99.5) + '%',
                                 }}
+                                data-slot-hours={(() => {
+                                  const h = (endMin - startMin) / 60;
+                                  return Number.isInteger(h) ? String(h) : h.toFixed(1).replace(/\.0$/, '');
+                                })()}
                               >
+                                {canMarkCompleted && (
+                                  <div className="time-block-complete-rail">
+                                    <ScheduleSlotCompleteCheckbox
+                                      completed={!!e.user_completed}
+                                      backgroundColor={ICAL_FEED_BLOCK_BG}
+                                      onToggle={() =>
+                                        api.icalEvents
+                                          .setCompleted(e.id!, !e.user_completed)
+                                          .then(() => refetchIcalForScheduleView())
+                                          .catch((err) =>
+                                            setError(err instanceof Error ? err.message : String(err))
+                                          )
+                                      }
+                                    />
+                                  </div>
+                                )}
                                 <div className="time-block-header">
                                   <div className="time-block-title-wrap">
+                                    {/* Full view no longer shows the start–end time prefix on a task;
+                                        the slot's vertical position already conveys the time range
+                                        and Glance mode renders an explicit hours badge. */}
                                     <div className="time-block-title" style={e.user_completed ? { color: 'var(--text-muted)', textDecoration: 'line-through' } : undefined}>
-                                      {local.localStartTime} – {local.localEndTime} {e.title}
+                                      {e.title}
                                     </div>
                                   </div>
-                                  {canMarkCompleted && (
-                                    <button
-                                      type="button"
-                                      className="time-block-check"
-                                      title={e.user_completed ? 'Mark incomplete' : 'Mark complete'}
-                                      aria-pressed={!!e.user_completed}
-                                      style={isMobile ? { color: e.user_completed ? 'var(--text-muted)' : 'transparent' } : undefined}
-                                      onClick={(ev) => {
-                                        ev.stopPropagation();
-                                        api.icalEvents.setCompleted(e.id!, !e.user_completed).then(() => refetchIcalForScheduleView()).catch((err) => setError(err instanceof Error ? err.message : String(err)));
-                                      }}
-                                    >
-                                      ✓
-                                    </button>
-                                  )}
                                   {e.uid && (
                                     <button
                                       type="button"
@@ -5845,6 +8068,7 @@ export function TaskListAndSchedule({
                     </div>
                   </div>
                 )}
+                </div>
               </>
             )}
             {scheduleTab === 'week' && !isMobile && (
@@ -5977,6 +8201,7 @@ export function TaskListAndSchedule({
                                     organizationCategories={organizationCategories}
                                     organizationTags={organizationTags}
                                     settings={settings}
+                                    priorityDisplay={priorityDisplay}
                                     viewStartMinutes={viewStartMinutes}
                                     slotDurationMinutes={slotDurationMinutes}
                                     feedEvents={weekFeedByDate[colDate] ?? []}
@@ -5992,6 +8217,7 @@ export function TaskListAndSchedule({
                                     }
                                     onStartBulkScheduleMoveHold={startBulkScheduleMoveHold}
                                     onCompleteSlot={(slot, children) => handleWeekColumnComplete(colDate, slot, children)}
+                                    hideScheduleTags={hideScheduleTags}
                                     onIcalComplete={(eventId, completed) =>
                                       api.icalEvents
                                         .setCompleted(eventId, completed)
@@ -6015,17 +8241,26 @@ export function TaskListAndSchedule({
                   </div>
                 ) : (
                   <div className="week-sync-layout">
-                    <div className="week-sync-column-headers" style={{ paddingLeft: '5.5rem' }}>
+                    <div className="week-sync-column-headers">
                       {weekDates.map((colDate) => (
                         <div
                           key={colDate}
                           className={'week-sync-head-cell' + (colDate === today() ? ' week-column-today' : '')}
                         >
-                          {new Date(colDate + 'T12:00:00').toLocaleDateString('en-US', {
-                            weekday: 'short',
-                            month: 'short',
-                            day: 'numeric',
-                          })}
+                          {weatherHasCoords && (
+                            <ScheduleWeatherWeekHeads
+                              dates={[colDate]}
+                              dailyByDate={dailyByDate}
+                              tempUnit={weatherTempUnit}
+                            />
+                          )}
+                          <span className="week-sync-head-date-label">
+                            {new Date(colDate + 'T12:00:00').toLocaleDateString('en-US', {
+                              weekday: 'short',
+                              month: 'short',
+                              day: 'numeric',
+                            })}
+                          </span>
                         </div>
                       ))}
                     </div>
@@ -6042,6 +8277,15 @@ export function TaskListAndSchedule({
                           const colPast = colDate < today();
                           const isWeekColumnToday = colDate === today();
                           const colSlots = slotsForWeekDay(colDate);
+                          const colOccupied = buildDayScheduleOccupiedRects({
+                            slots: colSlots,
+                            feedEvents: weekFeedByDate[colDate] ?? [],
+                            columnDate: colDate,
+                            timezone: settings.timezone ?? '',
+                            viewStartMinutes,
+                            slotDurationMinutes,
+                            rowHeightPx: ROW_HEIGHT,
+                          });
                           return (
                             <div key={colDate} className={'week-sync-column-blocks-wrap' + (isWeekColumnToday ? ' week-column-today' : '')}>
                               <div
@@ -6049,6 +8293,11 @@ export function TaskListAndSchedule({
                                 style={{ height: totalHeight + 'px' }}
                                 data-schedule-drop="true"
                                 data-schedule-day={colDate}
+                                onMouseMove={(e) => handleScheduleGridMouseMove(colDate, colOccupied, e)}
+                                onMouseLeave={() =>
+                                  setScheduleAddTaskGhost((g) => (g?.columnDate === colDate ? null : g))
+                                }
+                                onClick={(e) => handleScheduleGridClick(colDate, e)}
                                 onDoubleClick={(e) => {
                                   if (colPast) return;
                                   if (
@@ -6134,6 +8383,22 @@ export function TaskListAndSchedule({
                                     </div>
                                   </div>
                                 )}
+                                {!isMobile &&
+                                  scheduleAddTaskGhost?.columnDate === colDate &&
+                                  !colPast && (
+                                    <div
+                                      className="schedule-add-task-ghost"
+                                      style={{
+                                        top: scheduleAddTaskGhost.placement.topPx,
+                                        height: ROW_HEIGHT,
+                                        left: scheduleAddTaskGhost.placement.leftPct + '%',
+                                        width: scheduleAddTaskGhost.placement.widthPct + '%',
+                                      }}
+                                      aria-hidden
+                                    >
+                                      <span className="schedule-add-task-ghost-plus">+</span>
+                                    </div>
+                                  )}
                                 <WeekColumnBlocks
                                   columnDate={colDate}
                                   columnSlots={colSlots}
@@ -6141,6 +8406,7 @@ export function TaskListAndSchedule({
                                   organizationCategories={organizationCategories}
                                   organizationTags={organizationTags}
                                   settings={settings}
+                                  priorityDisplay={priorityDisplay}
                                   viewStartMinutes={viewStartMinutes}
                                   slotDurationMinutes={slotDurationMinutes}
                                   feedEvents={weekFeedByDate[colDate] ?? []}
@@ -6180,86 +8446,20 @@ export function TaskListAndSchedule({
               </>
             )}
             {scheduleTab === 'calendar' && (
-              <div className="calendar-view visible">
-                <div className="calendar-grid">
-                  {buildCalendarDays(calendarMonth).map((dateStr, i) => {
-                    const daySlots = dateStr ? (calendarSlotsByDate[dateStr] ?? []) : [];
-                    const dayRoots = daySlots.filter((s) => !s.parent_id || !daySlots.some((o) => o.task_id === s.parent_id));
-                    const dayFeedEvents = dateStr ? (calendarFeedEventsByDate[dateStr] ?? []) : [];
-                    const isPast = dateStr && dateStr < today();
-                    const isTodayDate = dateStr === today();
-                    return (
-                      <div
-                        key={i}
-                        className={
-                          'calendar-day' +
-                          (dateStr ? (isPast ? ' calendar-day-past' : isTodayDate ? ' calendar-day-today' : '') : '')
-                        }
-                        data-date={dateStr || ''}
-                        onClick={() => {
-                          if (!dateStr) return;
-                          setViewDate(dateStr);
-                          setScheduleTab('today');
-                        }}
-                        onDoubleClick={(e) => {
-                          if (!dateStr || dateStr < today()) return;
-                          if ((e.target as HTMLElement).closest('.calendar-day-task')) return;
-                          setViewDate(dateStr);
-                          setScheduleTab('today');
-                          const slotDur = settings.increment_unit === 'hr' ? settings.increment_value * 60 : settings.increment_value;
-                          const startMin = 9 * 60;
-                          const start_time = minutesToTime(startMin);
-                          const end_time = minutesToTime(startMin + slotDur);
-                          api.tasks
-                            .create({ title: 'New task', priority: 'low' })
-                            .then((created) =>
-                              api.day.getOrCreate(dateStr).then((day) =>
-                                api.slots.create({ day_record_id: day.id, task_id: created.id, start_time, end_time }).then(() => {
-                                  refetchSlotsForViewDay(dateStr);
-                                  setEditingScheduleTaskId(created.id);
-                                  setEditingScheduleTitle('');
-                                })
-                              )
-                            )
-                            .catch((err) => {
-                              setError(err instanceof Error ? err.message : String(err));
-                              loadData();
-                            });
-                        }}
-                      >
-                        <div className="calendar-day-num">{dateStr ? new Date(dateStr + 'T00:00:00').getDate() : ''}</div>
-                        {dateStr && (
-                          <ul className="calendar-day-tasks">
-                            {dayRoots.map((s) => (
-                              <li
-                                key={s.id}
-                                className={
-                                  'calendar-day-task calendar-day-task-priority-' + (s.priority || 'low') + (s.completed ? ' calendar-day-task-completed' : '') + (s.is_recurring_occurrence ? ' calendar-day-task-recurring' : '')
-                                }
-                              >
-                                <span className="calendar-task-icon" aria-hidden title={s.completed ? 'Completed' : s.recurring || s.is_recurring_occurrence ? 'Recurring' : undefined}>
-                                  {s.completed ? '☑' : s.recurring || s.is_recurring_occurrence ? '↻' : '☐'}
-                                </span>
-                                <span className="calendar-task-desc">
-                                  {s.title ?? 'Task'}
-                                </span>
-                              </li>
-                            ))}
-                            {dayFeedEvents.map((e) => (
-                              <li key={e.uid + e.start} className="calendar-day-task calendar-day-feed-event">
-                                <span className="calendar-task-icon" aria-hidden>
-                                  ◐
-                                </span>
-                                <span className="calendar-task-desc">{e.title || 'Event'}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
+              <ScheduleCalendarGrid
+                days={scheduleCalendarCells}
+                onDayClick={(dateStr) => {
+                  setViewDate(dateStr);
+                  setScheduleTab('today');
+                }}
+                onDayDoubleClick={(dateStr, e) => {
+                  if (!dateStr || dateStr < today()) return;
+                  if ((e.target as HTMLElement).closest('.calendar-day-task')) return;
+                  setViewDate(dateStr);
+                  setScheduleTab('today');
+                  void createScheduleTaskAt(dateStr, 9 * 60);
+                }}
+              />
             )}
             </div>
           </div>
@@ -6348,18 +8548,28 @@ export function TaskListAndSchedule({
             Priority
             <select
               value={addOptionsPriority}
-              onChange={(e) => setAddOptionsPriority(e.target.value as Priority)}
+              onChange={(e) => setAddOptionsPriority(e.target.value)}
               style={{ marginLeft: '0.5rem', padding: '0.35rem' }}
             >
-              <option value="commitment">Commitment ★</option>
-              <option value="high">High</option>
-              <option value="medium">Medium</option>
-              <option value="low">Low</option>
+              {priorityDisplay.levels.map((p) => (
+                <option key={p} value={p}>
+                  {priorityDisplay.label(p)} {priorityDisplay.icon(p)}
+                </option>
+              ))}
             </select>
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
             <input type="checkbox" checked={addOptionsRecurring} onChange={(e) => setAddOptionsRecurring(e.target.checked)} />
             Recurring (re-add to list when completed)
+          </label>
+          <label>
+            Due date (optional)
+            <input
+              type="date"
+              value={addOptionsDueDate}
+              onChange={(e) => setAddOptionsDueDate(e.target.value)}
+              style={{ display: 'block', marginTop: '0.25rem', padding: '0.35rem' }}
+            />
           </label>
         </div>
       </Modal>
@@ -6370,7 +8580,6 @@ export function TaskListAndSchedule({
           setScheduleDateOpen(false);
           setScheduleDateTaskId(null);
           setScheduleSlotIdToReplace(null);
-          setScheduleDueAutoPriority(false);
         }}
         title="Schedule on date"
         actions={
@@ -6411,14 +8620,9 @@ export function TaskListAndSchedule({
               </button>
             </span>
           </label>
-          <label className="schedule-date-modal-row schedule-date-modal-check">
-            <input
-              type="checkbox"
-              checked={scheduleDueAutoPriority}
-              onChange={(e) => setScheduleDueAutoPriority(e.target.checked)}
-            />
-            <span className="schedule-date-modal-check-text">Increase priority automatically</span>
-          </label>
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0, gridColumn: '1 / -1' }}>
+            This sets the task&apos;s <strong>due date</strong> to the date you pick. To raise priority over time, open <strong>Task details</strong> on the task and enable auto-prioritize (by day or by due date).
+          </p>
           <label className="schedule-date-modal-row schedule-date-modal-check">
             <input
               type="checkbox"
@@ -6458,6 +8662,7 @@ export function TaskListAndSchedule({
         onClose={() => { setLinkModalTaskId(null); setLinkModalInitialUrl(''); }}
         taskId={linkModalTaskId}
         initialUrl={linkModalInitialUrl}
+        contactLinkPrefs={contactLinkPrefs}
         onLinksChange={() => { if (linkModalTaskId != null) handleRefresh(linkModalTaskId); }}
       />
 
@@ -6475,14 +8680,77 @@ export function TaskListAndSchedule({
         return task ? (
           <OrganizationTaskModal
             task={task}
+            bulkTaskIds={organizationBulkTaskIds}
+            allTasks={tasks}
+            buckets={bucketDefs}
+            priorityDisplay={priorityDisplay}
             categories={organizationCategories}
             subcategories={organizationSubcategories}
             tags={organizationTags}
-            onSave={(category_id, subcategory_id, tag_ids) => {
-              api.tasks.update({ id: organizationModalTaskId, category_id, subcategory_id, tag_ids }).then(loadData);
+            organizationBlocks={organizationBlocks}
+            slotDurationMinutes={slotDurationMinutes}
+            onSave={(payload) => {
+              const targetIds =
+                organizationBulkTaskIds && organizationBulkTaskIds.length > 0
+                  ? organizationBulkTaskIds
+                  : [organizationModalTaskId];
+              if (payload.kind === 'bulk') {
+                Promise.all(
+                  targetIds.map((id) => {
+                    const t = tasks.find((x) => x.id === id);
+                    const patch: Parameters<typeof api.tasks.update>[0] = { id };
+                    if (payload.changeDueDate) patch.due_date = payload.due_date;
+                    if (payload.changeAuto) {
+                      patch.auto_priority_enabled = payload.auto_priority_enabled;
+                      patch.auto_complete_eod = payload.auto_complete_eod;
+                    }
+                    if (payload.changeCategory) {
+                      patch.category_id = payload.category_id;
+                      patch.subcategory_id = payload.subcategory_id;
+                    }
+                    if (payload.changeBucket) patch.list_state = payload.list_state;
+                    if (payload.changeDefaultBlock) {
+                      patch.default_block_id = payload.default_block_id;
+                      patch.default_duration_intervals = payload.default_duration_intervals;
+                    }
+                    if (payload.tagsAdd.length > 0 || payload.tagsRemove.length > 0) {
+                      const current = new Set(t?.tag_ids ?? []);
+                      payload.tagsAdd.forEach((tid) => current.add(tid));
+                      payload.tagsRemove.forEach((tid) => current.delete(tid));
+                      patch.tag_ids = Array.from(current);
+                    }
+                    return api.tasks.update(patch);
+                  })
+                )
+                  .then(loadData)
+                  .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+              } else {
+                Promise.all(
+                  targetIds.map((id) =>
+                    api.tasks.update({
+                      id,
+                      category_id: payload.category_id,
+                      subcategory_id: payload.subcategory_id,
+                      tag_ids: payload.tag_ids,
+                      due_date: payload.due_date,
+                      auto_priority_enabled: payload.auto_priority_enabled,
+                      auto_complete_eod: payload.auto_complete_eod,
+                      list_state: payload.list_state,
+                      default_block_id: payload.default_block_id,
+                      default_duration_intervals: payload.default_duration_intervals,
+                    })
+                  )
+                )
+                  .then(loadData)
+                  .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+              }
               setOrganizationModalTaskId(null);
+              setOrganizationBulkTaskIds(null);
             }}
-            onClose={() => setOrganizationModalTaskId(null)}
+            onClose={() => {
+              setOrganizationModalTaskId(null);
+              setOrganizationBulkTaskIds(null);
+            }}
             onRefreshTags={() => api.organization.list().then((r) => {
               setOrganizationCategories(r.categories ?? []);
               setOrganizationSubcategories(r.subcategories ?? []);
@@ -6553,13 +8821,21 @@ export function TaskListAndSchedule({
             <>
               <Button
                 onClick={() => {
-                  const { type, slot, childSlots } = recurringActionModal;
+                  const { type, slot, childSlots, occurrenceDate } = recurringActionModal;
                   if (type === 'complete') {
                     if (slot.id < 0) {
-                      api.slots.completeOccurrence(slot.task_id, viewDate, slot.start_time ?? undefined, slot.end_time ?? undefined).then(loadData).catch((err) => {
-                        setError(err instanceof Error ? err.message : String(err));
-                        loadData();
-                      });
+                      api.slots
+                        .completeOccurrence(
+                          slot.task_id,
+                          occurrenceDate,
+                          slot.start_time ?? undefined,
+                          slot.end_time ?? undefined
+                        )
+                        .then(loadData)
+                        .catch((err) => {
+                          setError(err instanceof Error ? err.message : String(err));
+                          loadData();
+                        });
                     } else {
                       const updates = [api.slots.update({ id: slot.id, completed: true })];
                       childSlots.forEach((c) => updates.push(api.slots.update({ id: c.id, completed: true })));
@@ -6574,9 +8850,12 @@ export function TaskListAndSchedule({
                       if (!origTask) return Promise.resolve();
                       try {
                         const parsed = origTask.recurrence_rule ? JSON.parse(origTask.recurrence_rule) : {};
-                        const rule: any = parsed && typeof parsed === 'object' ? parsed : {};
-                        const omitDates: string[] = Array.isArray(rule.omitDates) ? rule.omitDates : [];
-                        if (!omitDates.includes(viewDate)) omitDates.push(viewDate);
+                        const rule: Record<string, unknown> =
+                          parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+                        const omitDates: string[] = Array.isArray(rule.omitDates)
+                          ? (rule.omitDates as string[])
+                          : [];
+                        if (!omitDates.includes(occurrenceDate)) omitDates.push(occurrenceDate);
                         rule.omitDates = omitDates;
                         return api.tasks
                           .update({ id: slot.task_id, recurrence_rule: JSON.stringify(rule) })
@@ -6587,12 +8866,11 @@ export function TaskListAndSchedule({
                     })();
 
                     const toDelete = [slot.id, ...childSlots.map((c) => c.id)].filter((id) => id > 0);
-                    const deletePromise = toDelete.length > 0 ? Promise.all(toDelete.map((id) => api.slots.delete(id))) : Promise.resolve();
+                    const deletePromise =
+                      toDelete.length > 0 ? Promise.all(toDelete.map((id) => api.slots.delete(id))) : Promise.resolve();
 
                     Promise.all([omitPromise, deletePromise])
-                      .then(() => {
-                        loadData();
-                      })
+                      .then(() => loadData())
                       .catch((err) => {
                         setError(err instanceof Error ? err.message : String(err));
                         loadData();
@@ -6603,17 +8881,41 @@ export function TaskListAndSchedule({
               >
                 This occurrence only
               </Button>
-              <Button
-                onClick={() => {
-                  const { type, slot, childSlots } = recurringActionModal;
-                  if (type === 'complete') {
-                    if (slot.id < 0) {
-                      api.slots.completeOccurrence(slot.task_id, viewDate, slot.start_time ?? undefined, slot.end_time ?? undefined).then(() =>
-                        api.tasks.update({ id: slot.task_id, recurring: false })
-                      ).then(loadData).catch((err) => {
+              {recurringActionModal.type === 'remove' && (
+                <Button
+                  onClick={() => {
+                    const { slot, occurrenceDate } = recurringActionModal;
+                    const origTask = tasks.find((t) => t.id === slot.task_id) ?? null;
+                    endRecurringSeriesFromDate(slot.task_id, occurrenceDate, origTask?.recurrence_rule)
+                      .then(loadData)
+                      .catch((err) => {
                         setError(err instanceof Error ? err.message : String(err));
                         loadData();
                       });
+                    setRecurringActionModal(null);
+                  }}
+                >
+                  End series from this day
+                </Button>
+              )}
+              <Button
+                onClick={() => {
+                  const { type, slot, childSlots, occurrenceDate } = recurringActionModal;
+                  if (type === 'complete') {
+                    if (slot.id < 0) {
+                      api.slots
+                        .completeOccurrence(
+                          slot.task_id,
+                          occurrenceDate,
+                          slot.start_time ?? undefined,
+                          slot.end_time ?? undefined
+                        )
+                        .then(() => api.tasks.update({ id: slot.task_id, recurring: false }))
+                        .then(loadData)
+                        .catch((err) => {
+                          setError(err instanceof Error ? err.message : String(err));
+                          loadData();
+                        });
                     } else {
                       const updates = [api.slots.update({ id: slot.id, completed: true })];
                       childSlots.forEach((c) => updates.push(api.slots.update({ id: c.id, completed: true })));
@@ -6626,7 +8928,6 @@ export function TaskListAndSchedule({
                         });
                     }
                   } else {
-                    // Full delete: removes the recurring series (and any direct child tasks) instead of only disabling recurrence.
                     api.tasks.delete(slot.task_id).then(loadData).catch((err) => {
                       setError(err instanceof Error ? err.message : String(err));
                       loadData();
@@ -6644,13 +8945,20 @@ export function TaskListAndSchedule({
           <p>
             {recurringActionModal.type === 'complete'
               ? 'Mark this occurrence complete only, or stop recurring so it won’t be copied to future days?'
-              : 'Remove this occurrence from the schedule only, or stop recurring and remove from schedule?'}
+              : 'Remove this occurrence, end the series from this day forward (keep past), or delete the entire series?'}
           </p>
           <p style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: 'var(--text-muted)' }}>
-            <strong>This occurrence only</strong> – Affects only today’s schedule. The task will still recur (copy-on-day-end for completed).
+            <strong>This occurrence only</strong> – Skips only {recurringActionModal.occurrenceDate}. The series continues on other days.
           </p>
+          {recurringActionModal.type === 'remove' && (
+            <p style={{ marginTop: '0.25rem', fontSize: '0.9rem', color: 'var(--text-muted)' }}>
+              <strong>End series from this day</strong> – Sets a final day for the series (the day before{' '}
+              {recurringActionModal.occurrenceDate}). Past scheduled days stay; this day and later are removed from the
+              schedule.
+            </p>
+          )}
           <p style={{ marginTop: '0.25rem', fontSize: '0.9rem', color: 'var(--text-muted)' }}>
-            <strong>All occurrences</strong> – Delete the recurring series so it won’t appear on future days.
+            <strong>All occurrences</strong> – Delete the recurring task and all of its schedule history.
           </p>
         </Modal>
       )}
@@ -6666,9 +8974,9 @@ export function TaskListAndSchedule({
         }
       >
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: '0.5rem 0' }}>
-          {PRIORITIES.map((p) => (
+          {priorityDisplay.levels.map((p) => (
             <Button key={p} type="button" onClick={() => runBulkSetPriority(p)}>
-              {p}
+              {priorityDisplay.label(p)} {priorityDisplay.icon(p)}
             </Button>
           ))}
         </div>
@@ -6776,11 +9084,14 @@ export function TaskListAndSchedule({
                     }
                   })();
 
+                  let newTaskId = 0;
                   api.tasks.create({
                     title: task?.title ?? 'Task',
-                    priority: (task?.priority as Priority) ?? 'low',
+                    priority: (task?.priority as string | undefined) ?? 'low',
                     recurring: false,
-                  }).then((newTask) =>
+                  }).then((newTask) => {
+                    newTaskId = newTask.id;
+                    return (
                     api.day.getOrCreate(viewDate).then((day) =>
                       api.slots.create({
                         day_record_id: day.id,
@@ -6792,10 +9103,16 @@ export function TaskListAndSchedule({
                         return Promise.all(toDelete.map((id) => api.slots.delete(id)));
                       })
                     )
-                  ).then(() => {
+                    );
+                  }).then(() => {
                     return omitPromise.then(() => {
-                      loadData();
-                      refetchSlotsForViewDay();
+                      return api.slots
+                        .markOccurrenceOverride(slot.task_id, viewDate, newTaskId)
+                        .catch(() => undefined)
+                        .then(() => {
+                          loadData();
+                          refetchSlotsForViewDay();
+                        });
                     });
                   }).catch((err) => {
                     setError(err instanceof Error ? err.message : String(err));
@@ -6886,6 +9203,63 @@ export function TaskListAndSchedule({
               loadData();
             });
           }}
+        />
+      )}
+
+      <BulkAddModal
+        open={bulkAddOpen}
+        onClose={() => setBulkAddOpen(false)}
+        settings={settings}
+        buckets={bucketDefs}
+        defaultBucketId={primaryListId}
+        priorityLevels={priorityDisplay.levels}
+        priorityLabel={(p) => priorityDisplay.label(p)}
+        organizationCategories={organizationCategories}
+        organizationSubcategories={organizationSubcategories}
+        organizationTags={organizationTags}
+        organizationBlocks={organizationBlocks}
+        slotDurationMinutes={slotDurationMinutes}
+        onSuccess={(msg) => window.alert(msg)}
+        onError={(msg) => setError(msg)}
+        onReload={loadData}
+      />
+
+      <CreateTaskFromTemplateModal
+        open={createFromFavoriteId != null}
+        onClose={() => setCreateFromFavoriteId(null)}
+        template={createFromFavoriteId != null ? tasks.find((t) => t.id === createFromFavoriteId) ?? null : null}
+        templateLinks={createFromFavoriteId != null ? taskLinksByTaskId[createFromFavoriteId] ?? [] : []}
+        templateListItems={createFromFavoriteId != null ? taskListItemsByTaskId[createFromFavoriteId] ?? [] : []}
+        buckets={bucketDefs}
+        defaultBucketId={primaryListId}
+        priorityDisplay={priorityDisplay}
+        categories={organizationCategories}
+        subcategories={organizationSubcategories}
+        tags={organizationTags}
+        organizationBlocks={organizationBlocks}
+        slotDurationMinutes={slotDurationMinutes}
+        onSuccess={(msg) => window.alert(msg)}
+        onError={(msg) => setError(msg)}
+        onReload={loadData}
+      />
+
+      {autoBlockBucketId != null && (
+        <AutoBlockModal
+          open
+          onClose={() => setAutoBlockBucketId(null)}
+          bucketId={autoBlockBucketId}
+          bucketLabel={bucketDefs.find((b) => b.id === autoBlockBucketId)?.label ?? autoBlockBucketId}
+          viewDate={viewDate}
+          dayRecordId={getDayRecordIdForDate(viewDate) ?? null}
+          tasks={tasks}
+          scheduleBlocks={scheduleBlocks}
+          slotsOnViewDay={slots}
+          scheduledTaskIdsOnViewDay={scheduledTaskIdsOnViewDay}
+          slotDurationMinutes={slotDurationMinutes}
+          priorityDisplay={priorityDisplay}
+          onSuccess={(msg) => window.alert(msg)}
+          onError={(msg) => setError(msg)}
+          onReload={loadData}
         />
       )}
 
@@ -7034,49 +9408,170 @@ function RecurringConfigModal({
   );
 }
 
+type OrganizationTaskSavePayload = {
+  kind: 'single';
+  category_id: number | null;
+  subcategory_id: number | null;
+  tag_ids: number[];
+  due_date: string | null;
+  auto_priority_enabled: boolean;
+  auto_complete_eod: boolean;
+  list_state: string;
+  default_block_id: number | null;
+  default_duration_intervals: number;
+};
+
+type OrganizationBulkSavePayload = {
+  kind: 'bulk';
+  changeDueDate: boolean;
+  due_date: string | null;
+  changeAuto: boolean;
+  auto_priority_enabled: boolean;
+  auto_complete_eod: boolean;
+  changeCategory: boolean;
+  category_id: number | null;
+  subcategory_id: number | null;
+  changeBucket: boolean;
+  list_state: string;
+  changeDefaultBlock: boolean;
+  default_block_id: number | null;
+  default_duration_intervals: number;
+  tagsAdd: number[];
+  tagsRemove: number[];
+};
+
+type OrganizationSavePayload = OrganizationTaskSavePayload | OrganizationBulkSavePayload;
+
+type TagBulkIntent = 'add' | 'remove';
+
 function OrganizationTaskModal({
   task,
+  bulkTaskIds,
+  allTasks,
+  buckets,
+  priorityDisplay,
   categories,
   subcategories,
   tags,
+  organizationBlocks = [],
+  slotDurationMinutes = 15,
   onSave,
   onClose,
   onRefreshTags,
 }: {
   task: Task;
-  categories: Array<{ id: number; name: string; color?: string | null }>;
+  bulkTaskIds?: number[] | null;
+  allTasks?: Task[];
+  buckets?: Array<{ id: string; label: string }>;
+  priorityDisplay: PriorityDisplay;
+  categories: Array<{ id: number; name: string; color?: string | null; icon?: string | null }>;
   subcategories: Array<{ id: number; category_id: number; name: string }>;
   tags: Array<{ id: number; name: string; color?: string | null }>;
-  onSave: (category_id: number | null, subcategory_id: number | null, tag_ids: number[]) => void;
+  organizationBlocks?: Array<{ id: number; name: string }>;
+  slotDurationMinutes?: number;
+  onSave: (payload: OrganizationSavePayload) => void;
   onClose: () => void;
   onRefreshTags: () => void;
 }) {
+  const isBulk = !!(bulkTaskIds && bulkTaskIds.length > 0);
+  const bucketOptions = buckets ?? [];
+  const defaultBucketId = bucketOptions[0]?.id ?? 'unassigned';
+
   const [categoryId, setCategoryId] = useState<number | null>(task.category_id ?? null);
   const [subcategoryId, setSubcategoryId] = useState<number | null>(task.subcategory_id ?? null);
   const [tagIds, setTagIds] = useState<number[]>(task.tag_ids ?? []);
+  const [dueDate, setDueDate] = useState(() =>
+    task.due_date && /^\d{4}-\d{2}-\d{2}$/.test(task.due_date) ? task.due_date : ''
+  );
+  const [autoEnabled, setAutoEnabled] = useState(() => Number(task.auto_priority_enabled) === 1);
+  const [autoCompleteEod, setAutoCompleteEod] = useState(() => Number(task.auto_complete_eod) === 1);
+  const [listState, setListState] = useState(() => task.list_state ?? defaultBucketId);
+  const [defaultBlockId, setDefaultBlockId] = useState<number | null>(task.default_block_id ?? null);
+  const [durationIntervals, setDurationIntervals] = useState(() => Math.max(1, task.default_duration_intervals ?? 1));
   const [tagInput, setTagInput] = useState('');
   const [tagSuggestOpen, setTagSuggestOpen] = useState(false);
+
+  const [changeDueDate, setChangeDueDate] = useState(false);
+  const [changeAuto, setChangeAuto] = useState(false);
+  const [changeCategory, setChangeCategory] = useState(false);
+  const [changeBucket, setChangeBucket] = useState(false);
+  const [changeDefaultBlock, setChangeDefaultBlock] = useState(false);
+  const [tagBulkIntent, setTagBulkIntent] = useState<Record<number, TagBulkIntent>>({});
+
   const subcategoryOptions = subcategories.filter((s) => s.category_id === (categoryId ?? 0));
+
+  const aggregatedTagIds = useMemo(() => {
+    if (!isBulk || !bulkTaskIds?.length) return task.tag_ids ?? [];
+    const set = new Set<number>();
+    for (const id of bulkTaskIds) {
+      const t = allTasks?.find((x) => x.id === id);
+      (t?.tag_ids ?? []).forEach((tid) => set.add(tid));
+    }
+    Object.entries(tagBulkIntent).forEach(([tid, intent]) => {
+      if (intent === 'add') set.add(Number(tid));
+    });
+    return Array.from(set);
+  }, [isBulk, bulkTaskIds, allTasks, task.tag_ids, tagBulkIntent]);
+
+  const displayTagIds = isBulk ? aggregatedTagIds : tagIds;
+
   const tagSuggestions = tagInput.trim()
-    ? tags.filter((t) => t.name.toLowerCase().includes(tagInput.trim().toLowerCase()) && !tagIds.includes(t.id))
-    : tags.filter((t) => !tagIds.includes(t.id));
+    ? tags.filter((t) => t.name.toLowerCase().includes(tagInput.trim().toLowerCase()) && !displayTagIds.includes(t.id))
+    : tags.filter((t) => !displayTagIds.includes(t.id));
 
   useEffect(() => {
     setCategoryId(task.category_id ?? null);
     setSubcategoryId(task.subcategory_id ?? null);
     setTagIds(task.tag_ids ?? []);
-  }, [task.id, task.category_id, task.subcategory_id, task.tag_ids]);
+    setDueDate(task.due_date && /^\d{4}-\d{2}-\d{2}$/.test(task.due_date) ? task.due_date : '');
+    setAutoEnabled(Number(task.auto_priority_enabled) === 1);
+    setAutoCompleteEod(Number(task.auto_complete_eod) === 1);
+    setListState(task.list_state ?? defaultBucketId);
+    setDefaultBlockId(task.default_block_id ?? null);
+    setDurationIntervals(Math.max(1, task.default_duration_intervals ?? 1));
+    setChangeDueDate(false);
+    setChangeAuto(false);
+    setChangeCategory(false);
+    setChangeBucket(false);
+    setChangeDefaultBlock(false);
+    setTagBulkIntent({});
+  }, [task.id, task.category_id, task.subcategory_id, task.tag_ids, task.due_date, task.auto_priority_enabled, task.auto_complete_eod, task.list_state, task.default_block_id, task.default_duration_intervals, defaultBucketId]);
 
   useEffect(() => {
     if (categoryId == null) setSubcategoryId(null);
     else if (subcategoryId != null && !subcategoryOptions.some((s) => s.id === subcategoryId)) setSubcategoryId(null);
   }, [categoryId, subcategoryId, subcategoryOptions]);
 
+  const bulkFieldClass = (active: boolean) => 'org-bulk-field-wrap' + (active ? ' org-bulk-field-wrap--active' : '');
+
+  const toggleTagBulkIntent = (id: number) => {
+    setTagBulkIntent((prev) => {
+      const next = { ...prev };
+      if (next[id]) delete next[id];
+      else next[id] = 'add';
+      return next;
+    });
+  };
+
+  const markTagBulkRemove = (id: number) => {
+    setTagBulkIntent((prev) => {
+      const next = { ...prev };
+      if (next[id] === 'remove') delete next[id];
+      else next[id] = 'remove';
+      return next;
+    });
+  };
+
   const addTag = (tag: { id: number; name: string }) => {
-    if (!tagIds.includes(tag.id)) setTagIds((prev) => [...prev, tag.id]);
+    if (isBulk) {
+      setTagBulkIntent((prev) => ({ ...prev, [tag.id]: 'add' }));
+    } else if (!tagIds.includes(tag.id)) {
+      setTagIds((prev) => [...prev, tag.id]);
+    }
     setTagInput('');
     setTagSuggestOpen(false);
   };
+
   const createAndAddTag = () => {
     const name = tagInput.trim();
     if (!name) return;
@@ -7087,75 +9582,304 @@ function OrganizationTaskModal({
     }
     api.organization.createTag({ name }).then((created) => {
       onRefreshTags();
-      setTagIds((prev) => [...prev, created.id]);
-      setTagInput('');
-      setTagSuggestOpen(false);
+      addTag(created);
     }).catch(() => {});
   };
-  const removeTag = (id: number) => setTagIds((prev) => prev.filter((tid) => tid !== id));
+
+  const removeTag = (id: number) => {
+    if (isBulk) {
+      markTagBulkRemove(id);
+      return;
+    }
+    setTagIds((prev) => prev.filter((tid) => tid !== id));
+  };
+
+  const persist = () => {
+    if (isBulk) {
+      const tagsAdd = Object.entries(tagBulkIntent).filter(([, v]) => v === 'add').map(([k]) => Number(k));
+      const tagsRemove = Object.entries(tagBulkIntent).filter(([, v]) => v === 'remove').map(([k]) => Number(k));
+      const hasChanges = changeDueDate || changeAuto || changeCategory || changeBucket || changeDefaultBlock || tagsAdd.length > 0 || tagsRemove.length > 0;
+      if (!hasChanges) {
+        window.alert('No changes selected. Check the fields you want to apply before saving.');
+        return;
+      }
+      let due: string | null = null;
+      if (changeDueDate) {
+        if (dueDate.trim() !== '') {
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate.trim())) {
+            window.alert('Due date must be a valid calendar date (YYYY-MM-DD).');
+            return;
+          }
+          due = dueDate.trim();
+        }
+      }
+      onSave({
+        kind: 'bulk',
+        changeDueDate,
+        due_date: due,
+        changeAuto,
+        auto_priority_enabled: autoEnabled,
+        auto_complete_eod: autoCompleteEod,
+        changeCategory,
+        category_id: categoryId,
+        subcategory_id: subcategoryId,
+        changeBucket,
+        list_state: listState,
+        changeDefaultBlock,
+        default_block_id: defaultBlockId,
+        default_duration_intervals: durationIntervals,
+        tagsAdd,
+        tagsRemove,
+      });
+      return;
+    }
+
+    let due: string | null = null;
+    if (dueDate.trim() !== '') {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate.trim())) {
+        window.alert('Due date must be a valid calendar date (YYYY-MM-DD).');
+        return;
+      }
+      due = dueDate.trim();
+    }
+    onSave({
+      kind: 'single',
+      category_id: categoryId,
+      subcategory_id: subcategoryId,
+      tag_ids: tagIds,
+      due_date: due,
+      auto_priority_enabled: autoEnabled,
+      auto_complete_eod: autoCompleteEod,
+      list_state: listState,
+      default_block_id: defaultBlockId,
+      default_duration_intervals: durationIntervals,
+    });
+  };
 
   return (
     <Modal
       open
       onClose={onClose}
-      title="Category & tags"
+      title={isBulk ? `Bulk task details (${bulkTaskIds!.length} tasks)` : 'Task details'}
       actions={
         <>
-          <Button onClick={() => onSave(categoryId, subcategoryId, tagIds)}>Save</Button>
+          <Button onClick={persist}>Save</Button>
           <Button onClick={onClose}>Cancel</Button>
         </>
       }
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-          Category
-          <select
-            value={categoryId ?? ''}
-            onChange={(e) => setCategoryId(e.target.value === '' ? null : Number(e.target.value))}
-            style={{ padding: '0.35rem' }}
-          >
-            <option value="">— None —</option>
-            {categories.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
-        </label>
-        {categoryId != null && (
-          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-            Subcategory
-            <select
-              value={subcategoryId ?? ''}
-              onChange={(e) => setSubcategoryId(e.target.value === '' ? null : Number(e.target.value))}
-              style={{ padding: '0.35rem' }}
-            >
-              <option value="">— None —</option>
-              {subcategoryOptions.map((s) => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
-          </label>
+      <div className="org-task-details-body" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        {isBulk && (
+          <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: 0 }}>
+            Check each field you want to change. Only checked fields apply to all selected tasks on save.
+          </p>
         )}
+
+        <div className={isBulk ? bulkFieldClass(changeDueDate) : undefined}>
+          {isBulk && (
+            <label className="org-task-details-checkbox-row" style={{ marginBottom: '0.35rem' }}>
+              <input type="checkbox" checked={changeDueDate} onChange={(e) => setChangeDueDate(e.target.checked)} />
+              <span>Change due date</span>
+            </label>
+          )}
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+            Due date
+            <input
+              type="date"
+              value={dueDate}
+              disabled={isBulk && !changeDueDate}
+              onChange={(e) => setDueDate(e.target.value)}
+              style={{ padding: '0.35rem', maxWidth: '12rem' }}
+            />
+          </label>
+          {isBulk && changeDueDate && (
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0.25rem 0 0' }}>
+              Clear the date to remove due dates from all selected tasks.
+            </p>
+          )}
+        </div>
+
+        <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: 0 }}>
+          Priority order (first = highest):{' '}
+          {priorityDisplay.levels.map((id) => priorityDisplay.label(id)).join(' → ')}
+        </p>
+
+        <div className={isBulk ? bulkFieldClass(changeAuto) : undefined}>
+          {isBulk && (
+            <label className="org-task-details-checkbox-row" style={{ marginBottom: '0.35rem' }}>
+              <input type="checkbox" checked={changeAuto} onChange={(e) => setChangeAuto(e.target.checked)} />
+              <span>Change auto settings</span>
+            </label>
+          )}
+          <label className="org-task-details-checkbox-row">
+            <input
+              type="checkbox"
+              checked={autoEnabled}
+              disabled={isBulk && !changeAuto}
+              onChange={(e) => setAutoEnabled(e.target.checked)}
+            />
+            <span>Auto-prioritize upward over time</span>
+          </label>
+          <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: '0.25rem 0 0' }}>
+            How quickly and whether to use days vs due date is set in <strong>User settings → Schedule Settings → Auto-priority</strong> (global for all tasks that opt in).
+          </p>
+          <label className="org-task-details-checkbox-row" style={{ marginTop: '0.5rem' }}>
+            <input
+              type="checkbox"
+              checked={autoCompleteEod}
+              disabled={isBulk && !changeAuto}
+              onChange={(e) => setAutoCompleteEod(e.target.checked)}
+            />
+            <span>Auto-complete uncompleted slots at end of day</span>
+          </label>
+          <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: '0.25rem 0 0' }}>
+            When the local date rolls over, any uncompleted slots for this task on the day that just ended are marked complete by the client. Useful for tasks you may forget to check off.
+          </p>
+        </div>
+
+        <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '0.25rem 0' }} />
+
+        <div className={isBulk ? bulkFieldClass(changeBucket) : undefined}>
+          {isBulk && (
+            <label className="org-task-details-checkbox-row" style={{ marginBottom: '0.35rem' }}>
+              <input type="checkbox" checked={changeBucket} onChange={(e) => setChangeBucket(e.target.checked)} />
+              <span>Change bucket</span>
+            </label>
+          )}
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+            Bucket
+            <MobileAwareSelect<string>
+              value={listState}
+              disabled={isBulk && !changeBucket}
+              onChange={(v) => setListState(v)}
+              title="Bucket"
+              options={bucketOptions.map((b) => ({ value: b.id, label: b.label }))}
+              style={{ padding: '0.35rem' }}
+            />
+          </label>
+        </div>
+
+        <div className={isBulk ? bulkFieldClass(changeDefaultBlock) : undefined}>
+          {isBulk && (
+            <label className="org-task-details-checkbox-row" style={{ marginBottom: '0.35rem' }}>
+              <input type="checkbox" checked={changeDefaultBlock} onChange={(e) => setChangeDefaultBlock(e.target.checked)} />
+              <span>Change default block</span>
+            </label>
+          )}
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+            Default block (Auto Block)
+            <MobileAwareSelect<string>
+              value={defaultBlockId == null ? '' : String(defaultBlockId)}
+              disabled={isBulk && !changeDefaultBlock}
+              onChange={(v) => setDefaultBlockId(v === '' ? null : Number(v))}
+              title="Default block"
+              options={[
+                { value: '', label: '— None —' },
+                ...organizationBlocks.map((b) => ({ value: String(b.id), label: b.name })),
+              ]}
+              style={{ padding: '0.35rem' }}
+            />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', marginTop: '0.5rem' }}>
+            Default duration ({slotDurationMinutes} min per step)
+            <input
+              type="number"
+              min={1}
+              step={1}
+              disabled={isBulk && !changeDefaultBlock}
+              value={durationIntervals}
+              onChange={(e) => setDurationIntervals(Math.max(1, parseInt(e.target.value, 10) || 1))}
+              style={{ padding: '0.35rem', maxWidth: '6rem' }}
+            />
+          </label>
+          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0.25rem 0 0' }}>
+            Used only by Auto Block to place this task into matching schedule blocks.
+          </p>
+        </div>
+
+        <div className={isBulk ? bulkFieldClass(changeCategory) : undefined}>
+          {isBulk && (
+            <label className="org-task-details-checkbox-row" style={{ marginBottom: '0.35rem' }}>
+              <input type="checkbox" checked={changeCategory} onChange={(e) => setChangeCategory(e.target.checked)} />
+              <span>Change category and subcategory</span>
+            </label>
+          )}
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+            Category
+            <MobileAwareSelect<string>
+              value={categoryId == null ? '' : String(categoryId)}
+              disabled={isBulk && !changeCategory}
+              onChange={(v) => setCategoryId(v === '' ? null : Number(v))}
+              title="Category"
+              options={[
+                { value: '', label: '— None —' },
+                ...categories.map((c) => ({ value: String(c.id), label: c.name })),
+              ]}
+              style={{ padding: '0.35rem' }}
+            />
+          </label>
+          {categoryId != null && (
+            <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', marginTop: '0.5rem' }}>
+              Subcategory
+              <MobileAwareSelect<string>
+                value={subcategoryId == null ? '' : String(subcategoryId)}
+                disabled={isBulk && !changeCategory}
+                onChange={(v) => setSubcategoryId(v === '' ? null : Number(v))}
+                title="Subcategory"
+                options={[
+                  { value: '', label: '— None —' },
+                  ...subcategoryOptions.map((s) => ({ value: String(s.id), label: s.name })),
+                ]}
+                style={{ padding: '0.35rem' }}
+              />
+            </label>
+          )}
+        </div>
+
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-          <label>Tags</label>
+          <label>Tags{isBulk ? ' (union of all selected tasks)' : ''}</label>
+          {isBulk && (
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: 0 }}>
+              Click a tag to apply it to all tasks (green border). Click × to remove it from all tasks (red border). Click again to clear.
+            </p>
+          )}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', alignItems: 'center' }}>
-            {tagIds.map((tid) => {
+            {displayTagIds.map((tid) => {
               const t = tags.find((x) => x.id === tid);
-              return t ? (
+              if (!t) return null;
+              const intent = isBulk ? tagBulkIntent[t.id] : undefined;
+              const chipClass =
+                'task-org-tag-chip' +
+                (intent === 'add' ? ' task-org-tag-chip--bulk-add' : '') +
+                (intent === 'remove' ? ' task-org-tag-chip--bulk-remove' : '');
+              return (
                 <span
                   key={t.id}
-                  className="task-org-tag-chip"
+                  className={chipClass}
                   style={{
                     padding: '0.2rem 0.5rem',
                     borderRadius: '999px',
                     fontSize: '0.85rem',
                     backgroundColor: t.color ?? 'var(--surface)',
                     color: t.color ? (t.color.startsWith('hsl') && t.color.includes('65%') ? '#fff' : '#000') : 'var(--text)',
+                    cursor: isBulk ? 'pointer' : undefined,
                   }}
+                  onClick={isBulk ? () => toggleTagBulkIntent(t.id) : undefined}
                 >
                   {t.name}
-                  <button type="button" aria-label="Remove tag" onClick={() => removeTag(t.id)} style={{ marginLeft: '0.35rem', background: 'none', border: 'none', cursor: 'pointer' }}>×</button>
+                  <button
+                    type="button"
+                    aria-label={isBulk && intent === 'remove' ? 'Cancel remove from all tasks' : 'Remove tag'}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeTag(t.id);
+                    }}
+                    style={{ marginLeft: '0.35rem', background: 'none', border: 'none', cursor: 'pointer' }}
+                  >
+                    ×
+                  </button>
                 </span>
-              ) : null;
+              );
             })}
             <div style={{ position: 'relative' }}>
               <input
@@ -7239,6 +9963,7 @@ function OrganizationTaskModal({
 function TaskCard({
   task,
   tasks,
+  priorityDisplay,
   links,
   listItems,
   editingTaskId,
@@ -7255,6 +9980,8 @@ function TaskCard({
   onScheduleDate,
   onOpenLinks,
   onOpenList,
+  onDuplicate,
+  onAddToBucket,
   onDelete,
   onRefresh,
   onTaskPatched,
@@ -7265,7 +9992,9 @@ function TaskCard({
   isDragging,
   isDropTarget,
   isSelected,
+  taskBulkMode = false,
   onToggleSelect,
+  onToggleSelectGroup,
   onHoldStart,
   onHoldStartGroupMember,
   isUrlDragOver,
@@ -7281,9 +10010,14 @@ function TaskCard({
   onOpenOrganization,
   onTaskUpdate,
   onSetIsCommon,
+  favoriteFolders,
+  onFavoriteFolderChange,
+  permanentlyCompletedTaskIds,
+  contactLinkPrefs,
 }: {
   task: Task;
   tasks: Task[];
+  priorityDisplay: PriorityDisplay;
   links: TaskLink[];
   listItems: TaskListItem[];
   editingTaskId: number | null;
@@ -7292,7 +10026,7 @@ function TaskCard({
   onEditStart: (id: number, title: string) => void;
   onEditSave: (id: number, title: string) => void;
   onEditCancel: () => void;
-  onPriorityChange: (id: number, p: Priority) => void;
+  onPriorityChange: (id: number, p: string) => void;
   onUngroupGroup?: (rootId: number) => void;
   onRecurringToggle: (id: number) => void;
   onMoveToPending: ((id: number) => void) | undefined;
@@ -7300,17 +10034,21 @@ function TaskCard({
   onScheduleDate: (id: number) => void;
   onOpenLinks: (id: number, initialUrl?: string) => void;
   onOpenList: (id: number) => void;
+  onDuplicate?: (id: number) => void;
+  onAddToBucket?: (id: number) => void;
   onDelete: (id: number) => void;
   onRefresh?: (taskId?: number) => void;
   onTaskPatched?: (task: Task) => void;
   highlightBlink?: boolean;
-  dragSource?: 'unassigned' | 'pending' | 'common';
+  dragSource?: string;
   draggingTaskId?: number | null;
   draggingTaskIds?: Set<number>;
   isDragging?: boolean;
   isDropTarget?: boolean;
   isSelected?: boolean;
+  taskBulkMode?: boolean;
   onToggleSelect?: (taskId: number) => void;
+  onToggleSelectGroup?: (rootTaskId: number) => void;
   onHoldStart?: (e: React.PointerEvent) => void;
   onHoldStartGroupMember?: (e: React.PointerEvent, taskId: number) => void;
   isUrlDragOver?: boolean;
@@ -7320,13 +10058,19 @@ function TaskCard({
   taskListItemsByTaskId?: Record<number, TaskListItem[]>;
   isMobile?: boolean;
   onToggleComplete?: (taskId: number) => void;
-  organizationCategories?: Array<{ id: number; name: string; color?: string | null }>;
+  organizationCategories?: Array<{ id: number; name: string; color?: string | null; icon?: string | null }>;
   organizationSubcategories?: Array<{ id: number; category_id: number; name: string }>;
   organizationTags?: Array<{ id: number; name: string; color?: string | null }>;
   onOpenOrganization?: (taskId: number) => void;
   onTaskUpdate?: () => void;
   onSetIsCommon?: (id: number, isCommon: boolean) => void;
+  favoriteFolders?: FavoriteFolder[];
+  onFavoriteFolderChange?: (taskId: number, folderId: number | null) => void;
+  /** Task ids completed on a past day — hide from group stacks and list buckets. */
+  permanentlyCompletedTaskIds?: Set<number>;
+  contactLinkPrefs: ContactLinkPrefs;
 }) {
+  const linkOpenOptions = isMobile ? ({ nativeContactHandlers: true } as const) : undefined;
   const organizationCategoriesList = organizationCategories ?? [];
   const organizationSubcategoriesList = organizationSubcategories ?? [];
   const organizationTagsList = organizationTags ?? [];
@@ -7335,25 +10079,119 @@ function TaskCard({
   const taskTags = (task.tag_ids ?? []).map((tid) => organizationTagsList.find((t) => t.id === tid)).filter(Boolean) as Array<{ id: number; name: string; color?: string | null }>;
   const [actionsDrawerOpen, setActionsDrawerOpen] = useState(false);
   const [priorityOpen, setPriorityOpen] = useState(false);
+  const [subPriorityOpenId, setSubPriorityOpenId] = useState<number | null>(null);
+  const priorityBtnRef = useRef<HTMLButtonElement>(null);
+  const subPriorityBtnRef = useRef<HTMLButtonElement>(null);
+  const priorityPickerPosition = useFloatingMenuPosition(priorityBtnRef, priorityOpen);
+  const subPriorityPickerPosition = useFloatingMenuPosition(
+    subPriorityBtnRef,
+    subPriorityOpenId != null,
+    subPriorityOpenId
+  );
   const [editingLinkId, setEditingLinkId] = useState<number | null>(null);
   const [editingLinkUrl, setEditingLinkUrl] = useState('');
   const [editingLinkDesc, setEditingLinkDesc] = useState('');
   const [editingListItemId, setEditingListItemId] = useState<number | null>(null);
   const [editingListItemContent, setEditingListItemContent] = useState('');
   const [newListItemDraftById, setNewListItemDraftById] = useState<Record<number, string>>({});
-  const [subPriorityOpenId, setSubPriorityOpenId] = useState<number | null>(null);
   const [memberActionsDrawerTaskId, setMemberActionsDrawerTaskId] = useState<number | null>(null);
   const [linksCollapsed, setLinksCollapsed] = useState(true);
   const [listCollapsed, setListCollapsed] = useState(true);
+  const bulkGroupHoldTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const bulkGroupHoldPointerRef = useRef<{ x: number; y: number } | null>(null);
   /** Per–group-member toggles for links / list sections (stacked rows stay visible; only sections collapse). */
   const [groupMemberLinksCollapsed, setGroupMemberLinksCollapsed] = useState<Record<number, boolean>>({});
   const [groupMemberListCollapsed, setGroupMemberListCollapsed] = useState<Record<number, boolean>>({});
+  const [groupMemberRichExpanded, setGroupMemberRichExpanded] = useState<Record<number, boolean>>({});
   const isEditing = editingTaskId === task.id;
-  const childTasks = tasks.filter((t) => t.parent_id === task.id);
+  // Surface mobile Move-mode membership as data-attributes so CSS can style the
+  // originating task + group members (see `app/globals.css .panel-slide-tasks--move-mode`).
+  const { mode: mobileModeForCard } = useMobileMode();
+  const moveActive = isMobile && mobileModeForCard.kind === 'move' && mobileModeForCard.originatingTaskId === task.id;
+  const moveGroup =
+    isMobile &&
+    mobileModeForCard.kind === 'move' &&
+    mobileModeForCard.groupMemberIds.includes(task.id);
+  const childTasks = tasks.filter(
+    (t) => t.parent_id === task.id && !permanentlyCompletedTaskIds?.has(t.id)
+  );
+  const childIdsKey = useMemo(
+    () =>
+      tasks
+        .filter((t) => t.parent_id === task.id)
+        .map((c) => c.id)
+        .sort((a, b) => a - b)
+        .join(','),
+    [tasks, task.id],
+  );
   const hasLinksOrList = links.length > 0 || listItems.length > 0;
-  const linksTooltip = links.length > 0
-    ? links.map((l) => l.description?.trim() || l.url).filter(Boolean).join(' · ') || 'Links'
-    : '';
+  const [richExpanded, setRichExpanded] = useState(false);
+  useEffect(() => {
+    setRichExpanded(false);
+  }, [task.id, links.length, listItems.length]);
+  useEffect(() => {
+    setGroupMemberRichExpanded({});
+  }, [task.id, childIdsKey]);
+  useEffect(() => {
+    if (!taskBulkMode) return;
+    setActionsDrawerOpen(false);
+    setMemberActionsDrawerTaskId(null);
+    setPriorityOpen(false);
+    setSubPriorityOpenId(null);
+  }, [taskBulkMode]);
+  useEffect(() => {
+    if (!priorityOpen && subPriorityOpenId == null) return;
+    const onDoc = (e: PointerEvent) => {
+      const t = e.target as HTMLElement;
+      if (t.closest('.priority-picker') || t.closest('.priority-btn')) return;
+      setPriorityOpen(false);
+      setSubPriorityOpenId(null);
+    };
+    document.addEventListener('pointerdown', onDoc, true);
+    return () => document.removeEventListener('pointerdown', onDoc, true);
+  }, [priorityOpen, subPriorityOpenId]);
+  useEffect(() => {
+    return () => {
+      if (bulkGroupHoldTimeoutRef.current) clearTimeout(bulkGroupHoldTimeoutRef.current);
+      bulkGroupHoldTimeoutRef.current = null;
+      bulkGroupHoldPointerRef.current = null;
+    };
+  }, []);
+
+  const cancelBulkGroupHold = useCallback(() => {
+    if (bulkGroupHoldTimeoutRef.current) {
+      clearTimeout(bulkGroupHoldTimeoutRef.current);
+      bulkGroupHoldTimeoutRef.current = null;
+    }
+    bulkGroupHoldPointerRef.current = null;
+  }, []);
+  const startGroupSelectHold = useCallback(
+    (rootTaskId: number, e: React.PointerEvent, alsoSelectTaskId?: number) => {
+      cancelBulkGroupHold();
+      if (alsoSelectTaskId != null) onToggleSelect?.(alsoSelectTaskId);
+      bulkGroupHoldPointerRef.current = { x: e.clientX, y: e.clientY };
+      const onMove = (ev: PointerEvent) => {
+        const p = bulkGroupHoldPointerRef.current;
+        if (!p) return;
+        const moved = Math.abs(ev.clientX - p.x) > 18 || Math.abs(ev.clientY - p.y) > 18;
+        if (moved) cancelBulkGroupHold();
+      };
+      const onUp = () => {
+        cancelBulkGroupHold();
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp, { once: true });
+      bulkGroupHoldTimeoutRef.current = setTimeout(() => {
+        onToggleSelectGroup?.(rootTaskId);
+        cancelBulkGroupHold();
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+      }, 500);
+    },
+    [cancelBulkGroupHold, onToggleSelect, onToggleSelectGroup]
+  );
 
   const isGrouped = childTasks.length > 0;
   const listDraft = (id: number) => newListItemDraftById[id] ?? '';
@@ -7395,14 +10233,20 @@ function TaskCard({
                   {segLinks.map((link) => (
                     <a
                       key={link.id}
-                      href={link.url}
+                      href={taskLinkHref(link.url, contactLinkPrefs, linkOpenOptions)}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="task-card-link-icon-inline"
                       title={link.description?.trim() || link.url}
                       aria-label={link.description?.trim() || link.url}
+                      onClick={(e) => {
+                        if (isSpecialTaskLink(link.url)) {
+                          e.preventDefault();
+                          openTaskLink(link.url, contactLinkPrefs, linkOpenOptions);
+                        }
+                      }}
                     >
-                      🔗
+                      {taskLinkGlyph(link.url)}
                     </a>
                   ))}
                 </span>
@@ -7429,7 +10273,11 @@ function TaskCard({
                             className="task-card-link-save"
                             onClick={() => {
                               api.links
-                                .update({ id: link.id, url: editingLinkUrl.trim(), description: editingLinkDesc.trim() })
+                                .update({
+                                  id: link.id,
+                                  url: normalizeContactUrlInput(editingLinkUrl.trim()),
+                                  description: editingLinkDesc.trim(),
+                                })
                                 .then(() => {
                                   setEditingLinkId(null);
                                   onRefresh?.(segTask.id);
@@ -7444,7 +10292,19 @@ function TaskCard({
                         </>
                       ) : (
                         <>
-                          <a href={link.url} target="_blank" rel="noopener noreferrer" title={link.url}>
+                          <a
+                            href={taskLinkHref(link.url, contactLinkPrefs, linkOpenOptions)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title={link.url}
+                            onClick={(e) => {
+                              if (isSpecialTaskLink(link.url)) {
+                                e.preventDefault();
+                                openTaskLink(link.url, contactLinkPrefs, linkOpenOptions);
+                              }
+                            }}
+                          >
+                            <span aria-hidden className="task-card-link-glyph">{taskLinkGlyph(link.url)}</span>{' '}
                             {link.description?.trim() || link.url}
                           </a>
                           <button
@@ -7669,9 +10529,12 @@ function TaskCard({
         (isSelected ? ' task-card-selected' : '') +
         (isUrlDragOver ? ' task-card-drop-url' : '') +
         (isMobile ? ' task-card-mobile' : '') +
-        (task.is_common ? ' task-card-common' : '')
+        (task.is_common ? ' task-card-common' : '') +
+        (richExpanded && hasLinksOrList ? ' task-card-rich-expanded' : '')
       }
       data-task-id={task.id}
+      data-mobile-move-active={moveActive ? 'true' : undefined}
+      data-mobile-move-group={moveGroup ? 'true' : undefined}
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes('text/uri-list') || e.dataTransfer.types.includes('text/plain')) {
           e.preventDefault();
@@ -7707,26 +10570,62 @@ function TaskCard({
             onToggleSelect?.(task.id);
             return;
           }
-          if (dragSource) onHoldStart?.(e);
+          if (taskBulkMode && isMobile) {
+            onToggleSelect?.(task.id);
+            return;
+          }
+          // Native hold-to-drag is desktop-only; mobile uses the Long Press → Move mode
+          // flow wired in `useTaskListMobileGestures` (see TODO-mobile §0.9 Step 4).
+          if (!isMobile && dragSource) onHoldStart?.(e);
         }}
       >
         <div className="task-row">
+          {hasLinksOrList && (
+            <button
+              type="button"
+              className="task-card-details-toggle task-card-details-toggle-main"
+              aria-expanded={richExpanded}
+              onClick={(e) => {
+                e.stopPropagation();
+                setRichExpanded((x) => !x);
+              }}
+              title={richExpanded ? 'Collapse links and list' : 'Expand links and list'}
+            >
+              {richExpanded ? '▼' : '▶'}
+            </button>
+          )}
           <div style={{ position: 'relative' }}>
             <button
               type="button"
               className={'priority-btn priority-' + (task.priority || 'low')}
+              style={priorityDisplay.colorStyle(task.priority)}
               title="Priority"
+              disabled={taskBulkMode}
+              ref={priorityBtnRef}
               onClick={() => setPriorityOpen((o) => !o)}
             >
-              {priorityIcon(task.priority)}
+              {priorityDisplay.icon(task.priority)}
             </button>
-            {priorityOpen && (
-              <div className="priority-picker" role="listbox">
-                {PRIORITIES.map((p) => (
+            {priorityOpen &&
+              priorityPickerPosition != null &&
+              typeof document !== 'undefined' &&
+              createPortal(
+                <div
+                  className="priority-picker"
+                  role="listbox"
+                  style={{
+                    position: 'fixed',
+                    top: priorityPickerPosition.top,
+                    left: priorityPickerPosition.left,
+                    zIndex: 10000,
+                  }}
+                >
+                {priorityDisplay.levels.map((p) => (
                   <button
                     key={p}
                     type="button"
                     className={'priority-picker-option ' + (task.priority === p ? 'selected' : '') + ' priority-' + p}
+                    style={priorityDisplay.colorStyle(p)}
                     onClick={() => {
                       if (childTasks.length > 0) {
                         onPriorityChange(task.id, p);
@@ -7737,37 +10636,41 @@ function TaskCard({
                       setPriorityOpen(false);
                     }}
                   >
-                    {priorityLabel(p)} {priorityIcon(p)}
+                    {priorityDisplay.label(p)} {priorityDisplay.icon(p)}
                   </button>
                 ))}
-              </div>
-            )}
+                </div>,
+                document.body
+              )}
           </div>
-          <span className="task-title-wrap task-title-wrap-stacked">
+          <span
+            className={
+              'task-title-wrap task-title-wrap-stacked' +
+              (categoryName != null || subcategoryName != null || taskTags.length > 0
+                ? ' task-title-wrap-with-meta'
+                : ' task-title-wrap-no-meta')
+            }
+          >
             <span className="task-title-line">
-              {isEditing ? (
-                <input
-                  className="task-title-edit"
-                  value={editingTitle}
-                  onChange={(e) => onEditingTitleChange(e.target.value)}
-                  onBlur={() => onEditSave(task.id, editingTitle.trim() || task.title)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') onEditSave(task.id, editingTitle.trim() || task.title);
-                    if (e.key === 'Escape') onEditCancel();
-                  }}
-                  autoFocus
-                />
-              ) : (
-                <span
-                  className="task-title"
-                  onDoubleClick={() => onEditStart(task.id, task.title)}
-                >
-                  {task.title}
-                </span>
-              )}
-              {links.length > 0 && linksCollapsed && (
-                <span className="task-card-links-collapsed-icon" title={linksTooltip} aria-label="Links">🔗</span>
-              )}
+              <span className="task-title-line-text">
+                {isEditing ? (
+                  <input
+                    className="task-title-edit"
+                    value={editingTitle}
+                    onChange={(e) => onEditingTitleChange(e.target.value)}
+                    onBlur={() => onEditSave(task.id, editingTitle.trim() || task.title)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') onEditSave(task.id, editingTitle.trim() || task.title);
+                      if (e.key === 'Escape') onEditCancel();
+                    }}
+                    autoFocus
+                  />
+                ) : (
+                  <span className="task-title" onDoubleClick={() => onEditStart(task.id, task.title)}>
+                    {task.title}
+                  </span>
+                )}
+              </span>
               {task.created_at && (
                 <span className="task-date-added">
                   {new Date(task.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
@@ -7801,39 +10704,13 @@ function TaskCard({
               </span>
             )}
           </span>
-          <span className="task-row-desktop-actions">
-            <button
-              type="button"
-              className={'cycle-btn' + (task.recurring ? ' depressed' : '')}
-              title="Recurring"
-              onClick={() => onRecurringToggle(task.id)}
-            >
-              ↻
-            </button>
-            {onOpenOrganization && (
-              <button type="button" className="task-list-add-btn" title="Category & tags" onClick={() => onOpenOrganization(task.id)}>
-                📁<sup className="task-list-add-plus">+</sup>
-              </button>
-            )}
-            <button type="button" className="links-btn" title="Add link" onClick={() => onOpenLinks(task.id)}>
-              🔗<span className="link-plus">+</span>
-            </button>
-            <button type="button" className="task-list-add-btn" title="Add list / List items" onClick={() => onOpenList(task.id)}>
-              📋<sup className="task-list-add-plus">+</sup>
-            </button>
-            <button type="button" className="task-calendar-btn" title="Schedule on a date" onClick={() => onScheduleDate(task.id)}>
-              📅
-            </button>
-            <button type="button" className="trash-btn" title="Delete" onClick={() => onDelete(task.id)}>
-              🗑
-            </button>
-          </span>
           <span className="task-row-mobile-actions task-row-drawer-actions" style={{ position: 'relative' }}>
             <button
               type="button"
               className="task-card-drawer-chevron"
               title={actionsDrawerOpen ? 'Close' : 'Actions'}
               aria-expanded={actionsDrawerOpen}
+              disabled={taskBulkMode}
               onClick={() => setActionsDrawerOpen((o) => !o)}
             >
               {actionsDrawerOpen ? '▶' : '◀'}
@@ -7842,7 +10719,7 @@ function TaskCard({
               <div className="task-card-actions-drawer">
                 {onOpenOrganization && (
                   <>
-                    <button type="button" title="Category & tags" onClick={() => { onOpenOrganization(task.id); setActionsDrawerOpen(false); }}>📁</button>
+                    <button type="button" title="Task details" onClick={() => { onOpenOrganization(task.id); setActionsDrawerOpen(false); }}>📁</button>
                     {!isMobile && <span className="task-card-drawer-divider" aria-hidden>|</span>}
                   </>
                 )}
@@ -7850,11 +10727,81 @@ function TaskCard({
                 {!isMobile && <span className="task-card-drawer-divider" aria-hidden>|</span>}
                 <button type="button" title="Add list / List items" onClick={() => { onOpenList(task.id); setActionsDrawerOpen(false); }}>📋</button>
                 {!isMobile && <span className="task-card-drawer-divider" aria-hidden>|</span>}
+                {onSetIsCommon && !task.parent_id && childTasks.length === 0 && !task.is_common && (
+                  <>
+                    <button
+                      type="button"
+                      title="Add to favorites"
+                      onClick={() => {
+                        onSetIsCommon(task.id, true);
+                        setActionsDrawerOpen(false);
+                      }}
+                    >
+                      <Star size={14} aria-hidden strokeWidth={2} />
+                    </button>
+                    {!isMobile && <span className="task-card-drawer-divider" aria-hidden>|</span>}
+                  </>
+                )}
+                {dragSource === 'common' && onFavoriteFolderChange && (
+                  <>
+                    <label className="task-card-favorite-folder-inline" title="Favorite folder">
+                      <span className="task-card-favorite-folder-inline-label">Folder</span>
+                      <select
+                        aria-label="Favorite folder"
+                        className="task-card-favorite-folder-select"
+                        value={task.favorite_folder_id != null ? String(task.favorite_folder_id) : ''}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          onFavoriteFolderChange(task.id, v === '' ? null : Number(v));
+                        }}
+                      >
+                        <option value="">Unfiled</option>
+                        {(favoriteFolders ?? []).map((f) => (
+                          <option key={f.id} value={f.id}>
+                            {f.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {!isMobile && <span className="task-card-drawer-divider" aria-hidden>|</span>}
+                  </>
+                )}
+                {dragSource === 'common' && onAddToBucket && (
+                  <>
+                    <button
+                      type="button"
+                      title="Add to bucket"
+                      onClick={() => {
+                        onAddToBucket(task.id);
+                        setActionsDrawerOpen(false);
+                      }}
+                    >
+                      <Plus size={14} aria-hidden strokeWidth={2.4} />
+                    </button>
+                    {!isMobile && <span className="task-card-drawer-divider" aria-hidden>|</span>}
+                  </>
+                )}
+                {onDuplicate && (
+                  <>
+                    <button
+                      type="button"
+                      title="Duplicate task"
+                      className="task-card-duplicate-btn"
+                      onClick={() => {
+                        onDuplicate(task.id);
+                        setActionsDrawerOpen(false);
+                      }}
+                    >
+                      <Copy size={14} aria-hidden strokeWidth={2} />
+                    </button>
+                    {!isMobile && <span className="task-card-drawer-divider" aria-hidden>|</span>}
+                  </>
+                )}
                 <button type="button" title="Schedule on a date" onClick={() => { onScheduleDate(task.id); setActionsDrawerOpen(false); }}>📅</button>
                 {!isMobile && <span className="task-card-drawer-divider" aria-hidden>|</span>}
                 <button type="button" title="Recurring" onClick={() => { onRecurringToggle(task.id); setActionsDrawerOpen(false); }}>{task.recurring ? '↻' : '↻'}</button>
                 {!isMobile && <span className="task-card-drawer-divider" aria-hidden>|</span>}
-                <button type="button" className="trash-btn" title="Delete" onClick={() => { if (confirm('Delete this task?')) onDelete(task.id); setActionsDrawerOpen(false); }}>🗑</button>
+                <button type="button" className="trash-btn" title="Delete" onClick={() => { onDelete(task.id); setActionsDrawerOpen(false); }}>🗑</button>
                 {!isMobile && (
                   <span className="task-card-drawer-divider task-card-drawer-end" aria-hidden>&gt;</span>
                 )}
@@ -7865,7 +10812,6 @@ function TaskCard({
             <button
               type="button"
               className="add-task-btn"
-              style={{ fontSize: '0.7rem' }}
               onClick={() => onMoveToPending(task.id)}
               title="Move to Pending"
             >
@@ -7876,40 +10822,15 @@ function TaskCard({
             <button
               type="button"
               className="add-task-btn"
-              style={{ fontSize: '0.7rem' }}
               onClick={() => onMoveToUnassigned(task.id)}
               title="Move to Unassigned"
             >
               To Unassigned
             </button>
           )}
-          {!!task.is_common && onSetIsCommon && (
-            <button
-              type="button"
-              className="task-action-icon-btn task-card-template-unset-btn"
-              onClick={() => onSetIsCommon(task.id, false)}
-              title="Remove from Common Tasks"
-            >
-              <span aria-hidden>✖</span>
-            </button>
-          )}
-          {!task.is_common &&
-            !task.parent_id &&
-            childTasks.length === 0 &&
-            (dragSource === 'unassigned' || dragSource === 'pending') &&
-            onSetIsCommon && (
-              <button
-                type="button"
-                className="task-action-icon-btn task-card-template-save-btn"
-                onClick={() => onSetIsCommon(task.id, true)}
-                title="Save as reusable template"
-              >
-                <span aria-hidden>🗂️</span>
-              </button>
-            )}
         </div>
       </div>
-      {hasLinksOrList && (
+      {hasLinksOrList && richExpanded && (
         <>
           <hr className="task-card-divider-incomplete" aria-hidden />
           {renderLinksListRich(
@@ -7926,11 +10847,20 @@ function TaskCard({
         </>
       ) : (
         <div className="task-card-group-stack">
-          <div className="task-card-group-stack-header">
-            <span className="task-card-details-label">Group</span>
+          <div
+            className="task-card-group-split-rail"
+            onPointerDown={(e) => {
+              if (e.button !== 0) return;
+              if (taskBulkMode) return;
+              if (!e.ctrlKey) return;
+              e.stopPropagation();
+              startGroupSelectHold(task.id, e, task.id);
+            }}
+          >
             <button
               type="button"
               className="task-card-subtask-btn"
+              disabled={taskBulkMode}
               title="Split group (clear membership for all tasks in this group)"
               onClick={(e) => {
                 e.stopPropagation();
@@ -7940,18 +10870,15 @@ function TaskCard({
               ↩
             </button>
           </div>
-          <hr className="task-card-group-stack-divider" aria-hidden />
-          {[task, ...childTasks].map((segTask, segIdx) => {
+          <div className="task-card-group-stack-main">
+            {[task, ...childTasks].map((segTask, segIdx, segArr) => {
             const isRootSeg = segIdx === 0;
             const segLinks = isRootSeg ? links : (taskLinksByTaskId?.[segTask.id] ?? []);
             const segListItems = isRootSeg ? listItems : (taskListItemsByTaskId?.[segTask.id] ?? []);
             const hasSegRich = segLinks.length > 0 || segListItems.length > 0;
+            const segRichExpanded = isRootSeg ? richExpanded : (groupMemberRichExpanded[segTask.id] ?? false);
             const linkShut = isRootSeg ? linksCollapsed : (groupMemberLinksCollapsed[segTask.id] ?? true);
             const listShut = isRootSeg ? listCollapsed : (groupMemberListCollapsed[segTask.id] ?? true);
-            const segLinksTooltip =
-              segLinks.length > 0
-                ? segLinks.map((l) => l.description?.trim() || l.url).filter(Boolean).join(' · ') || 'Links'
-                : '';
             const segCategoryName =
               segTask.category_id != null ? organizationCategoriesList.find((c) => c.id === segTask.category_id)?.name : null;
             const segSubcategoryName =
@@ -7976,109 +10903,172 @@ function TaskCard({
                     if (e.button !== 0 || (e.target as HTMLElement).closest('button, input') != null) return;
                     if (!isRootSeg) e.stopPropagation();
                     if (e.ctrlKey) {
+                      startGroupSelectHold(task.id, e, segTask.id);
+                      return;
+                    }
+                    if (taskBulkMode && isMobile) {
                       onToggleSelect?.(segTask.id);
                       return;
                     }
-                    if (dragSource) {
+                    if (!isMobile && dragSource) {
                       if (isRootSeg) onHoldStart?.(e);
                       else onHoldStartGroupMember?.(e, segTask.id);
                     }
                   }}
                 >
                   <div className="task-row">
+                    {hasSegRich && (
+                      <button
+                        type="button"
+                        className="task-card-details-toggle task-card-details-toggle-main"
+                        aria-expanded={segRichExpanded}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (isRootSeg) setRichExpanded((x) => !x);
+                          else
+                            setGroupMemberRichExpanded((m) => ({
+                              ...m,
+                              [segTask.id]: !(m[segTask.id] ?? false),
+                            }));
+                        }}
+                        title={segRichExpanded ? 'Collapse links and list' : 'Expand links and list'}
+                      >
+                        {segRichExpanded ? '▼' : '▶'}
+                      </button>
+                    )}
                     <div style={{ position: 'relative' }}>
                       {isRootSeg ? (
                         <>
                           <button
+                            ref={priorityBtnRef}
                             type="button"
                             className={'priority-btn priority-' + (segTask.priority || 'low')}
+                            style={priorityDisplay.colorStyle(segTask.priority)}
                             title="Priority"
+                            disabled={taskBulkMode}
                             onClick={() => setPriorityOpen((o) => !o)}
                           >
-                            {priorityIcon(segTask.priority)}
+                            {priorityDisplay.icon(segTask.priority)}
                           </button>
-                          {priorityOpen && (
-                            <div className="priority-picker" role="listbox">
-                              {PRIORITIES.map((p) => (
+                          {priorityOpen &&
+                            priorityPickerPosition != null &&
+                            typeof document !== 'undefined' &&
+                            createPortal(
+                              <div
+                                className="priority-picker"
+                                role="listbox"
+                                style={{
+                                  position: 'fixed',
+                                  top: priorityPickerPosition.top,
+                                  left: priorityPickerPosition.left,
+                                  zIndex: 10000,
+                                }}
+                              >
+                              {priorityDisplay.levels.map((p) => (
                                 <button
                                   key={p}
                                   type="button"
                                   className={
                                     'priority-picker-option ' + (segTask.priority === p ? 'selected' : '') + ' priority-' + p
                                   }
+                                  style={priorityDisplay.colorStyle(p)}
                                   onClick={() => {
                                     onPriorityChange(segTask.id, p);
                                     childTasks.forEach((c) => onPriorityChange(c.id, p));
                                     setPriorityOpen(false);
                                   }}
                                 >
-                                  {priorityLabel(p)} {priorityIcon(p)}
+                                  {priorityDisplay.label(p)} {priorityDisplay.icon(p)}
                                 </button>
                               ))}
-                            </div>
-                          )}
+                              </div>,
+                              document.body
+                            )}
                         </>
                       ) : (
                         <>
                           <button
+                            ref={subPriorityOpenId === segTask.id ? subPriorityBtnRef : undefined}
                             type="button"
                             className={'priority-btn priority-' + (segTask.priority || 'low')}
+                            style={priorityDisplay.colorStyle(segTask.priority)}
                             title="Priority"
+                            disabled={taskBulkMode}
                             onClick={(e) => {
                               e.stopPropagation();
                               setSubPriorityOpenId((id) => (id === segTask.id ? null : segTask.id));
                             }}
                           >
-                            {priorityIcon(segTask.priority)}
+                            {priorityDisplay.icon(segTask.priority)}
                           </button>
-                          {subPriorityOpenId === segTask.id && (
-                            <div className="priority-picker" role="listbox">
-                              {PRIORITIES.map((p) => (
-                                <button
-                                  key={p}
-                                  type="button"
-                                  className={
-                                    'priority-picker-option ' + (segTask.priority === p ? 'selected' : '') + ' priority-' + p
-                                  }
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onPriorityChange(segTask.id, p);
-                                    setSubPriorityOpenId(null);
-                                  }}
-                                >
-                                  {priorityLabel(p)} {priorityIcon(p)}
-                                </button>
-                              ))}
-                            </div>
-                          )}
+                          {subPriorityOpenId === segTask.id &&
+                            subPriorityPickerPosition != null &&
+                            typeof document !== 'undefined' &&
+                            createPortal(
+                              <div
+                                className="priority-picker"
+                                role="listbox"
+                                style={{
+                                  position: 'fixed',
+                                  top: subPriorityPickerPosition.top,
+                                  left: subPriorityPickerPosition.left,
+                                  zIndex: 10000,
+                                }}
+                              >
+                                {priorityDisplay.levels.map((p) => (
+                                  <button
+                                    key={p}
+                                    type="button"
+                                    className={
+                                      'priority-picker-option ' +
+                                      (segTask.priority === p ? 'selected' : '') +
+                                      ' priority-' +
+                                      p
+                                    }
+                                    style={priorityDisplay.colorStyle(p)}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onPriorityChange(segTask.id, p);
+                                      setSubPriorityOpenId(null);
+                                    }}
+                                  >
+                                    {priorityDisplay.label(p)} {priorityDisplay.icon(p)}
+                                  </button>
+                                ))}
+                              </div>,
+                              document.body
+                            )}
                         </>
                       )}
                     </div>
-                    <span className="task-title-wrap task-title-wrap-stacked">
+                    <span
+                      className={
+                        'task-title-wrap task-title-wrap-stacked' +
+                        (segCategoryName != null || segSubcategoryName != null || segTags.length > 0
+                          ? ' task-title-wrap-with-meta'
+                          : ' task-title-wrap-no-meta')
+                      }
+                    >
                       <span className="task-title-line">
-                        {segEditing ? (
-                          <input
-                            className="task-title-edit"
-                            value={editingTitle}
-                            onChange={(e) => onEditingTitleChange(e.target.value)}
-                            onBlur={() => onEditSave(segTask.id, editingTitle.trim() || segTask.title)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') onEditSave(segTask.id, editingTitle.trim() || segTask.title);
-                              if (e.key === 'Escape') onEditCancel();
-                            }}
-                            autoFocus
-                          />
-                        ) : (
-                          <span
-                            className="task-title"
-                            onDoubleClick={() => onEditStart(segTask.id, segTask.title)}
-                          >
-                            {segTask.title}
-                          </span>
-                        )}
-                        {segLinks.length > 0 && linkShut && (
-                          <span className="task-card-links-collapsed-icon" title={segLinksTooltip} aria-label="Links">🔗</span>
-                        )}
+                        <span className="task-title-line-text">
+                          {segEditing ? (
+                            <input
+                              className="task-title-edit"
+                              value={editingTitle}
+                              onChange={(e) => onEditingTitleChange(e.target.value)}
+                              onBlur={() => onEditSave(segTask.id, editingTitle.trim() || segTask.title)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') onEditSave(segTask.id, editingTitle.trim() || segTask.title);
+                                if (e.key === 'Escape') onEditCancel();
+                              }}
+                              autoFocus
+                            />
+                          ) : (
+                            <span className="task-title" onDoubleClick={() => onEditStart(segTask.id, segTask.title)}>
+                              {segTask.title}
+                            </span>
+                          )}
+                        </span>
                         {segTask.created_at && (
                           <span className="task-date-added">
                             {new Date(segTask.created_at).toLocaleDateString(undefined, {
@@ -8122,66 +11112,13 @@ function TaskCard({
                         </span>
                       )}
                     </span>
-                    <span className="task-row-desktop-actions">
-                      <button
-                        type="button"
-                        className={'cycle-btn' + (segTask.recurring ? ' depressed' : '')}
-                        title="Recurring"
-                        onClick={() => onRecurringToggle(segTask.id)}
-                      >
-                        ↻
-                      </button>
-                      {onOpenOrganization && (
-                        <button
-                          type="button"
-                          className="task-list-add-btn"
-                          title="Category & tags"
-                          onClick={() => onOpenOrganization(segTask.id)}
-                        >
-                          📁<sup className="task-list-add-plus">+</sup>
-                        </button>
-                      )}
-                      <button type="button" className="links-btn" title="Add link" onClick={() => onOpenLinks(segTask.id)}>
-                        🔗<span className="link-plus">+</span>
-                      </button>
-                      <button
-                        type="button"
-                        className="task-list-add-btn"
-                        title="Add list / List items"
-                        onClick={() => onOpenList(segTask.id)}
-                      >
-                        📋<sup className="task-list-add-plus">+</sup>
-                      </button>
-                      <button
-                        type="button"
-                        className="task-calendar-btn"
-                        title="Schedule on a date"
-                        onClick={() => onScheduleDate(segTask.id)}
-                      >
-                        📅
-                      </button>
-                      {!isRootSeg && (
-                        <button
-                          type="button"
-                          className="task-calendar-btn"
-                          title="Remove from parent"
-                          onClick={() =>
-                            api.tasks.update({ id: segTask.id, parent_id: null }).then(() => onRefresh?.())
-                          }
-                        >
-                          ↩
-                        </button>
-                      )}
-                      <button type="button" className="trash-btn" title="Delete" onClick={() => onDelete(segTask.id)}>
-                        🗑
-                      </button>
-                    </span>
                     <span className="task-row-mobile-actions task-row-drawer-actions" style={{ position: 'relative' }}>
                       <button
                         type="button"
                         className="task-card-drawer-chevron"
                         title={isRootSeg ? (actionsDrawerOpen ? 'Close' : 'Actions') : memberDrawerOpen ? 'Close' : 'Actions'}
                         aria-expanded={isRootSeg ? actionsDrawerOpen : memberDrawerOpen}
+                                            disabled={taskBulkMode}
                         onClick={(e) => {
                           e.stopPropagation();
                           if (isRootSeg) {
@@ -8237,6 +11174,39 @@ function TaskCard({
                             📋
                           </button>
                           {!isMobile && <span className="task-card-drawer-divider" aria-hidden>|</span>}
+                          {onSetIsCommon && !segTask.parent_id && tasks.filter((t) => t.parent_id === segTask.id).length === 0 && !segTask.is_common && (
+                            <>
+                              <button
+                                type="button"
+                                title="Add to favorites"
+                                onClick={() => {
+                                  onSetIsCommon(segTask.id, true);
+                                  if (isRootSeg) setActionsDrawerOpen(false);
+                                  else setMemberActionsDrawerTaskId(null);
+                                }}
+                              >
+                                <Star size={14} aria-hidden strokeWidth={2} />
+                              </button>
+                              {!isMobile && <span className="task-card-drawer-divider" aria-hidden>|</span>}
+                            </>
+                          )}
+                          {onDuplicate && (
+                            <>
+                              <button
+                                type="button"
+                                title="Duplicate task"
+                                className="task-card-duplicate-btn"
+                                onClick={() => {
+                                  onDuplicate(segTask.id);
+                                  if (isRootSeg) setActionsDrawerOpen(false);
+                                  else setMemberActionsDrawerTaskId(null);
+                                }}
+                              >
+                                <Copy size={14} aria-hidden strokeWidth={2} />
+                              </button>
+                              {!isMobile && <span className="task-card-drawer-divider" aria-hidden>|</span>}
+                            </>
+                          )}
                           <button
                             type="button"
                             title="Schedule on a date"
@@ -8260,13 +11230,28 @@ function TaskCard({
                           >
                             ↻
                           </button>
+                          {!isRootSeg && (
+                            <>
+                              {!isMobile && <span className="task-card-drawer-divider" aria-hidden>|</span>}
+                              <button
+                                type="button"
+                                title="Remove from parent"
+                                onClick={() => {
+                                  api.tasks.update({ id: segTask.id, parent_id: null }).then(() => onRefresh?.());
+                                  setMemberActionsDrawerTaskId(null);
+                                }}
+                              >
+                                ↩
+                              </button>
+                            </>
+                          )}
                           {!isMobile && <span className="task-card-drawer-divider" aria-hidden>|</span>}
                           <button
                             type="button"
                             className="trash-btn"
                             title="Delete"
                             onClick={() => {
-                              if (confirm('Delete this task?')) onDelete(segTask.id);
+                              onDelete(segTask.id);
                               if (isRootSeg) setActionsDrawerOpen(false);
                               else setMemberActionsDrawerTaskId(null);
                             }}
@@ -8283,7 +11268,6 @@ function TaskCard({
                       <button
                         type="button"
                         className="add-task-btn"
-                        style={{ fontSize: '0.7rem' }}
                         onClick={() => onMoveToPending(segTask.id)}
                         title="Move to Pending"
                       >
@@ -8294,65 +11278,36 @@ function TaskCard({
                       <button
                         type="button"
                         className="add-task-btn"
-                        style={{ fontSize: '0.7rem' }}
                         onClick={() => onMoveToUnassigned(segTask.id)}
                         title="Move to Unassigned"
                       >
                         To Unassigned
                       </button>
                     )}
-                    {!!segTask.is_common && onSetIsCommon && (
-                      <button
-                        type="button"
-                        className="task-action-icon-btn task-card-template-unset-btn"
-                        onClick={() => onSetIsCommon(segTask.id, false)}
-                        title="Remove from Common Tasks"
-                      >
-                        <span aria-hidden>✖</span>
-                      </button>
-                    )}
-                    {!segTask.is_common &&
-                      !segTask.parent_id &&
-                      tasks.filter((t) => t.parent_id === segTask.id).length === 0 &&
-                      (dragSource === 'unassigned' || dragSource === 'pending') &&
-                      onSetIsCommon && (
-                        <button
-                          type="button"
-                          className="task-action-icon-btn task-card-template-save-btn"
-                          onClick={() => onSetIsCommon(segTask.id, true)}
-                          title="Save as reusable template"
-                        >
-                          <span aria-hidden>🗂️</span>
-                        </button>
-                      )}
                   </div>
                 </div>
-                {hasSegRich && (
-                  <>
-                    <hr className="task-card-divider-incomplete" aria-hidden />
-                    {renderLinksListRich(
-                      segTask,
-                      segLinks,
-                      segListItems,
-                      linkShut,
-                      isRootSeg
-                        ? () => setLinksCollapsed((c) => !c)
-                        : () =>
-                            setGroupMemberLinksCollapsed((m) => ({
-                              ...m,
-                              [segTask.id]: !(m[segTask.id] ?? true),
-                            })),
-                      listShut,
-                      isRootSeg
-                        ? () => setListCollapsed((c) => !c)
-                        : () =>
-                            setGroupMemberListCollapsed((m) => ({
-                              ...m,
-                              [segTask.id]: !(m[segTask.id] ?? true),
-                            })),
-                    )}
-                  </>
-                )}
+                {hasSegRich && segRichExpanded &&
+                  renderLinksListRich(
+                    segTask,
+                    segLinks,
+                    segListItems,
+                    linkShut,
+                    isRootSeg
+                      ? () => setLinksCollapsed((c) => !c)
+                      : () =>
+                          setGroupMemberLinksCollapsed((m) => ({
+                            ...m,
+                            [segTask.id]: !(m[segTask.id] ?? true),
+                          })),
+                    listShut,
+                    isRootSeg
+                      ? () => setListCollapsed((c) => !c)
+                      : () =>
+                          setGroupMemberListCollapsed((m) => ({
+                            ...m,
+                            [segTask.id]: !(m[segTask.id] ?? true),
+                          })),
+                  )}
                 {nestedMini.length > 0 && (
                   <>
                     <hr className="task-card-divider-complete" aria-hidden />
@@ -8368,9 +11323,10 @@ function TaskCard({
                               type="button"
                               className="task-card-subtask-btn"
                               title="Priority"
+                              style={priorityDisplay.colorStyle(nested.priority)}
                               onClick={() => onPriorityChange(nested.id, nested.priority ?? 'low')}
                             >
-                              {priorityIcon(nested.priority)}
+                              {priorityDisplay.icon(nested.priority)}
                             </button>
                             <button
                               type="button"
@@ -8389,10 +11345,11 @@ function TaskCard({
                     </div>
                   </>
                 )}
-                <hr className="task-card-group-stack-divider" aria-hidden />
+                {segIdx < segArr.length - 1 ? <hr className="task-card-group-stack-divider" aria-hidden /> : null}
               </div>
             );
           })}
+          </div>
         </div>
       )}
     </li>

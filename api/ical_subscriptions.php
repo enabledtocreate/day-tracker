@@ -158,21 +158,52 @@ if ($method === 'PATCH') {
     }
     $hasEnabled = array_key_exists('enabled', $in);
     $hasDisplay = array_key_exists('display_name', $in);
-    if (!$hasEnabled && !$hasDisplay) {
-        jsonError('enabled and/or display_name required');
+    $hasFeedUrl = array_key_exists('feed_url', $in);
+    if (!$hasEnabled && !$hasDisplay && !$hasFeedUrl) {
+        jsonError('enabled, display_name and/or feed_url required');
         exit;
     }
+    $nextFeedUrl = null;
+    if ($hasFeedUrl) {
+        $nextFeedUrl = trim((string) $in['feed_url']);
+        if ($nextFeedUrl === '') {
+            jsonError('feed_url required');
+            exit;
+        }
+        if (!preg_match('#^https?://#i', $nextFeedUrl)) {
+            jsonError('feed_url must be http or https');
+            exit;
+        }
+        $timeout = getIcalFetchTimeout();
+        $raw = icalFetchUrl($nextFeedUrl, $timeout);
+        if ($raw === false || $raw === '') {
+            jsonError('Could not fetch the URL. Check that the link is correct and reachable.');
+            exit;
+        }
+        if (stripos($raw, 'BEGIN:VCALENDAR') === false) {
+            jsonError('URL did not return a valid iCal feed (expected VCALENDAR). Check the link or try a different calendar.');
+            exit;
+        }
+    }
     try {
-        if ($hasEnabled && $hasDisplay) {
-            $en = $in['enabled'] ? 1 : 0;
-            $dn = isset($in['display_name']) ? trim((string) $in['display_name']) : '';
-            $pdo->prepare('UPDATE ical_subscriptions SET enabled = ?, display_name = ? WHERE id = ?')->execute([$en, $dn === '' ? null : $dn, $id]);
-        } elseif ($hasDisplay) {
+        $updates = [];
+        $params = [];
+        if ($hasEnabled) {
+            $updates[] = 'enabled = ?';
+            $params[] = $in['enabled'] ? 1 : 0;
+        }
+        if ($hasDisplay) {
             $dn = trim((string) $in['display_name']);
-            $pdo->prepare('UPDATE ical_subscriptions SET display_name = ? WHERE id = ?')->execute([$dn === '' ? null : $dn, $id]);
-        } else {
-            $en = $in['enabled'] ? 1 : 0;
-            $pdo->prepare('UPDATE ical_subscriptions SET enabled = ? WHERE id = ?')->execute([$en, $id]);
+            $updates[] = 'display_name = ?';
+            $params[] = $dn === '' ? null : $dn;
+        }
+        if ($hasFeedUrl) {
+            $updates[] = 'feed_url = ?';
+            $params[] = $nextFeedUrl;
+        }
+        if (count($updates) > 0) {
+            $params[] = $id;
+            $pdo->prepare('UPDATE ical_subscriptions SET ' . implode(', ', $updates) . ' WHERE id = ?')->execute($params);
         }
     } catch (Throwable $e) {
         if (strpos($e->getMessage(), 'display_name') !== false) {

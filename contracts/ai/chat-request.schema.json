@@ -15,7 +15,10 @@
         "historyDays": { "type": "integer", "minimum": 0 }
       }
     },
-    "taskContext": { "type": "object" },
+    "taskContext": {
+      "$ref": "task-context.schema.json",
+      "description": "Day snapshot for the agent; see task-context.schema.json."
+    },
     "contextFragments": {
       "type": "array",
       "items": {

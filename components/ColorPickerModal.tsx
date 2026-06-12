@@ -90,6 +90,7 @@ export function ColorPickerModal({ open, onClose, value, onSelect }: Props) {
 
   return (
     <Modal
+      nested
       open={open}
       onClose={onClose}
       title="Choose color"

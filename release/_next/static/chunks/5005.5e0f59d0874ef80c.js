@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[5005],{5005:function(e,t,n){n.r(t),n.d(t,{__iconNode:function(){return c},default:function(){return u}});var r=n(47411);let c=[["path",{d:"M16 20V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16",key:"jecpp"}],["rect",{width:"20",height:"14",x:"2",y:"6",rx:"2",key:"i6l2r4"}]],u=(0,r.Z)("briefcase",c)}}]);

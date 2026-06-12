@@ -77,6 +77,7 @@ $pdo = new PDO('sqlite:' . $userDbPath, null, null, [PDO::ATTR_ERRMODE => PDO::E
 runMigrationsIn($pdo, __DIR__ . '/../migrations');
 
 require_once __DIR__ . '/../lib/rrule.php';
+require_once __DIR__ . '/../lib/recurrence.php';
 
 $from = date('Y-m-d', strtotime('-1 year'));
 $to = date('Y-m-d', strtotime('+2 years'));
@@ -139,6 +140,10 @@ echo "CALSCALE:GREGORIAN\r\n";
 foreach ($recurringTasks as $task) {
     $rule = @json_decode($task['recurrence_rule'], true);
     if (!is_array($rule)) {
+        continue;
+    }
+    $seriesEnd = recurrenceSeriesEndDateInclusive($rule);
+    if ($seriesEnd !== null && $seriesEnd < $from) {
         continue;
     }
     $startDate = $rule['startDate'] ?? substr($task['created_at'], 0, 10);

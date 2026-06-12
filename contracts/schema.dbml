@@ -19,6 +19,8 @@ Table tasks {
   list_style       text    [not null, default: 'bullet', note: 'bullet | checklist']
   is_common        integer [not null, default: 0, note: '1 = Common Tasks template; scheduling creates a copy']
   recurrence_rule  text    [note: 'Optional JSON: {\"freq\",\"time\",\"weekDays\",\"monthDays\",\"lastDayOfMonth\",\"count\",\"startDate\"}']
+  default_block_id integer [ref: > task_blocks.id, note: 'Optional default block type for Auto Block']
+  default_duration_intervals integer [not null, default: 1, note: 'Duration on schedule in increment steps']
 }
 
 Table task_links {

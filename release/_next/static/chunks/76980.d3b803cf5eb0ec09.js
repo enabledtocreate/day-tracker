@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[76980],{76980:function(e,n,u){u.r(n),u.d(n,{__iconNode:function(){return a},default:function(){return c}});var t=u(47411);let a=[["path",{d:"m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551",key:"1miecu"}]],c=(0,t.Z)("paperclip",a)}}]);

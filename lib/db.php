@@ -41,10 +41,19 @@ function getDbPath(): string {
 
 function getMasterPdo(): PDO {
     static $pdo = null;
-    if ($pdo !== null) return $pdo;
+    static $cacheKey = null;
     $path = getMasterDbPath();
+    if ($pdo !== null && $cacheKey !== $path) {
+        $pdo = null;
+    }
+    if ($pdo !== null) {
+        return $pdo;
+    }
+    $cacheKey = $path;
     $dir = dirname($path);
-    if (!is_dir($dir)) throw new RuntimeException('Data directory does not exist: ' . $dir);
+    if (!is_dir($dir)) {
+        throw new RuntimeException('Data directory does not exist: ' . $dir);
+    }
     $pdo = new PDO('sqlite:' . $path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
     return $pdo;
 }
@@ -119,11 +128,22 @@ function getAiPdoSafe(): PDO {
 
 function getPdo(): PDO {
     static $pdo = null;
-    if ($pdo !== null) return $pdo;
+    static $cacheKey = null;
     $path = getCurrentUserDbPath();
+    if ($pdo !== null && $cacheKey !== $path) {
+        $pdo = null;
+    }
+    if ($pdo !== null) {
+        return $pdo;
+    }
+    $cacheKey = $path;
     $dir = dirname($path);
-    if (!is_dir($dir)) throw new RuntimeException('Data directory does not exist: ' . $dir);
-    if (!is_file($path)) throw new RuntimeException('User database not found.');
+    if (!is_dir($dir)) {
+        throw new RuntimeException('Data directory does not exist: ' . $dir);
+    }
+    if (!is_file($path)) {
+        throw new RuntimeException('User database not found.');
+    }
     $pdo = new PDO('sqlite:' . $path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
     runMigrationsIn($pdo, dirname(__DIR__) . '/migrations');
     return $pdo;

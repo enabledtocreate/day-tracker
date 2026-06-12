@@ -66,3 +66,66 @@ function createTestEnvironment(): array {
 
     return ['dataDir' => $dataDir, 'user' => $row];
 }
+
+/**
+ * Run an API script in a subprocess (see tests/api_request_harness.php) so exit() in api/*.php does not kill PHPUnit.
+ *
+ * @param array<string,mixed>|null $sessionUser Session row for daytracker_user, or null for an empty session (401 tests).
+ * @param mixed $body Request body for POST/PATCH/PUT (array is JSON-encoded).
+ * @return array{body: mixed, code: int}
+ */
+function runApiRequestHarness(string $dataDir, ?array $sessionUser, string $scriptName, string $method, array $query, $body): array {
+    $root = dirname(__DIR__);
+    $payload = [
+        'dataDir' => $dataDir,
+        'user' => $sessionUser,
+        'script' => $scriptName,
+        'method' => $method,
+        'query' => $query,
+        'body' => $body,
+    ];
+    $tmp = tempnam(sys_get_temp_dir(), 'dt_req_');
+    if ($tmp === false) {
+        throw new RuntimeException('tempnam failed');
+    }
+    file_put_contents($tmp, json_encode($payload));
+
+    $cmd = [PHP_BINARY];
+    $ini = $root . DIRECTORY_SEPARATOR . 'php.ini';
+    if (is_file($ini)) {
+        $cmd[] = '-c';
+        $cmd[] = $ini;
+    }
+    $cmd[] = $root . DIRECTORY_SEPARATOR . 'tests' . DIRECTORY_SEPARATOR . 'api_request_harness.php';
+    $cmd[] = $tmp;
+
+    $proc = proc_open($cmd, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $root);
+    if (!is_resource($proc)) {
+        @unlink($tmp);
+        throw new RuntimeException('proc_open failed');
+    }
+    fclose($pipes[0]);
+    $stdout = (string) stream_get_contents($pipes[1]);
+    $stderr = (string) stream_get_contents($pipes[2]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    proc_close($proc);
+    @unlink($tmp);
+
+    if ($stderr !== '' && getenv('DAYTRACKER_API_TEST_DEBUG') === '1') {
+        file_put_contents('php://stderr', $stderr);
+    }
+
+    $code = 200;
+    $output = $stdout;
+    if (preg_match('/^__DT_STATUS__:(\d+)\r?\n/', $stdout, $m)) {
+        $code = (int) $m[1];
+        $output = substr($stdout, strlen($m[0]));
+    }
+
+    $decoded = @json_decode($output, true);
+    return [
+        'body' => $decoded !== null ? $decoded : $output,
+        'code' => $code,
+    ];
+}

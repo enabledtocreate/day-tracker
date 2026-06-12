@@ -1,18 +1,15 @@
 'use client';
 
 import { useState, useCallback, useRef } from 'react';
-import { useDrag } from '@use-gesture/react';
 import type { AuthUser } from '@/lib/auth';
 import { useMediaQuery } from '@/lib/useMediaQuery';
+import { MobileModeProvider } from '@/lib/mobileMode';
 import { UserSettingsView } from '@/components/UserSettingsView';
 import { AdminSettingsView } from '@/components/AdminSettingsView';
 import { TaskListAndSchedule } from '@/components/TaskListAndSchedule';
 import { DT } from '@/lib/uiIdentifiers';
 
 const MOBILE_BREAKPOINT = '(max-width: 768px)';
-const SWIPE_THRESHOLD = 60;
-/** Only main panel swipes (Completed | Tasks | AI) when gesture starts in left/right edge of screen */
-const PANEL_EDGE_BUFFER_PX = 72;
 
 type Props = {
   user: AuthUser;
@@ -45,34 +42,8 @@ export function AppPanels({
     [aiEnabled]
   );
 
-  const panelSwipeStartedInEdgeRef = useRef(false);
-
-  const bindPanelsDrag = useDrag(
-    ({ movement: [mx], velocity: [vx], first, last, initial }) => {
-      if (first && typeof window !== 'undefined') {
-        const startX = initial?.[0] ?? 0;
-        const w = window.innerWidth;
-        panelSwipeStartedInEdgeRef.current =
-          startX < PANEL_EDGE_BUFFER_PX || startX > w - PANEL_EDGE_BUFFER_PX;
-      }
-      if (!last || !isMobile || !panelSwipeStartedInEdgeRef.current) return;
-      const threshold = SWIPE_THRESHOLD;
-      const minVelocity = 0.2;
-      // Swipe left (finger moves left, mx < 0) = screen moves left = next panel (index++)
-      // Swipe right (finger moves right, mx > 0) = screen moves right = previous panel (index--)
-      if (mx > threshold || vx > minVelocity) {
-        setMainSlideIndex((i) => Math.max(0, i - 1));
-      } else if (mx < -threshold || vx < -minVelocity) {
-        setMainSlideIndex((i) => Math.min(aiEnabled ? 2 : 1, i + 1));
-      }
-    },
-    {
-      axis: 'x',
-      pointer: { touch: true },
-      touch: true,
-      filter: () => isMobile,
-    }
-  );
+  // Panel swipes are deliberately gone until Step 4/5 install the new coordinator wiring.
+  // Use the mobile tab UI or explicit chrome to switch panels in the meantime.
 
   const panelsClassName =
     'panels' +
@@ -80,7 +51,7 @@ export function AppPanels({
     (isMobile && !aiEnabled ? ' mobile-ai-disabled' : '');
 
   return (
-    <>
+    <MobileModeProvider>
       <div
         id="user-settings-view"
         className="settings-view"
@@ -107,7 +78,6 @@ export function AppPanels({
         className={`${panelsClassName} ${DT.mainPanels}`}
         id="main-panels"
         style={{ display: 'flex' }}
-        {...(isMobile ? bindPanelsDrag() : {})}
       >
         <TaskListAndSchedule
           user={user}
@@ -118,6 +88,6 @@ export function AppPanels({
           refetchOrganizationRef={refetchOrganizationRef}
         />
       </div>
-    </>
+    </MobileModeProvider>
   );
 }

@@ -103,9 +103,17 @@ if ($summaryOrg) {
                 'task_id' => $tid,
                 'title' => trim((string) ($r['title'] ?? '')),
                 'hours' => 0.0,
+                // Per-slot start times so we can map the task to whichever
+                // schedule block it lives inside (slot start contained in
+                // [block_start, block_end)). Stripped from the final payload.
+                'slot_starts' => [],
             ];
         }
         $acc[$day][$bucketKey]['tasks'][$tid]['hours'] = round($acc[$day][$bucketKey]['tasks'][$tid]['hours'] + $hours, 2);
+        $slotStartRaw = trim((string) ($r['start_time'] ?? ''));
+        if ($slotStartRaw !== '') {
+            $acc[$day][$bucketKey]['tasks'][$tid]['slot_starts'][] = $slotStartRaw;
+        }
     }
 
     $allTaskIds = [];
@@ -227,8 +235,131 @@ if ($summaryOrg) {
     usort($daysOut, static function ($a, $b) {
         return strcmp($b['date'], $a['date']);
     });
-    logMessage('INFO', 'accomplished summary_org ok', ['days' => count($daysOut), 'from_date' => $fromDate ?: null, 'to_date' => $toDate ?: null]);
-    jsonResponse(['days' => $daysOut]);
+
+    /** Per-day rollup of scheduled organization blocks (strip), same date filter as category summary. */
+    $blockDaysOut = [];
+    /**
+     * date -> list of {name, start_min, end_min} for task→block mapping below.
+     * Populated alongside the rollup so we don't reissue the query.
+     */
+    $blocksByDate = [];
+    $hasBlockTables = (bool) $pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schedule_blocks'")->fetchColumn()
+        && (bool) $pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_blocks'")->fetchColumn();
+    if ($hasBlockTables) {
+        $sqlBlocks = "
+            SELECT d.date, tb.name AS block_name, sb.start_time, sb.end_time
+            FROM schedule_blocks sb
+            INNER JOIN day_record d ON d.id = sb.day_record_id
+            INNER JOIN task_blocks tb ON tb.id = sb.block_id
+            WHERE 1=1{$extraWhere}
+            ORDER BY d.date ASC, tb.name COLLATE NOCASE, sb.start_time, sb.id
+        ";
+        $stmtB = $pdo->prepare($sqlBlocks);
+        $stmtB->execute($dateBind);
+        $blockAcc = [];
+        // HH:MM(:SS) → minutes since midnight, or null if unparseable.
+        $timeToMin = static function (?string $t): ?int {
+            if ($t === null || $t === '') {
+                return null;
+            }
+            $parts = array_map('intval', explode(':', $t));
+            $h = $parts[0] ?? 0;
+            $m = $parts[1] ?? 0;
+            return $h * 60 + $m;
+        };
+        foreach ($stmtB->fetchAll(PDO::FETCH_ASSOC) as $br) {
+            $dayB = (string) $br['date'];
+            $nameB = trim((string) ($br['block_name'] ?? ''));
+            if ($nameB === '') {
+                $nameB = '(Block)';
+            }
+            $startB = isset($br['start_time']) ? (string) $br['start_time'] : '';
+            $endB = isset($br['end_time']) ? (string) $br['end_time'] : '';
+            $hB = accomplished_slot_hours($startB !== '' ? $startB : null, $endB !== '' ? $endB : null);
+            if (!isset($blockAcc[$dayB])) {
+                $blockAcc[$dayB] = [];
+            }
+            if (!isset($blockAcc[$dayB][$nameB])) {
+                $blockAcc[$dayB][$nameB] = 0.0;
+            }
+            $blockAcc[$dayB][$nameB] = round($blockAcc[$dayB][$nameB] + $hB, 2);
+
+            $bStart = $timeToMin($startB ?: null);
+            $bEnd = $timeToMin($endB ?: null);
+            if ($bStart !== null && $bEnd !== null && $bEnd > $bStart) {
+                if (!isset($blocksByDate[$dayB])) {
+                    $blocksByDate[$dayB] = [];
+                }
+                $blocksByDate[$dayB][] = ['name' => $nameB, 'start_min' => $bStart, 'end_min' => $bEnd];
+            }
+        }
+        foreach ($blockAcc as $dayStrB => $byName) {
+            $rowsB = [];
+            $totalB = 0.0;
+            foreach ($byName as $nm => $hrs) {
+                $rowsB[] = ['block_name' => $nm, 'hours' => $hrs];
+                $totalB += $hrs;
+            }
+            usort($rowsB, static function ($a, $b) {
+                return strcmp((string) $a['block_name'], (string) $b['block_name']);
+            });
+            $blockDaysOut[] = [
+                'date' => $dayStrB,
+                'rows' => $rowsB,
+                'total_hours' => round($totalB, 2),
+            ];
+        }
+        usort($blockDaysOut, static function ($a, $b) {
+            return strcmp((string) $b['date'], (string) $a['date']);
+        });
+    }
+
+    /**
+     * Decorate every task in the category rollup with `block_names`: the
+     * distinct set of schedule-strip blocks whose [start, end) interval
+     * contains at least one of that task's completed slot start times on
+     * that day. Empty array when the task isn't inside any block. The
+     * internal `slot_starts` helper field is stripped before responding.
+     */
+    $timeToMinFinal = static function (?string $t): ?int {
+        if ($t === null || $t === '') {
+            return null;
+        }
+        $parts = array_map('intval', explode(':', $t));
+        $h = $parts[0] ?? 0;
+        $m = $parts[1] ?? 0;
+        return $h * 60 + $m;
+    };
+    foreach ($daysOut as &$dayOut) {
+        $dStr = (string) $dayOut['date'];
+        $blocksForDay = $blocksByDate[$dStr] ?? [];
+        foreach ($dayOut['rows'] as &$rowOutRef) {
+            foreach ($rowOutRef['tasks'] as &$taskRef) {
+                $names = [];
+                if (!empty($blocksForDay)) {
+                    foreach (($taskRef['slot_starts'] ?? []) as $startRaw) {
+                        $sm = $timeToMinFinal($startRaw);
+                        if ($sm === null) {
+                            continue;
+                        }
+                        foreach ($blocksForDay as $blk) {
+                            if ($sm >= $blk['start_min'] && $sm < $blk['end_min']) {
+                                $names[$blk['name']] = $blk['name'];
+                            }
+                        }
+                    }
+                }
+                $taskRef['block_names'] = array_values($names);
+                unset($taskRef['slot_starts']);
+            }
+            unset($taskRef);
+        }
+        unset($rowOutRef);
+    }
+    unset($dayOut);
+
+    logMessage('INFO', 'accomplished summary_org ok', ['days' => count($daysOut), 'block_days' => count($blockDaysOut), 'from_date' => $fromDate ?: null, 'to_date' => $toDate ?: null]);
+    jsonResponse(['days' => $daysOut, 'block_days' => $blockDaysOut]);
     exit;
 }
 

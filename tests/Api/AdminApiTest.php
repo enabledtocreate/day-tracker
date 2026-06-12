@@ -17,7 +17,7 @@ final class AdminApiTest extends ApiTestCase
         createTestUserDb($this->dataDir, 'test_user2.sqlite');
         $row = $master->query("SELECT id, username, db_name, is_admin FROM users WHERE username = 'nonadmin'")->fetch(PDO::FETCH_ASSOC);
         $row['force_password_reset'] = 0;
-        setTestSessionUser($row);
+        $this->testUser = $row;
 
         $resSettings = $this->request('GET', 'admin', ['action' => 'settings']);
         $this->assertSame(403, $resSettings['code']);

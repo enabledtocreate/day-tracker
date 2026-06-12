@@ -1,14 +1,18 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { useTheme } from 'next-themes';
 import type { AuthUser } from '@/lib/auth';
 import { fetchMe, logout } from '@/lib/auth';
+import { api } from '@/lib/api';
 import { LoginScreen } from '@/components/LoginScreen';
 import { AppBar } from '@/components/AppBar';
 import { AppPanels } from '@/components/AppPanels';
 import { DT_ID } from '@/lib/uiIdentifiers';
+import { useEodAutoComplete } from '@/lib/eodAutoComplete';
 
 export function MainApp() {
+  const { setTheme } = useTheme();
   const [user, setUser] = useState<AuthUser | null | undefined>(undefined);
   const [aiEnabled, setAiEnabled] = useState(true);
   const [showUserSettings, setShowUserSettings] = useState(false);
@@ -38,6 +42,19 @@ export function MainApp() {
       hadUserRef.current = false;
     }
   }, [user]);
+
+  useEffect(() => {
+    if (user === undefined || user === null) return;
+    api.settings
+      .get()
+      .then((s) => setTheme(s.ui_theme === 'light' ? 'light' : 'dark'))
+      .catch(() => {});
+  }, [user, setTheme]);
+
+  // Client EOD auto-complete runner (Step 8 / §0.7). Mounts only when the
+  // user is authenticated; the runner self-guards via localStorage so reloads
+  // on the same day are no-ops.
+  useEodAutoComplete(user !== undefined && user !== null);
 
   const handleLoginSuccess = () => {
     setShowUserSettings(false);

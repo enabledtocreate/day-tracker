@@ -33,13 +33,13 @@ Active bugs remain in Considered, Planned, or a roadmap Phase and use one of the
 
 Resolved and closed bugs are automatically archived. Archived bugs should not remain in the active bug list of this document.
 
-### 1.3 Archived Bug Follow-Up
+### 1.3 Archived Bug Handling
 
-Resolved and closed bugs are automatically archived.
+Resolved and closed bugs are automatically archived and removed from the active bug list.
 
-When a bug becomes archived, write a follow-up note to C:\Users\croni\Projects\Goals\Day Tracker\.apm\_WORKSPACE so AI agents can generate the right fragments, update canonical documents, and attach the bug code to the resulting document items.
+When a bug becomes archived, keep it in archived bug history rather than creating a separate workspace note.
 
-If an archived bug moves back into an active lifecycle state, remove its workspace follow-up note and return it to the active bug list.
+If an archived bug moves back into an active lifecycle state, return it to the live bug list.
 
 ## 2. Active Bugs
 

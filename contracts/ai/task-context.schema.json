@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://daytracker.local/schemas/ai/task-context.json",
+  "title": "Day Tracker AI taskContext",
+  "description": "Snapshot of the user's day, tasks, schedule, and organization sent to the Smart Planning agent. Built client-side (AIPanel) and/or server-side (api/chat.php useServerContext). Normative narrative: docs/Application-Spec.md §4.8.",
+  "type": "object",
+  "required": ["date", "organization", "accomplished", "taskList", "unaccomplishedToday", "slotsToday"],
+  "properties": {
+    "date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "description": "Calendar day this context describes (view date)."
+    },
+    "organization": {
+      "type": "object",
+      "required": ["categories", "subcategories", "tags"],
+      "properties": {
+        "categories": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "name"],
+            "properties": {
+              "id": { "type": "integer" },
+              "name": { "type": "string" },
+              "color": { "type": ["string", "null"] }
+            },
+            "additionalProperties": false
+          }
+        },
+        "subcategories": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "category_id", "name"],
+            "properties": {
+              "id": { "type": "integer" },
+              "category_id": { "type": "integer" },
+              "name": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "name"],
+            "properties": {
+              "id": { "type": "integer" },
+              "name": { "type": "string" },
+              "color": { "type": ["string", "null"] }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "accomplished": {
+      "type": "array",
+      "description": "Tasks completed on date (root tasks only in server build).",
+      "items": {
+        "type": "object",
+        "required": ["title", "completed_at"],
+        "properties": {
+          "title": { "type": "string" },
+          "completed_at": { "type": "string", "description": "HH:MM or HH:MM:SS end time." }
+        },
+        "additionalProperties": false
+      }
+    },
+    "taskList": {
+      "type": "array",
+      "description": "All tasks in the database (lightweight flags).",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "priority", "recurring", "parent_id"],
+        "properties": {
+          "id": { "type": "integer" },
+          "title": { "type": "string" },
+          "priority": { "type": "string" },
+          "recurring": { "type": "boolean" },
+          "parent_id": { "type": ["integer", "null"] }
+        },
+        "additionalProperties": true
+      }
+    },
+    "unaccomplishedToday": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Titles of tasks not completed and not on today's open schedule."
+    },
+    "slotsToday": {
+      "type": "array",
+      "description": "Scheduled slots for date (timed and untimed).",
+      "items": {
+        "type": "object",
+        "required": ["task_id", "title", "start_time", "end_time", "completed"],
+        "properties": {
+          "task_id": { "type": "integer" },
+          "title": { "type": "string" },
+          "start_time": { "type": ["string", "null"] },
+          "end_time": { "type": ["string", "null"] },
+          "completed": { "type": "boolean" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "scheduleSettings": {
+      "type": "object",
+      "description": "Present when built server-side (useServerContext).",
+      "properties": {
+        "start_hour": { "type": "integer", "minimum": 0, "maximum": 23 },
+        "end_hour": { "type": "integer", "minimum": 1, "maximum": 24 },
+        "increment_value": { "type": "integer", "minimum": 1 },
+        "increment_unit": { "type": "string", "enum": ["min", "hr"] },
+        "timezone": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "icalEvents": {
+      "type": "array",
+      "description": "Optional iCal feed events when contextOptions.includeIcal is true.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "subscription_id": { "type": "integer" },
+          "uid": { "type": "string" },
+          "title": { "type": "string" },
+          "start_iso": { "type": "string" },
+          "end_iso": { "type": "string" },
+          "all_day": { "type": ["integer", "boolean"] }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

@@ -153,6 +153,7 @@ function icalFetchIcalFeedToFile(string $url, int $timeout, string $destPath): i
  */
 function icalEventsReadFromDb(PDO $pdo, string $fromDate, string $toDate): array {
     $events = [];
+    $seen = [];
     try {
         $stmt = $pdo->prepare("
             SELECT e.id, e.subscription_id, e.uid, e.title, e.start_iso, e.end_iso, e.all_day, e.user_completed, e.event_type
@@ -164,6 +165,11 @@ function icalEventsReadFromDb(PDO $pdo, string $fromDate, string $toDate): array
         ");
         $stmt->execute([$fromDate, $toDate]);
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $dupKey = (int) $row['subscription_id'] . '|' . (string) $row['uid'] . '|' . (string) $row['start_iso'] . '|' . (string) $row['end_iso'] . '|' . (string) ($row['event_type'] ?? 'event');
+            if (isset($seen[$dupKey])) {
+                continue;
+            }
+            $seen[$dupKey] = true;
             $events[] = [
                 'id' => (int) $row['id'],
                 'uid' => $row['uid'],
@@ -301,6 +307,20 @@ function icalEventsSyncSubscription(PDO $pdo, array $sub, string $today, string 
     }
 
     $parsedCount = count($parsed);
+    if ($parsedCount > 1) {
+        $deduped = [];
+        $seenParsed = [];
+        foreach ($parsed as $ev) {
+            $dupKey = (string) ($ev['uid'] ?? '') . '|' . (string) ($ev['start'] ?? '') . '|' . (string) ($ev['end'] ?? '') . '|' . (string) ($ev['event_type'] ?? 'event');
+            if (isset($seenParsed[$dupKey])) {
+                continue;
+            }
+            $seenParsed[$dupKey] = true;
+            $deduped[] = $ev;
+        }
+        $parsed = $deduped;
+        $parsedCount = count($parsed);
+    }
     logMessage('INFO', 'ical sync step: parsed', ['subscription_id' => $subId, 'events_count' => $parsedCount, 'range' => $today . '..' . $toDate]);
     icalSubscriptionSyncStatusWrite($pdo, $subId, ['state' => 'saving', 'parsed_count' => $parsedCount]);
 
@@ -397,11 +417,62 @@ function icalEventsSyncSubscription(PDO $pdo, array $sub, string $today, string 
 }
 
 /**
+ * Acquire a per-user exclusive non-blocking file lock for iCal sync.
+ *
+ * Returns the open file handle on success, or null when another sync is
+ * already running. The handle MUST be released via icalEventsReleaseSyncLock()
+ * (we keep the file pointer open so flock() stays held).
+ *
+ * Why a file lock (not a DB row): SQLite WAL mode + multiple PHP workers makes
+ * "claim a row" patterns fragile. flock() is OS-level, auto-released if the
+ * PHP process crashes, and needs zero schema changes. Per-user file path
+ * means two different users never block each other.
+ *
+ * @param string $lockFilePath Absolute path; usually `<user-db>.ical-sync.lock`.
+ * @return resource|null Open file handle, or null if another sync holds the lock.
+ */
+function icalEventsAcquireSyncLock(string $lockFilePath) {
+    // 'c+' creates the file if it doesn't exist and opens for read/write.
+    // We never write meaningful bytes; the file is only a lock token.
+    $fh = @fopen($lockFilePath, 'c+');
+    if ($fh === false) {
+        // Lock dir not writable etc — degrade gracefully: no lock guard,
+        // behave like before (concurrent syncs possible but no hard error).
+        logMessage('NOTICE', 'ical sync: lock file unopenable, skipping single-flight guard', ['path' => $lockFilePath]);
+        return null;
+    }
+    $wouldBlock = false;
+    $ok = @flock($fh, LOCK_EX | LOCK_NB, $wouldBlock);
+    if (!$ok) {
+        @fclose($fh);
+        return null;
+    }
+    return $fh;
+}
+
+/**
+ * Release a lock previously taken by icalEventsAcquireSyncLock().
+ *
+ * @param resource $fh
+ */
+function icalEventsReleaseSyncLock($fh): void {
+    if (!is_resource($fh)) return;
+    @flock($fh, LOCK_UN);
+    @fclose($fh);
+}
+
+/**
  * Load enabled subscriptions and run conditional sync (same rules as HTTP GET).
+ *
+ * Cross-device single-flight: when $lockFilePath is provided and another
+ * sync is already in progress for this user, this function does NOT fetch
+ * feeds. Instead it returns a subscription_sync report where every entry has
+ * `attempted: false, skip_reason: 'another_sync_in_progress'` so callers /
+ * UI can show "Syncing…" without firing a duplicate download.
  *
  * @return array{allErrors: array, subscription_sync: array}
  */
-function icalEventsRunSyncSubscriptionsForPdo(PDO $pdo, bool $forceSync, bool $syncIfStale): array {
+function icalEventsRunSyncSubscriptionsForPdo(PDO $pdo, bool $forceSync, bool $syncIfStale, ?string $lockFilePath = null): array {
     try {
         $stmt = $pdo->query('SELECT id, feed_url, last_synced_at FROM ical_subscriptions WHERE COALESCE(enabled, 1) = 1 ORDER BY id');
         $subscriptions = $stmt ? $stmt->fetchAll(PDO::FETCH_ASSOC) : [];
@@ -438,49 +509,81 @@ function icalEventsRunSyncSubscriptionsForPdo(PDO $pdo, bool $forceSync, bool $s
         $syncIfStale = true;
     }
 
-    $allErrors = [];
-    $subscriptionSyncReport = [];
-    foreach ($subscriptions as $sub) {
-        $subId = (int) $sub['id'];
-        $lastSynced = isset($sub['last_synced_at']) ? trim((string) $sub['last_synced_at']) : null;
-        $shouldSync = $forceSync;
-        $reason = '';
-        if (!$shouldSync && $syncIfStale) {
-            if ($lastSynced === null || $lastSynced === '') {
-                $shouldSync = true;
-                $reason = 'first_sync';
-            } else {
-                $lastTs = @strtotime($lastSynced);
-                if ($lastTs === false) {
-                    $shouldSync = true;
-                    $reason = 'invalid_last_sync_timestamp';
-                } elseif ((time() - $lastTs) >= $staleThreshold) {
-                    $shouldSync = true;
-                    $reason = 'stale';
-                }
+    // Cross-device single-flight: try to claim the per-user sync lock BEFORE
+    // doing any network work. If another worker (other tab, other device, or
+    // the cron) already holds it, short-circuit with skip_reason on every
+    // subscription so the client UI can show "Syncing…" without re-issuing
+    // the download. When no lock path is supplied we keep the legacy
+    // behavior (no cross-process guard).
+    $lockHandle = null;
+    if ($lockFilePath !== null) {
+        $lockHandle = icalEventsAcquireSyncLock($lockFilePath);
+        if ($lockHandle === null) {
+            logMessage('INFO', 'ical_events sync skipped (another_sync_in_progress)', [
+                'subscriptions_count' => count($subscriptions),
+                'lock_path' => $lockFilePath,
+            ]);
+            $report = [];
+            foreach ($subscriptions as $sub) {
+                $report[] = [
+                    'subscription_id' => (int) $sub['id'],
+                    'attempted' => false,
+                    'skip_reason' => 'another_sync_in_progress',
+                ];
             }
-        } elseif ($shouldSync) {
-            $reason = 'force';
+            return ['allErrors' => [], 'subscription_sync' => $report];
         }
-        if (!$shouldSync) {
-            $subscriptionSyncReport[] = [
-                'subscription_id' => $subId,
-                'attempted' => false,
-                'skip_reason' => 'cache_fresh',
-            ];
-            continue;
-        }
-        logMessage('INFO', 'ical_events syncing subscription', ['subscription_id' => $subId, 'reason' => $reason]);
-        $icalTimeout = getIcalFetchTimeout();
-        $errs = icalEventsSyncSubscription($pdo, $sub, $today, $toDateSync, $icalTimeout, $staleThreshold);
-        $allErrors = array_merge($allErrors, $errs);
-        $subscriptionSyncReport[] = [
-            'subscription_id' => $subId,
-            'attempted' => true,
-            'trigger_reason' => $reason,
-            'feed_errors' => $errs,
-        ];
     }
 
-    return ['allErrors' => $allErrors, 'subscription_sync' => $subscriptionSyncReport];
+    try {
+        $allErrors = [];
+        $subscriptionSyncReport = [];
+        foreach ($subscriptions as $sub) {
+            $subId = (int) $sub['id'];
+            $lastSynced = isset($sub['last_synced_at']) ? trim((string) $sub['last_synced_at']) : null;
+            $shouldSync = $forceSync;
+            $reason = '';
+            if (!$shouldSync && $syncIfStale) {
+                if ($lastSynced === null || $lastSynced === '') {
+                    $shouldSync = true;
+                    $reason = 'first_sync';
+                } else {
+                    $lastTs = @strtotime($lastSynced);
+                    if ($lastTs === false) {
+                        $shouldSync = true;
+                        $reason = 'invalid_last_sync_timestamp';
+                    } elseif ((time() - $lastTs) >= $staleThreshold) {
+                        $shouldSync = true;
+                        $reason = 'stale';
+                    }
+                }
+            } elseif ($shouldSync) {
+                $reason = 'force';
+            }
+            if (!$shouldSync) {
+                $subscriptionSyncReport[] = [
+                    'subscription_id' => $subId,
+                    'attempted' => false,
+                    'skip_reason' => 'cache_fresh',
+                ];
+                continue;
+            }
+            logMessage('INFO', 'ical_events syncing subscription', ['subscription_id' => $subId, 'reason' => $reason]);
+            $icalTimeout = getIcalFetchTimeout();
+            $errs = icalEventsSyncSubscription($pdo, $sub, $today, $toDateSync, $icalTimeout, $staleThreshold);
+            $allErrors = array_merge($allErrors, $errs);
+            $subscriptionSyncReport[] = [
+                'subscription_id' => $subId,
+                'attempted' => true,
+                'trigger_reason' => $reason,
+                'feed_errors' => $errs,
+            ];
+        }
+
+        return ['allErrors' => $allErrors, 'subscription_sync' => $subscriptionSyncReport];
+    } finally {
+        if ($lockHandle !== null) {
+            icalEventsReleaseSyncLock($lockHandle);
+        }
+    }
 }

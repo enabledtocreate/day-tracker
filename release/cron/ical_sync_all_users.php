@@ -52,7 +52,11 @@ foreach ($users as $u) {
     }
     try {
         $pdo = getPdoForUserSqlitePath($path);
-        $r = icalEventsRunSyncSubscriptionsForPdo($pdo, false, true);
+        // Use the same per-user lock file as api/ical_events.php so the cron
+        // and HTTP-driven syncs serialize against each other. If a device is
+        // currently downloading, the cron quietly skips this user.
+        $lockFilePath = $path . '.ical-sync.lock';
+        $r = icalEventsRunSyncSubscriptionsForPdo($pdo, false, true, $lockFilePath);
         logMessage('INFO', 'ical_sync_all_users: user ok', [
             'user_id' => $uid,
             'username' => $name,

@@ -1,7 +1,7 @@
 <?php
 /**
- * Base class for API tests: test env (temp dir, master + user DB, session), request() helper.
- * Run this testsuite with process isolation so getPdo()/getMasterPdo() statics don't leak.
+ * Base class for API tests: temp dir, master + user DB, and request() via subprocess
+ * (tests/api_request_harness.php) so api/*.php can call exit without stopping PHPUnit.
  */
 
 use PHPUnit\Framework\TestCase;
@@ -47,42 +47,12 @@ abstract class ApiTestCase extends TestCase {
      */
     protected function request(string $method, string $uri, array $query = [], $body = null): array {
         $scriptName = str_ends_with($uri, '.php') ? $uri : $uri . '.php';
-        $apiDir = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'api';
-        $scriptPath = $apiDir . DIRECTORY_SEPARATOR . $scriptName;
+        $root = dirname(__DIR__, 2);
+        $scriptPath = $root . DIRECTORY_SEPARATOR . 'api' . DIRECTORY_SEPARATOR . $scriptName;
         if (!is_file($scriptPath)) {
             throw new \InvalidArgumentException('API script not found: ' . $scriptPath);
         }
 
-        $_SERVER['REQUEST_METHOD'] = $method;
-        $_SERVER['REQUEST_URI'] = '/api/' . $scriptName . ($query ? '?' . http_build_query($query) : '');
-        $_GET = $query;
-        $_POST = [];
-
-        $GLOBALS['_DAYTRACKER_TEST_RAW_INPUT'] = null;
-        if ($body !== null && in_array($method, ['POST', 'PATCH', 'PUT'], true)) {
-            $GLOBALS['_DAYTRACKER_TEST_RAW_INPUT'] = is_string($body) ? $body : json_encode($body);
-        }
-
-        ob_start();
-        $code = 200;
-        try {
-            require $scriptPath;
-        } catch (\Throwable $e) {
-            $code = http_response_code() ?: 500;
-            if (ob_get_length()) {
-                ob_end_flush();
-            } else {
-                ob_end_clean();
-            }
-            throw $e;
-        }
-        $output = ob_get_clean();
-        $code = http_response_code() ?: $code;
-
-        $decoded = @json_decode($output, true);
-        return [
-            'body' => $decoded !== null ? $decoded : $output,
-            'code' => $code,
-        ];
+        return runApiRequestHarness($this->dataDir, $this->testUser, $scriptName, $method, $query, $body);
     }
 }

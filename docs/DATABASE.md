@@ -41,7 +41,8 @@ Key tables (see DBML for full columns and constraints):
 
 ### 4.1 Core task and schedule
 
-- **`tasks`** – Title, priority, recurring + `recurrence_rule`, `parent_id` (task groups / legacy nesting), `group_order`, `due_date`, `list_state`, `list_style`, `is_common` (Common Tasks template), timestamps.
+- **`tasks`** – Title, priority, recurring + `recurrence_rule`, `parent_id` (task groups / legacy nesting), `group_order`, `due_date`, `list_state`, `list_style`, `is_common` (Common Tasks template), `auto_complete_eod`, `auto_priority_*`, `favorite_folder_id`, **`default_block_id`** (FK → `task_blocks`, for Auto Block), **`default_duration_intervals`** (schedule increment steps, default 1), timestamps.
+- **`task_blocks`** – Reusable schedule block types (name, color, icon); instances on a day live in **`schedule_blocks`**.
 - **`task_links`** – URLs + optional description per task; unique `(task_id, url)`.
 - **`task_list_items`** – Bullet/checklist lines: `content`, `order_index`, `completed`.
 - **`day_record`** – Calendar days the app references (`date` unique `YYYY-MM-DD`).
@@ -49,7 +50,7 @@ Key tables (see DBML for full columns and constraints):
 
 ### 4.2 Per-user settings
 
-- **`app_settings`** – Key/value (e.g. `start_hour`, `end_hour`, increment, `timezone`).
+- **`app_settings`** – Key/value (e.g. `start_hour`, `end_hour`, increment, `timezone`, `contact_link_json` for contact-link open preferences, layout/priority JSON blobs).
 
 ### 4.3 iCal (inbound)
 

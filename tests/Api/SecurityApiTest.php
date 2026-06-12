@@ -27,7 +27,7 @@ final class SecurityApiTest extends ApiTestCase
 
         $rowB = $master->query("SELECT id, username, db_name, is_admin FROM users WHERE username = 'userb'")->fetch(PDO::FETCH_ASSOC);
         $rowB['force_password_reset'] = 0;
-        setTestSessionUser($rowB);
+        $this->testUser = $rowB;
 
         $resListB = $this->request('GET', 'tasks');
         $this->assertSame(200, $resListB['code']);

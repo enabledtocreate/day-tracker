@@ -4,7 +4,10 @@ import { vi } from 'vitest';
 
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
 
-vi.mock('@/lib/getBaseUrl', () => ({ getBaseUrl: () => '/' }));
+vi.mock('@/lib/getBaseUrl', () => ({
+  getBaseUrl: () => '/',
+  resolveAppUrl: (path: string) => '/' + path.replace(/^\//, ''),
+}));
 
 // jsdom doesn't implement pointer capture; schedule resize/drag handlers call these.
 // Provide safe no-op implementations so unit tests can dispatch pointer events.
@@ -19,6 +22,23 @@ if (!('releasePointerCapture' in HTMLElement.prototype)) {
     value: () => {},
     configurable: true,
   });
+}
+
+// jsdom may not define PointerEvent; schedule resize dispatches PointerEvent on window/handles.
+if (typeof (globalThis as unknown as { PointerEvent?: unknown }).PointerEvent === 'undefined') {
+  const PointerEventPolyfill = class extends MouseEvent {
+    pointerId: number;
+    pointerType: string;
+    isPrimary: boolean;
+    constructor(type: string, init: PointerEventInit = {}) {
+      super(type, init);
+      this.pointerId = init.pointerId ?? 0;
+      this.pointerType = (init.pointerType as string) ?? 'mouse';
+      this.isPrimary = init.isPrimary ?? true;
+    }
+  };
+  (globalThis as unknown as { PointerEvent: typeof PointerEventPolyfill }).PointerEvent =
+    PointerEventPolyfill as unknown as typeof PointerEvent;
 }
 
 // jsdom doesn't implement <dialog>.showModal/close.

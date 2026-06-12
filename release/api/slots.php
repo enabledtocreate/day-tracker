@@ -11,6 +11,62 @@ $pdo = getPdoSafe();
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 logMessage('INFO', 'slots.php branch', ['method' => $method, 'user_id' => $userId]);
 
+function ensureRecurringOccurrenceStateTable(PDO $pdo): void
+{
+    $pdo->exec("CREATE TABLE IF NOT EXISTS recurring_occurrence_state (
+        recurring_task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        occurrence_date TEXT NOT NULL,
+        completed_for_day INTEGER NOT NULL DEFAULT 0,
+        overridden_task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+        source_slot_id INTEGER REFERENCES scheduled_slots(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (recurring_task_id, occurrence_date)
+    )");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_recurring_occurrence_state_day ON recurring_occurrence_state (occurrence_date)");
+}
+
+function upsertRecurringOccurrenceCompletion(PDO $pdo, int $taskId, string $date, ?int $slotId = null): void
+{
+    ensureRecurringOccurrenceStateTable($pdo);
+    $stmt = $pdo->prepare(
+        "INSERT INTO recurring_occurrence_state (recurring_task_id, occurrence_date, completed_for_day, source_slot_id, updated_at)
+         VALUES (?, ?, 1, ?, datetime('now'))
+         ON CONFLICT(recurring_task_id, occurrence_date) DO UPDATE SET
+           completed_for_day = 1,
+           source_slot_id = COALESCE(excluded.source_slot_id, recurring_occurrence_state.source_slot_id),
+           updated_at = datetime('now')"
+    );
+    $stmt->execute([$taskId, $date, $slotId]);
+}
+
+function clearRecurringOccurrenceCompletion(PDO $pdo, int $taskId, string $date): void
+{
+    ensureRecurringOccurrenceStateTable($pdo);
+    $pdo->prepare(
+        "UPDATE recurring_occurrence_state
+         SET completed_for_day = 0, source_slot_id = NULL, updated_at = datetime('now')
+         WHERE recurring_task_id = ? AND occurrence_date = ?"
+    )->execute([$taskId, $date]);
+    $pdo->prepare(
+        "DELETE FROM recurring_occurrence_state
+         WHERE recurring_task_id = ? AND occurrence_date = ? AND completed_for_day = 0 AND overridden_task_id IS NULL"
+    )->execute([$taskId, $date]);
+}
+
+function upsertRecurringOccurrenceOverride(PDO $pdo, int $taskId, string $date, ?int $overrideTaskId = null): void
+{
+    ensureRecurringOccurrenceStateTable($pdo);
+    $stmt = $pdo->prepare(
+        "INSERT INTO recurring_occurrence_state (recurring_task_id, occurrence_date, overridden_task_id, updated_at)
+         VALUES (?, ?, ?, datetime('now'))
+         ON CONFLICT(recurring_task_id, occurrence_date) DO UPDATE SET
+           overridden_task_id = excluded.overridden_task_id,
+           updated_at = datetime('now')"
+    );
+    $stmt->execute([$taskId, $date, $overrideTaskId]);
+}
+
 if ($method === 'GET') {
     $slotId = isset($_GET['id']) ? (int) $_GET['id'] : 0;
     $dayId = isset($_GET['day_id']) ? (int) $_GET['day_id'] : 0;
@@ -74,6 +130,22 @@ if ($method === 'GET') {
         }
         $recurringStmt->execute();
         $recurringTasks = $recurringStmt->fetchAll(PDO::FETCH_ASSOC);
+        $overrideSkip = [];
+        try {
+            ensureRecurringOccurrenceStateTable($pdo);
+            $ovStmt = $pdo->prepare("
+                SELECT recurring_task_id, occurrence_date
+                FROM recurring_occurrence_state
+                WHERE occurrence_date >= ? AND occurrence_date <= ?
+                  AND (completed_for_day = 1 OR overridden_task_id IS NOT NULL)
+            ");
+            $ovStmt->execute([$fromDate, $toDate]);
+            while ($ov = $ovStmt->fetch(PDO::FETCH_ASSOC)) {
+                $overrideSkip[((string) $ov['occurrence_date']) . '|' . (int) $ov['recurring_task_id']] = true;
+            }
+        } catch (Throwable $e) {
+            logMessage('NOTICE', 'slots listByDateRange override map unavailable', ['message' => $e->getMessage()]);
+        }
         foreach ($recurringTasks as $task) {
             $tid = (int) $task['task_id'];
             $rule = null;
@@ -92,6 +164,10 @@ if ($method === 'GET') {
                 }
                 $occurrences++;
                 if ($current >= $fromDate) {
+                    if (isset($overrideSkip[$current . '|' . $tid])) {
+                        $current = date('Y-m-d', strtotime($current . ' +1 day'));
+                        continue;
+                    }
                     if (!isset($byDate[$current])) {
                         $byDate[$current] = [];
                     }
@@ -216,8 +292,27 @@ if ($method === 'GET') {
             ");
         }
         $recurringStmt->execute();
+        $overrideSkipTaskIds = [];
+        try {
+            ensureRecurringOccurrenceStateTable($pdo);
+            $ovStmt = $pdo->prepare("
+                SELECT recurring_task_id
+                FROM recurring_occurrence_state
+                WHERE occurrence_date = ?
+                  AND (completed_for_day = 1 OR overridden_task_id IS NOT NULL)
+            ");
+            $ovStmt->execute([$dayDate]);
+            while ($ov = $ovStmt->fetch(PDO::FETCH_ASSOC)) {
+                $overrideSkipTaskIds[(int) $ov['recurring_task_id']] = true;
+            }
+        } catch (Throwable $e) {
+            logMessage('NOTICE', 'slots list override map unavailable', ['message' => $e->getMessage()]);
+        }
         while ($task = $recurringStmt->fetch(PDO::FETCH_ASSOC)) {
             $tid = (int) $task['task_id'];
+            if (isset($overrideSkipTaskIds[$tid])) {
+                continue;
+            }
             if (in_array($tid, $realTaskIdsOnDay, true)) {
                 continue;
             }
@@ -337,6 +432,14 @@ if ($method === 'POST') {
     }
     $taskId = (int) $in['task_id'];
 
+    if (!empty($in['mark_occurrence_override']) && !empty($in['date']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) $in['date'])) {
+        $date = (string) $in['date'];
+        $overrideTaskId = isset($in['override_task_id']) && (int) $in['override_task_id'] > 0 ? (int) $in['override_task_id'] : null;
+        upsertRecurringOccurrenceOverride($pdo, $taskId, $date, $overrideTaskId);
+        jsonResponse(['ok' => true]);
+        exit;
+    }
+
     if (!empty($in['complete_occurrence']) && !empty($in['date']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $in['date'])) {
         logMessage('INFO', 'slots POST complete_occurrence', ['task_id' => $taskId, 'date' => $in['date']]);
         $occDate = $in['date'];
@@ -356,24 +459,55 @@ if ($method === 'POST') {
             jsonError('Recurring task not found');
             exit;
         }
-        $startTime = isset($in['start_time']) && (string)$in['start_time'] !== '' ? (string)$in['start_time'] : '09:00';
-        $endTime = isset($in['end_time']) && (string)$in['end_time'] !== '' ? (string)$in['end_time'] : '09:30';
-        if (!empty($task['recurrence_rule'])) {
+        $startTime = isset($in['start_time']) && (string)$in['start_time'] !== '' ? (string)$in['start_time'] : null;
+        $endTime = isset($in['end_time']) && (string)$in['end_time'] !== '' ? (string)$in['end_time'] : null;
+        if (($startTime === null || $endTime === null) && !empty($task['recurrence_rule'])) {
             $rule = @json_decode($task['recurrence_rule'], true);
             if (is_array($rule) && !empty($rule['time'])) {
                 $parts = array_map('intval', explode(':', $rule['time']));
                 $h = $parts[0] ?? 9;
                 $m = $parts[1] ?? 0;
-                $startTime = sprintf('%02d:%02d', $h, $m);
-                $endM = $m + 30;
-                $endH = $h + (int) floor($endM / 60);
-                $endM = $endM % 60;
-                $endTime = sprintf('%02d:%02d', $endH, $endM);
+                if ($startTime === null) {
+                    $startTime = sprintf('%02d:%02d', $h, $m);
+                }
+                if ($endTime === null) {
+                    $endM = $m + 30;
+                    $endH = $h + (int) floor($endM / 60);
+                    $endM = $endM % 60;
+                    $endTime = sprintf('%02d:%02d', $endH, $endM);
+                }
             }
+        }
+        if ($startTime === null) $startTime = '09:00';
+        if ($endTime === null) $endTime = '09:30';
+        [$startTime, $endTime] = dataIntegrityCoerceSlotTimeFramePair($pdo, $startTime, $endTime);
+        $existingStmt = $pdo->prepare("
+            SELECT s.id, s.day_record_id, s.task_id, s.start_time, s.end_time, s.completed, s.order_index
+            FROM scheduled_slots s
+            JOIN day_record d ON d.id = s.day_record_id
+            WHERE s.task_id = ? AND d.date = ? AND s.completed = 1
+            ORDER BY s.id DESC
+            LIMIT 1
+        ");
+        $existingStmt->execute([$taskId, $occDate]);
+        $existing = $existingStmt->fetch(PDO::FETCH_ASSOC);
+        if ($existing) {
+            upsertRecurringOccurrenceCompletion($pdo, $taskId, $occDate, (int) $existing['id']);
+            jsonResponse([
+                'id' => (int) $existing['id'],
+                'day_record_id' => (int) $existing['day_record_id'],
+                'task_id' => (int) $existing['task_id'],
+                'start_time' => (string) $existing['start_time'],
+                'end_time' => (string) $existing['end_time'],
+                'completed' => true,
+                'order_index' => (int) $existing['order_index'],
+            ]);
+            exit;
         }
         $stmt = $pdo->prepare("INSERT INTO scheduled_slots (day_record_id, task_id, start_time, end_time, completed, order_index) VALUES (?, ?, ?, ?, 1, 999)");
         $stmt->execute([$dayId, $taskId, $startTime, $endTime]);
         $id = (int) $pdo->lastInsertId();
+        upsertRecurringOccurrenceCompletion($pdo, $taskId, $occDate, $id);
         logMessage('INFO', 'slots complete_occurrence ok', ['id' => $id, 'task_id' => $taskId, 'date' => $occDate]);
         jsonResponse(['id' => $id, 'day_record_id' => $dayId, 'task_id' => $taskId, 'start_time' => $startTime, 'end_time' => $endTime, 'completed' => true, 'order_index' => 999]);
         exit;
@@ -410,10 +544,32 @@ if ($method === 'PATCH') {
     }
     $updates = [];
     $params = [];
+    $recurringCompletionSync = null;
     if (array_key_exists('completed', $in)) {
         $completed = !empty($in['completed']) ? 1 : 0;
         $updates[] = 'completed = ?';
         $params[] = $completed;
+        try {
+            $slotMeta = $pdo->prepare("
+                SELECT s.task_id, d.date AS day_date, COALESCE(t.recurring, 0) AS recurring
+                FROM scheduled_slots s
+                JOIN day_record d ON d.id = s.day_record_id
+                JOIN tasks t ON t.id = s.task_id
+                WHERE s.id = ?
+            ");
+            $slotMeta->execute([$id]);
+            $slotRow = $slotMeta->fetch(PDO::FETCH_ASSOC);
+            if ($slotRow) {
+                $recurringCompletionSync = [
+                    'task_id' => (int) $slotRow['task_id'],
+                    'date' => (string) $slotRow['day_date'],
+                    'recurring' => (int) $slotRow['recurring'],
+                    'completed' => $completed,
+                ];
+            }
+        } catch (Throwable $e) {
+            logMessage('NOTICE', 'slots PATCH recurring completion sync skipped', ['id' => $id, 'message' => $e->getMessage()]);
+        }
         // Do not insert into accomplished — completed panel reads from scheduled_slots
     }
     if (array_key_exists('start_time', $in) && array_key_exists('end_time', $in)) {
@@ -445,6 +601,17 @@ if ($method === 'PATCH') {
     }
     $params[] = $id;
     $pdo->prepare("UPDATE scheduled_slots SET " . implode(', ', $updates) . " WHERE id = ?")->execute($params);
+    if (
+        is_array($recurringCompletionSync)
+        && (int) ($recurringCompletionSync['recurring'] ?? 0) === 1
+        && (string) ($recurringCompletionSync['date'] ?? '') === date('Y-m-d')
+    ) {
+        if ((int) ($recurringCompletionSync['completed'] ?? 0) === 1) {
+            upsertRecurringOccurrenceCompletion($pdo, (int) $recurringCompletionSync['task_id'], (string) $recurringCompletionSync['date'], $id);
+        } else {
+            clearRecurringOccurrenceCompletion($pdo, (int) $recurringCompletionSync['task_id'], (string) $recurringCompletionSync['date']);
+        }
+    }
     logMessage('INFO', 'slots update ok', ['id' => $id]);
     jsonResponse(['ok' => true]);
     exit;

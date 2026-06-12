@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[71855],{71855:function(e,t,n){n.r(t),n.d(t,{__iconNode:function(){return i},default:function(){return r}});var h=n(47411);let i=[["path",{d:"M12 3v18",key:"108xh3"}],["path",{d:"M3 12h18",key:"1i2n21"}],["rect",{x:"3",y:"3",width:"18",height:"18",rx:"2",key:"h1oib"}]],r=(0,h.Z)("grid-2x2",i)}}]);

@@ -1,10 +1,11 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import { Inter } from 'next/font/google';
+import { Providers } from '@/app/providers';
 import { DT } from '@/lib/uiIdentifiers';
-import { Geist } from "next/font/google";
-import { cn } from "@/lib/utils";
+import { cn } from '@/lib/utils';
 
-const geist = Geist({subsets:['latin'],variable:'--font-sans'});
+const inter = Inter({ subsets: ['latin'], variable: '--font-sans' });
 
 export const metadata: Metadata = {
   title: 'Day Tracker',
@@ -19,14 +20,16 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={cn("font-sans", geist.variable)}>
+    <html lang="en" className={cn('font-sans', inter.variable)} suppressHydrationWarning>
       <head>
         <link rel="icon" href={`${basePath}/favicon.ico`} type="image/x-icon" />
       </head>
       <body>
-        <div id="app" className={DT.appMount} data-baseurl={basePath}>
-          {children}
-        </div>
+        <Providers>
+          <div id="app" className={DT.appMount} data-baseurl={basePath}>
+            {children}
+          </div>
+        </Providers>
       </body>
     </html>
   );

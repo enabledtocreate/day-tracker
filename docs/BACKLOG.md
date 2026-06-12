@@ -33,6 +33,7 @@
 
 ## Near-term product / UX (2026-04)
 
+- **Priority representation (schedule & task list)**: Replace (or supplement) priority icon buttons with a **colored endcap** on task/schedule rows — bar or cap at the leading/trailing edge tinted from priority theme color. Design pass + settings toggle TBD.
 - **Anthropic + admin config parity**: Claude via **Vercel** (in addition to OpenAI). **Admin** should mirror **install-time** settings. **Claude API key** (and similar): API/UI expose **last 5 characters** only; **add** or **replace** only, not in-place edit.
 - **SSL + OAuth**: Fix deployment **SSL** so **Google / Outlook** SSO can be finished reliably.
 - **Schedule — grouped tasks (follow-up)**: confirm stacked **Group** row + segments match expectations on **mobile**; optional **remove** duplicate root **Ungroup** if redundant.

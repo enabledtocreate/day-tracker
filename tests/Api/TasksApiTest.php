@@ -71,6 +71,72 @@ final class TasksApiTest extends ApiTestCase
         }
     }
 
+    public function testDeleteGroupRootLeavesSiblings(): void
+    {
+        $root = $this->request('POST', 'tasks', [], ['title' => 'Group root']);
+        $child1 = $this->request('POST', 'tasks', [], ['title' => 'Child 1']);
+        $child2 = $this->request('POST', 'tasks', [], ['title' => 'Child 2']);
+        $rootId = (int) $root['body']['id'];
+        $child1Id = (int) $child1['body']['id'];
+        $child2Id = (int) $child2['body']['id'];
+
+        $this->request('PATCH', 'tasks', [], ['id' => $child1Id, 'parent_id' => $rootId]);
+        $this->request('PATCH', 'tasks', [], ['id' => $child2Id, 'parent_id' => $rootId]);
+
+        $resDel = $this->request('DELETE', 'tasks', ['id' => $rootId]);
+        $this->assertSame(200, $resDel['code']);
+
+        $res = $this->request('GET', 'tasks');
+        $ids = array_map(fn ($t) => (int) $t['id'], $res['body']['tasks'] ?? []);
+        $this->assertNotContains($rootId, $ids);
+        $this->assertContains($child1Id, $ids);
+        $this->assertContains($child2Id, $ids);
+        foreach ($res['body']['tasks'] as $t) {
+            if ((int) $t['id'] === $child1Id || (int) $t['id'] === $child2Id) {
+                $this->assertNull($t['parent_id'] ?? null);
+                $this->assertSame('unassigned', $t['list_state'] ?? null);
+            }
+        }
+    }
+
+    public function testDeleteGroupMemberLeavesOtherMembers(): void
+    {
+        $root = $this->request('POST', 'tasks', [], ['title' => 'Group root']);
+        $child1 = $this->request('POST', 'tasks', [], ['title' => 'Child 1']);
+        $child2 = $this->request('POST', 'tasks', [], ['title' => 'Child 2']);
+        $rootId = (int) $root['body']['id'];
+        $child1Id = (int) $child1['body']['id'];
+        $child2Id = (int) $child2['body']['id'];
+
+        $this->request('PATCH', 'tasks', [], ['id' => $child1Id, 'parent_id' => $rootId]);
+        $this->request('PATCH', 'tasks', [], ['id' => $child2Id, 'parent_id' => $rootId]);
+
+        $resDel = $this->request('DELETE', 'tasks', ['id' => $child1Id]);
+        $this->assertSame(200, $resDel['code']);
+
+        $res = $this->request('GET', 'tasks');
+        $byId = [];
+        foreach ($res['body']['tasks'] as $t) {
+            $byId[(int) $t['id']] = $t;
+        }
+        $this->assertArrayHasKey($rootId, $byId);
+        $this->assertArrayHasKey($child2Id, $byId);
+        $this->assertArrayNotHasKey($child1Id, $byId);
+        $this->assertSame($rootId, (int) ($byId[$child2Id]['parent_id'] ?? 0));
+    }
+
+    public function testGroupAttachSyncsChildListStateWithParent(): void
+    {
+        $root = $this->request('POST', 'tasks', [], ['title' => 'Root', 'list_state' => 'unassigned']);
+        $child = $this->request('POST', 'tasks', [], ['title' => 'Child', 'list_state' => 'pending']);
+        $rootId = (int) $root['body']['id'];
+        $childId = (int) $child['body']['id'];
+
+        $patch = $this->request('PATCH', 'tasks', [], ['id' => $childId, 'parent_id' => $rootId]);
+        $this->assertSame(200, $patch['code']);
+        $this->assertSame('unassigned', $patch['body']['task']['list_state'] ?? null);
+    }
+
     public function testPostWithRecurringAndRecurrenceRule(): void
     {
         $res = $this->request('POST', 'tasks', [], [

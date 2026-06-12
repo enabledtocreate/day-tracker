@@ -7,7 +7,9 @@ import { initLinkModal } from './links';
 import { initChatPanel } from './chat-panel';
 import { initCalendarView } from './calendar-view';
 import { initCompletedPanel, openCompletedPanelAndScrollToDate } from './completed-panel';
-import { initMobile } from './mobile';
+// Legacy mobile.ts gesture handlers were removed in favor of the React
+// `lib/mobileGestures.ts` coordinator. See `.apm/_WORKSPACE/TODO-mobile.md §0.9 Step 2`.
+const initMobile = (): void => undefined;
 import { api } from './api';
 import * as auth from './auth';
 

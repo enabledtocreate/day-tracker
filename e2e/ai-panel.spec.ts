@@ -124,7 +124,7 @@ async function mockOfflinePhpShell(page: Page) {
   await page.route('**/api/accomplished.php**', async (route) => {
     const u = new URL(route.request().url());
     if (u.searchParams.has('summary_org')) {
-      await route.fulfill(json({ days: [] }));
+      await route.fulfill(json({ days: [], block_days: [] }));
       return;
     }
     if (u.searchParams.has('list_all')) {
@@ -139,7 +139,7 @@ async function mockOfflinePhpShell(page: Page) {
   });
 
   await page.route('**/api/organization.php**', async (route) => {
-    await route.fulfill(json({ categories: [], subcategories: [], tags: [] }));
+    await route.fulfill(json({ categories: [], subcategories: [], tags: [], blocks: [] }));
   });
 
   await page.route('**/api/ical_events.php**', async (route) => {

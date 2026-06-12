@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[85981],{85981:function(e,c,n){n.r(c),n.d(c,{__iconNode:function(){return t},default:function(){return u}});var r=n(47411);let t=[["circle",{cx:"6",cy:"12",r:"4",key:"1ehtga"}],["circle",{cx:"18",cy:"12",r:"4",key:"4vafl8"}],["line",{x1:"6",x2:"18",y1:"16",y2:"16",key:"pmt8us"}]],u=(0,r.Z)("voicemail",t)}}]);

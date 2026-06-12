@@ -6,7 +6,8 @@ import type { Task } from './api';
 import { api } from './api';
 import { openLinkModalForTask, renderLinksUnderElement } from './links';
 import { appendTaskListItemsUI } from './task-list-items-ui';
-import { isMobileView } from './mobile';
+// Legacy mobile.ts removed (see `.apm/_WORKSPACE/TODO-mobile.md §0.9 Step 2`).
+const isMobileView = (): boolean => window.matchMedia('(max-width: 768px)').matches;
 import { confirmUnschedulePartiallyComplete } from './unschedule-modal';
 
 const unassignedListEl = document.getElementById('task-list-unassigned');

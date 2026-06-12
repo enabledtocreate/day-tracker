@@ -56,20 +56,39 @@ export type ListStyle = 'bullet' | 'checklist';
 export interface Task {
   id: number;
   title: string;
-  priority: Priority;
+  /** Priority slug: built-in `commitment`|`high`|`medium`|`low`, or custom ids from `priority_layout_json`. */
+  priority: string;
   recurring: boolean;
   recurrence_rule?: string | null;
   parent_id: number | null;
   group_order?: number;
   created_at: string;
   due_date?: string | null;
-  list_state?: 'unassigned' | 'pending';
+  /** Bucket slug: default `unassigned`|`pending`, or custom ids from `bucket_layout_json`. */
+  list_state?: string;
   list_style?: ListStyle;
   /** True when task is a Common Tasks template (orange border); scheduling uses a copy. */
   is_common?: boolean;
+  /**
+   * Opt-in: at end of day, any uncompleted slots for this task on the day that just
+   * ended are auto-marked complete by the client EOD runner. See
+   * `.apm/_WORKSPACE/TODO-mobile.md §0.7 / §0.9 Step 8`.
+   */
+  auto_complete_eod?: boolean;
+  /** Favorites subfolder (common root tasks only); null = unfiled. */
+  favorite_folder_id?: number | null;
   category_id?: number | null;
   subcategory_id?: number | null;
   tag_ids?: number[];
+  /** Per-task auto-raise (rollover applies daily). */
+  auto_priority_enabled?: number | boolean;
+  auto_priority_mode?: 'days' | 'due_date';
+  auto_priority_days_per_step?: number;
+  auto_priority_anchor_date?: string | null;
+  /** Default organization block type for Auto Block scheduling. */
+  default_block_id?: number | null;
+  /** Duration on schedule in increment steps (default 1). */
+  default_duration_intervals?: number;
 }
 
 export interface TaskLink {
@@ -110,6 +129,24 @@ export interface ScheduledSlot {
   is_recurring_occurrence?: boolean;
 }
 
+export interface ScheduleBlock {
+  id: number;
+  day_record_id: number;
+  block_id: number;
+  start_time: string;
+  end_time: string;
+  block_name?: string;
+  block_color?: string | null;
+  /** Lucide icon name from task_blocks.icon */
+  block_icon?: string | null;
+}
+
+export interface FavoriteFolder {
+  id: number;
+  name: string;
+  sort_order: number;
+}
+
 export interface TimeSettings {
   start_hour: number;
   end_hour: number;
@@ -119,6 +156,76 @@ export interface TimeSettings {
   timezone?: string;
   /** Desktop: `stacked` = tasks above schedule (default); `split` = task column left, schedule right. */
   task_schedule_layout?: 'stacked' | 'split';
+  /** `dark` (default) or `light` day mode for the main UI shell. */
+  ui_theme?: 'dark' | 'light';
+  /** JSON object: per-priority { label, icon, color? } for task list & schedule UI (DB key `priority_theme_json`). */
+  priority_theme_json?: string | null;
+  /** JSON v2: `{ version:2, mode:"custom", priorities:[{id,label,icon,color?}] }` — arbitrary priority slugs on tasks. */
+  priority_layout_json?: string | null;
+  /** JSON { unassigned, pending } section titles (DB key `bucket_labels_json`). */
+  bucket_labels_json?: string | null;
+  /** JSON v2: `{ version:2, mode:"custom", buckets:[{id,label}] }` — arbitrary list buckets. */
+  bucket_layout_json?: string | null;
+  /** When scheduling with “increase priority automatically”, set task priority to this slug (default high when present). */
+  due_auto_priority_target?: string | null;
+  /** Global auto-priority algorithm (Schedule Settings). Per-task only toggles participation. */
+  auto_priority_default_mode?: 'days' | 'due_date';
+  auto_priority_default_days_per_step?: number;
+  /** Open-Meteo latitude / longitude for schedule weather lane. */
+  weather_latitude?: number | null;
+  weather_longitude?: number | null;
+  /** Display label for weather location (city search or "My location"). */
+  weather_location_label?: string | null;
+  /** Temperature display unit for weather lane (default Celsius). */
+  weather_temp_unit?: 'C' | 'F' | string;
+  /** Hide category / subcategory line on schedule time blocks. */
+  schedule_hide_category_subcategory?: boolean;
+  /** Hide tag pills on schedule time blocks. */
+  schedule_hide_tags?: boolean;
+  /** Mobile-only: simplified read-only schedule view (see TODO-mobile.md §0.6). */
+  mobile_schedule_glance?: boolean;
+  /** JSON bulk import / quick-add preferences. */
+  bulk_import_json?: string | null;
+  /** JSON contact-link open preferences (email/phone handlers, Gmail slot). */
+  contact_link_json?: string | null;
+}
+
+export type BulkImportResult = {
+  ok: boolean;
+  imported?: number;
+  created?: number;
+  validated?: number;
+  errors: string[];
+  cell_errors?: Record<number, Record<string, string>>;
+  grid_headers?: string[];
+  grid_rows?: Array<Record<string, string>>;
+};
+
+export interface GeocodeResult {
+  id: number;
+  name: string;
+  latitude: number;
+  longitude: number;
+  admin1?: string;
+  country?: string;
+}
+
+export interface WeatherForecastResponse {
+  hourly: {
+    time: string[];
+    temperature_2m: (number | null)[];
+    precipitation_probability: (number | null)[];
+    weather_code: (number | null)[];
+  };
+  daily: {
+    time: string[];
+    weather_code: (number | null)[];
+    temperature_2m_max: (number | null)[];
+    temperature_2m_min: (number | null)[];
+    precipitation_probability_max: (number | null)[];
+    sunrise: string[];
+    sunset: string[];
+  };
 }
 
 export interface IcalSubscriptionRow {
@@ -153,7 +260,7 @@ export interface IcalSubscriptionSyncEntry {
 
 export const api = {
   tasks: {
-    list: (params?: { list_state?: 'unassigned' | 'pending'; common?: boolean; view?: 'incomplete'; day?: string; with?: string }) => {
+    list: (params?: { list_state?: string; common?: boolean; view?: 'incomplete'; day?: string; with?: string }) => {
       const q = new URLSearchParams();
       if (params?.list_state) q.set('list_state', params.list_state);
       if (params?.common) q.set('common', '1');
@@ -165,17 +272,66 @@ export const api = {
     },
     create: (data: {
       title?: string;
-      priority?: Priority;
+      priority?: string;
       recurring?: boolean;
       parent_id?: number | null;
       list_style?: ListStyle;
       is_common?: boolean;
+      favorite_folder_id?: number | null;
       copy_from?: number;
-      list_state?: 'unassigned' | 'pending';
+      list_state?: string;
+      due_date?: string | null;
+      auto_complete_eod?: boolean;
+      default_block_id?: number | null;
+      default_duration_intervals?: number;
     }) => request<Task & { id: number }>('api/tasks.php', { method: 'POST', body: data }),
-    update: (data: { id: number; title?: string; priority?: Priority; recurring?: boolean; recurrence_rule?: string | null; parent_id?: number | null; group_order?: number; due_date?: string | null; list_state?: 'unassigned' | 'pending'; list_style?: ListStyle; is_common?: boolean; category_id?: number | null; subcategory_id?: number | null; tag_ids?: number[] }) =>
+    update: (data: {
+      id: number;
+      title?: string;
+      priority?: string;
+      recurring?: boolean;
+      recurrence_rule?: string | null;
+      parent_id?: number | null;
+      group_order?: number;
+      due_date?: string | null;
+      list_state?: string;
+      list_style?: ListStyle;
+      is_common?: boolean;
+      favorite_folder_id?: number | null;
+      category_id?: number | null;
+      subcategory_id?: number | null;
+      tag_ids?: number[];
+      auto_priority_enabled?: boolean;
+      auto_complete_eod?: boolean;
+      default_block_id?: number | null;
+      default_duration_intervals?: number;
+    }) =>
       request<{ ok: boolean; task?: Task }>('api/tasks.php', { method: 'PATCH', body: data }),
     delete: (id: number) => request<{ ok: boolean }>(`api/tasks.php?id=${id}`, { method: 'DELETE' }),
+  },
+  tasksBulk: {
+    import: (rows: Array<Record<string, string>>, validateOnly?: boolean) =>
+      request<BulkImportResult>('api/tasks_bulk_import.php', {
+        method: 'POST',
+        body: { rows, validate_only: !!validateOnly },
+      }),
+    quickAdd: (payload: {
+      titles: string[];
+      list_state?: string;
+      priority?: string;
+      due_date?: string | null;
+      category_id?: number | null;
+      subcategory_id?: number | null;
+      tag_ids?: number[];
+      auto_priority_enabled?: boolean;
+      auto_complete_eod?: boolean;
+      default_block_id?: number | null;
+      default_duration_intervals?: number;
+    }) =>
+      request<{ ok: boolean; created: number }>('api/tasks_quick_add.php', {
+        method: 'POST',
+        body: payload,
+      }),
   },
   day: {
     getOrCreate: (date: string) => request<DayRecord>(`api/day.php?date=${encodeURIComponent(date)}`),
@@ -207,6 +363,16 @@ export const api = {
           ...(endTime ? { end_time: endTime } : {}),
         },
       }),
+    markOccurrenceOverride: (taskId: number, date: string, overrideTaskId?: number) =>
+      request<{ ok: boolean }>('api/slots.php', {
+        method: 'POST',
+        body: {
+          task_id: taskId,
+          date,
+          mark_occurrence_override: true,
+          ...(overrideTaskId && overrideTaskId > 0 ? { override_task_id: overrideTaskId } : {}),
+        },
+      }),
     update: (data: { id: number; completed?: boolean; start_time?: string | null; end_time?: string | null; order_index?: number; parent_id?: number | null }) => {
       const body: Record<string, unknown> = { id: data.id };
       if (data.completed !== undefined) body.completed = data.completed ? 1 : 0;
@@ -217,6 +383,19 @@ export const api = {
       return request<{ ok: boolean }>('api/slots.php', { method: 'PATCH', body });
     },
     delete: (id: number) => request<{ ok: boolean }>(`api/slots.php?id=${id}`, { method: 'DELETE' }),
+  },
+  scheduleBlocks: {
+    list: (dayId: number) =>
+      request<{ blocks: ScheduleBlock[] }>(`api/schedule_blocks.php?day_id=${encodeURIComponent(String(dayId))}`),
+    listByDateRange: (fromDate: string, toDate: string) =>
+      request<{ byDate: Record<string, ScheduleBlock[]> }>(
+        `api/schedule_blocks.php?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}`
+      ),
+    create: (data: { day_record_id: number; block_id: number; start_time: string; end_time: string }) =>
+      request<ScheduleBlock>('api/schedule_blocks.php', { method: 'POST', body: data }),
+    update: (data: { id: number; block_id?: number; start_time?: string; end_time?: string }) =>
+      request<{ ok: boolean }>('api/schedule_blocks.php', { method: 'PATCH', body: data }),
+    delete: (id: number) => request<{ ok: boolean }>(`api/schedule_blocks.php?id=${encodeURIComponent(String(id))}`, { method: 'DELETE' }),
   },
   links: {
     list: (taskId: number) => request<{ links: TaskLink[] }>(`api/links.php?task_id=${taskId}`),
@@ -238,18 +417,54 @@ export const api = {
   },
   settings: {
     get: () => request<TimeSettings>('api/settings.php'),
-    update: (data: Partial<TimeSettings>) =>
-      request<{ ok: boolean }>('api/settings.php', {
-        method: 'PATCH',
-        body: {
-          start_hour: data.start_hour,
-          end_hour: data.end_hour,
-          increment_value: data.increment_value,
-          increment_unit: data.increment_unit,
-          timezone: data.timezone,
-          task_schedule_layout: data.task_schedule_layout,
-        },
-      }),
+    update: (data: Partial<TimeSettings>) => {
+      const keys = [
+        'start_hour',
+        'end_hour',
+        'increment_value',
+        'increment_unit',
+        'timezone',
+        'task_schedule_layout',
+        'priority_theme_json',
+        'priority_layout_json',
+        'bucket_labels_json',
+        'bucket_layout_json',
+        'due_auto_priority_target',
+        'auto_priority_default_mode',
+        'auto_priority_default_days_per_step',
+        'ui_theme',
+        'weather_latitude',
+        'weather_longitude',
+        'weather_location_label',
+        'weather_temp_unit',
+        'schedule_hide_category_subcategory',
+        'schedule_hide_tags',
+        'mobile_schedule_glance',
+        'bulk_import_json',
+        'contact_link_json',
+      ] as const;
+      const body: Record<string, unknown> = {};
+      for (const key of keys) {
+        if (data[key] !== undefined) body[key] = data[key];
+      }
+      return request<{ ok: boolean }>('api/settings.php', { method: 'PATCH', body });
+    },
+  },
+  weather: {
+    get: (lat: number, lon: number, from: string, to: string, tempUnit?: 'C' | 'F') => {
+      const q = new URLSearchParams({
+        lat: String(lat),
+        lon: String(lon),
+        from,
+        to,
+      });
+      if (tempUnit === 'F') q.set('temp_unit', 'fahrenheit');
+      return request<WeatherForecastResponse>(`api/weather.php?${q.toString()}`);
+    },
+  },
+  geocode: {
+    search: (query: string) =>
+      request<{ results: GeocodeResult[] }>(`api/geocode.php?q=${encodeURIComponent(query)}`),
   },
   accomplished: {
     listByDate: (date: string) => request<{ accomplished: Array<{ id: number; task_id: number; title: string; completed_at: string }> }>(`api/accomplished.php?date=${encodeURIComponent(date)}`),
@@ -278,9 +493,17 @@ export const api = {
               links: TaskLink[];
               list_items: TaskListItem[];
               tags?: Array<{ id: number; name: string; color?: string | null }>;
+              /**
+               * Names of schedule-strip organization blocks that contained at
+               * least one of this task's completed slots on this date. Empty
+               * when the task's slot(s) didn't fall inside any block.
+               */
+              block_names?: string[];
             }>;
           }>;
         }>;
+        /** Scheduled organization blocks (time strip), hours per block type per calendar day. */
+        block_days: Array<{ date: string; rows: Array<{ block_name: string; hours: number }>; total_hours: number }>;
       }>(`api/accomplished.php?${q.toString()}`);
     },
   },
@@ -293,24 +516,42 @@ export const api = {
     ensure: () =>
       request<{ ok: boolean; fixed: Record<string, Array<{ id: number; before: Record<string, string>; after: Record<string, string> }>> }>('api/data_integrity.php'),
   },
+  favoriteFolders: {
+    list: () => request<{ folders: FavoriteFolder[] }>('api/favorite_folders.php'),
+    create: (data: { name: string }) =>
+      request<{ id: number; name: string; sort_order: number }>('api/favorite_folders.php', { method: 'POST', body: data }),
+    update: (data: { id: number; name?: string; sort_order?: number }) =>
+      request<{ ok: boolean; folder?: FavoriteFolder }>('api/favorite_folders.php', { method: 'PATCH', body: data }),
+    delete: (id: number) => request<{ ok: boolean }>(`api/favorite_folders.php?id=${id}`, { method: 'DELETE' }),
+  },
   organization: {
     list: () =>
-      request<{ categories: Array<{ id: number; name: string; color?: string | null }>; subcategories: Array<{ id: number; category_id: number; name: string }>; tags: Array<{ id: number; name: string; color?: string | null }> }>('api/organization.php'),
-    createCategory: (data: { name: string; color?: string | null }) =>
-      request<{ id: number; name: string; color?: string | null }>('api/organization.php', { method: 'POST', body: { type: 'category', ...data } }),
+      request<{
+        categories: Array<{ id: number; name: string; color?: string | null; icon?: string | null }>;
+        subcategories: Array<{ id: number; category_id: number; name: string }>;
+        tags: Array<{ id: number; name: string; color?: string | null }>;
+        blocks: Array<{ id: number; name: string; color?: string | null; icon?: string | null }>;
+      }>('api/organization.php'),
+    createCategory: (data: { name: string; color?: string | null; icon?: string | null }) =>
+      request<{ id: number; name: string; color?: string | null; icon?: string | null }>('api/organization.php', { method: 'POST', body: { type: 'category', ...data } }),
     createSubcategory: (data: { category_id: number; name: string }) =>
       request<{ id: number; category_id: number; name: string }>('api/organization.php', { method: 'POST', body: { type: 'subcategory', ...data } }),
     createTag: (data: { name: string; color?: string | null }) =>
       request<{ id: number; name: string; color?: string | null }>('api/organization.php', { method: 'POST', body: { type: 'tag', ...data } }),
-    updateCategory: (id: number, data: { name?: string; color?: string | null }) =>
+    createBlock: (data: { name: string; color?: string | null; icon?: string | null }) =>
+      request<{ id: number; name: string; color?: string | null; icon?: string | null }>('api/organization.php', { method: 'POST', body: { type: 'block', ...data } }),
+    updateCategory: (id: number, data: { name?: string; color?: string | null; icon?: string | null }) =>
       request<{ ok: boolean }>('api/organization.php', { method: 'PATCH', body: { type: 'category', id, ...data } }),
     updateSubcategory: (id: number, data: { name?: string; category_id?: number }) =>
       request<{ ok: boolean }>('api/organization.php', { method: 'PATCH', body: { type: 'subcategory', id, ...data } }),
     updateTag: (id: number, data: { name?: string; color?: string | null }) =>
       request<{ ok: boolean }>('api/organization.php', { method: 'PATCH', body: { type: 'tag', id, ...data } }),
+    updateBlock: (id: number, data: { name?: string; color?: string | null; icon?: string | null }) =>
+      request<{ ok: boolean }>('api/organization.php', { method: 'PATCH', body: { type: 'block', id, ...data } }),
     deleteCategory: (id: number) => request<{ ok: boolean }>(`api/organization.php?type=category&id=${id}`, { method: 'DELETE' }),
     deleteSubcategory: (id: number) => request<{ ok: boolean }>(`api/organization.php?type=subcategory&id=${id}`, { method: 'DELETE' }),
     deleteTag: (id: number) => request<{ ok: boolean }>(`api/organization.php?type=tag&id=${id}`, { method: 'DELETE' }),
+    deleteBlock: (id: number) => request<{ ok: boolean }>(`api/organization.php?type=block&id=${id}`, { method: 'DELETE' }),
   },
   chat: {
     send: (body: AiChatRequestBody) =>
@@ -353,6 +594,8 @@ export const api = {
       request<{ ok: boolean }>('api/ical_subscriptions.php', { method: 'PATCH', body: { id, enabled } }),
     setDisplayName: (id: number, displayName: string) =>
       request<{ ok: boolean }>('api/ical_subscriptions.php', { method: 'PATCH', body: { id, display_name: displayName } }),
+    setFeedUrl: (id: number, feedUrl: string) =>
+      request<{ ok: boolean }>('api/ical_subscriptions.php', { method: 'PATCH', body: { id, feed_url: feedUrl } }),
     delete: (id: number) => request<{ ok: boolean }>(`api/ical_subscriptions.php?id=${id}`, { method: 'DELETE' }),
     preview: (id: number, parse = true) =>
       request<{

@@ -5,6 +5,9 @@ import { api } from '@/lib/api';
 import type { TaskLink } from '@/lib/api';
 import { Modal } from '@/components/Modal';
 import { Button } from '@/components/Button';
+import { normalizeContactUrlInput } from '@/lib/contactLinks';
+import type { ContactLinkPrefs } from '@/lib/taskLinks';
+import { DEFAULT_CONTACT_LINK_PREFS, openTaskLink, taskLinkGlyph, taskLinkOpenLabel } from '@/lib/taskLinks';
 
 type Props = {
   open: boolean;
@@ -12,9 +15,17 @@ type Props = {
   taskId: number | null;
   initialUrl?: string;
   onLinksChange?: () => void;
+  contactLinkPrefs?: ContactLinkPrefs;
 };
 
-export function LinkModal({ open, onClose, taskId, initialUrl = '', onLinksChange }: Props) {
+export function LinkModal({
+  open,
+  onClose,
+  taskId,
+  initialUrl = '',
+  onLinksChange,
+  contactLinkPrefs = DEFAULT_CONTACT_LINK_PREFS,
+}: Props) {
   const [links, setLinks] = useState<TaskLink[]>([]);
   const [url, setUrl] = useState('');
   const [description, setDescription] = useState('');
@@ -42,11 +53,13 @@ export function LinkModal({ open, onClose, taskId, initialUrl = '', onLinksChang
     setErrorMessage(msg || 'Something went wrong');
   };
 
+  const persistUrl = (raw: string) => normalizeContactUrlInput(raw.trim());
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (taskId == null || !url.trim()) return;
     setErrorMessage(null);
-    const u = url.trim();
+    const u = persistUrl(url);
     const d = description.trim();
     if (editingId) {
       api.links
@@ -108,13 +121,16 @@ export function LinkModal({ open, onClose, taskId, initialUrl = '', onLinksChang
             <label style={{ display: 'block', marginBottom: '0.5rem' }}>
               URL
               <input
-                type="url"
+                type="text"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://…"
+                placeholder="https://…, mailto:…, email, or phone"
                 style={{ width: '100%', marginTop: '0.25rem', padding: '0.35rem' }}
               />
             </label>
+            <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: '0 0 0.5rem' }}>
+              Contact: use an email address, phone number, or <code>mailto:</code> / <code>tel:</code> / <code>sms:</code> URL. Maps links are detected automatically from map URLs.
+            </p>
             <label style={{ display: 'block', marginBottom: '0.5rem' }}>
               Description (optional)
               <input
@@ -136,7 +152,13 @@ export function LinkModal({ open, onClose, taskId, initialUrl = '', onLinksChang
               <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
                 {links.map((link) => (
                   <li key={link.id} className="link-item" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem' }}>
-                    <button type="button" title="Open link" onClick={() => window.open(link.url, '_blank')}>🔗</button>
+                    <button
+                      type="button"
+                      title={taskLinkOpenLabel(link.url, contactLinkPrefs)}
+                      onClick={() => openTaskLink(link.url, contactLinkPrefs)}
+                    >
+                      {taskLinkGlyph(link.url)}
+                    </button>
                     <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{link.description || link.url}</span>
                     <button type="button" title="Edit" onClick={() => startEdit(link)}>✏️</button>
                     <button type="button" title="Delete" onClick={() => removeLink(link.id)}>🗑</button>

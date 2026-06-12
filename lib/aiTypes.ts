@@ -106,6 +106,7 @@ export interface AiChatRequestBody {
   /** Max prior user+assistant pairs loaded from thread DB (0–40, default 24). */
   threadHistoryMax?: number;
   contextOptions?: { includeIcal?: boolean; historyDays?: number };
+  /** See contracts/ai/task-context.schema.json */
   taskContext?: Record<string, unknown>;
   contextFragments?: AiContextFragment[];
 }

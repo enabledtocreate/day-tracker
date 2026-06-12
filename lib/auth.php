@@ -35,18 +35,14 @@ function requireAuth(): void {
     $user = getCurrentUser();
     if (!$user) {
         logMessage('INFO', 'auth requireAuth failed', ['reason' => 'no_session', 'uri' => $_SERVER['REQUEST_URI'] ?? '']);
-        http_response_code(401);
-        header('Content-Type: application/json; charset=utf-8');
-        echo json_encode(['error' => 'Unauthorized', 'code' => 'login_required']);
+        jsonResponse(['error' => 'Unauthorized', 'code' => 'login_required'], 401);
         exit;
     }
     if (!empty($user['force_password_reset'])) {
         $uri = $_SERVER['REQUEST_URI'] ?? '';
         if (strpos($uri, 'user.php') === false) {
             logMessage('INFO', 'auth requireAuth failed', ['reason' => 'force_password_reset', 'user_id' => $user['id'] ?? null, 'uri' => $uri]);
-            http_response_code(403);
-            header('Content-Type: application/json; charset=utf-8');
-            echo json_encode(['error' => 'Password reset required', 'code' => 'force_password_reset']);
+            jsonResponse(['error' => 'Password reset required', 'code' => 'force_password_reset'], 403);
             exit;
         }
     }

@@ -280,6 +280,39 @@ Each subsection below states requirements in the form “The system shall …”
 - **`copy_from` behavior** shall duplicate at least: title, priority (non-recurring copy), `list_style`, links, list items, and organization fields onto a new non-common root; recurrence on the copy shall be cleared as implemented in `api/tasks.php`.
 - The system shall allow **removing** template status (**Not a template**) and **promoting** an eligible normal root task to a template (**Template**) via `PATCH` on `is_common`, subject to the root/no-children rules above.
 - On **mobile**, the task list area shall present **Unassigned**, **Pending**, and **Common Tasks** as horizontally swipable panels (three columns) consistent with the existing mobile task-list swipe pattern.
+- The system shall provide **Add to bucket** on favorite templates: a modal pre-filled from the template with the **first list bucket selected by default**, editable title and task metadata, and creation via **`copy_from`** plus field overrides.
+- **Rollover and groups:** Incomplete group members shall **remain grouped** after their scheduled day passes. Only members with a **completed** slot on a past day shall be ungrouped on rollover. Scheduled groups with remaining incomplete work shall return to their source bucket while staying grouped.
+
+##### 3.2.8 Default block and Auto Block
+
+- Tasks may store **`default_block_id`** (FK to `task_blocks`) and **`default_duration_intervals`** (positive integer; one step = one schedule increment from user settings).
+- These fields are used by **Auto Block** only; they do not otherwise affect list or schedule display.
+- Task details shall allow clearing the default block (null) and setting duration in whole increment steps (minimum 1).
+- Each list bucket header shall expose an **Auto Block** control (adjacent to hide-bucket) that opens a modal to populate **schedule block instances** on the **view date** for unscheduled tasks in that bucket that have a default block assigned.
+- The modal shall offer sort order: added (oldest first, default), added (newest first), priority, due date (soonest first; tasks without due date last).
+- Tasks without a default block, already scheduled on the view date, or that do not fit in a matching block’s remaining time shall be skipped.
+
+##### 3.2.9 Schedule draft creation
+
+- Clicking the schedule grid to add a task shall create a **local draft** only (no `tasks` or `scheduled_slots` row) until the user enters a non-empty title.
+- While drafting, the UI shall focus the title field and disable other actions on that slot.
+- Clicking away or discarding an empty title shall remove the draft without persisting.
+
+##### 3.2.10 Task links (URLs, contact, maps)
+
+- The system shall allow each task to have zero or more links (`task_links`: URL + optional description); URLs shall be unique per task.
+- The **Link modal** shall accept:
+  - Standard http(s) URLs.
+  - Contact URLs (`mailto:`, `tel:`, `sms:`) and bare email addresses or phone numbers (normalized to contact URLs on save).
+- The system shall **not** use HTML5 `type="url"` validation that rejects bare email addresses.
+- **Contact links** shall:
+  - Be detected and shown with contact glyphs (email, phone, SMS) in the task list, schedule, link modal, and completed summary.
+  - Open using user preferences stored in **`app_settings.contact_link_json`** (GET/PATCH via `api/settings.php`): email handler (`mailto`, Gmail web compose, Outlook web, Yahoo web) and phone handler (`tel` vs `sms`), with optional Gmail multi-account slot index (`/u/0/` … `/u/5/`).
+  - On mobile, prefer native mail/phone handlers for contact links when opening from the task UI.
+- **Map links** shall:
+  - Be detected for recognized map provider URLs and `geo:` / native map app schemes.
+  - Display a map glyph distinct from generic chain links.
+  - Open using maps-aware handling (`lib/mapLinks.ts` integrated via `lib/taskLinks.ts`).
 
 #### 3.3 Organization (categories, subcategories, tags)
 
@@ -413,6 +446,7 @@ Each subsection below states requirements in the form “The system shall …”
     - Support an optional **date range** query for the rollup.
     - Show each task’s **tags** next to its title (or include tag names when titles are shown comma-separated), using tag data returned by the API.
     - Provide a **search** control that filters the displayed rollup by task title, tag name, category, or subcategory without requiring a new server request.
+    - Provide **Export** (tab-delimited `.tsv` for Excel/Sheets) and **Table** (same columns in an in-app spreadsheet modal, with optional **Open in new tab**) for the currently filtered summary.
   - Display:
     - Title.
     - Optional derived duration (based on start/end times).
@@ -621,4 +655,66 @@ The following standard design topics are addressed across **`Application-Spec.md
 | Testing & quality gates | SRS §3.10; `tests/`, `e2e/`, Vitest in repo |
 
 Items intentionally **out of scope** for these three files but reserved for split templates: **commercial roadmap sequencing** (PRD), **detailed logical flows only** (FUNCTIONAL_SPEC), **experience principles-only** (EXPERIENCE_DESIGN), **deep technical alternatives** (TECHNICAL_DESIGN)—see respective template stubs under `docs/`.
+
+---
+
+## 6. Mobile gestures and modes (locked behavior)
+
+This section locks the mobile gesture vocabulary and the mode state machine that
+ships in the active rebuild (`.apm/_WORKSPACE/TODO-mobile.md §0` is the working
+spec; this is the published summary).
+
+### 6.1 Gesture dictionary
+
+The mobile UI recognizes only the following gestures. Anything else is ignored.
+
+| Gesture     | Trigger                                                      | Used for                                                       |
+|-------------|--------------------------------------------------------------|----------------------------------------------------------------|
+| Tap         | Single quick touch (< 50 px / < 300 ms)                      | Buttons, tabs, drop-in-slot, Cancel banner                     |
+| Double Tap  | Two taps within 300 ms and 24 px                             | Inline title edit; in Move mode → group / ungroup / exit       |
+| Long Press  | Hold ≥ 400 ms with movement < 24 px                          | Enter Move mode on the held task                               |
+| Swipe Left  | Movement > 50 px **or** velocity > 0.3 px/ms, horizontal     | Next bucket; Today → Calendar tab                              |
+| Swipe Right | Same threshold, opposite axis                                | Previous bucket; Calendar → Today tab                          |
+| Swipe Up    | Same threshold, vertical                                     | Scroll (passes through; never consumed by mode handlers)       |
+| Swipe Down  | Same threshold, vertical                                     | Scroll (passes through; never consumed by mode handlers)       |
+| Pinch       | —                                                            | **Not used** (reserved)                                        |
+| Zoom        | —                                                            | **Not used** (reserved)                                        |
+| Rotate      | —                                                            | **Not used** (reserved)                                        |
+
+Precedence within a single pointer interaction: **Swipe > Double Tap > Long Press > Tap**.
+The recognizer fires at most one gesture per pointer down/up cycle.
+
+### 6.2 Modes
+
+The app maintains exactly one of these mobile modes at a time (managed by
+`lib/mobileMode.ts`):
+
+- **Normal** — default; all standard taps and swipes route to their feature handlers.
+- **Move** — entered by Long Press on a task. The held task + group members are
+  highlighted; Tap on a drop zone or time slot drops; Double Tap on the
+  originating task exits; a sticky banner offers Cancel.
+- **Resize** — entered by Tap on a 24 px edge strip of a scheduled task / block.
+  Tap any valid interval commits; tap the same edge again cancels.
+- **Edit** — inline title editor is focused.
+- **BulkSelect** — multi-select toolbar is active.
+
+In addition the provider tracks a **modal/drawer refcount** (`modalOpenCount`).
+Whenever any modal or drawer registers itself (via `useModalGestureSuppression(open)`),
+the gesture coordinator suppresses Tap, Double Tap, Long Press, and Swipe across
+the whole app. This is the canonical "ModalOpen" condition.
+
+### 6.3 Where gestures live in the code
+
+| Concern                                    | Module                                              |
+|--------------------------------------------|-----------------------------------------------------|
+| Mode state machine + provider              | `lib/mobileMode.ts`                                 |
+| Generic recognizer (per-element)           | `lib/mobileGestures.ts`                             |
+| Task-list event-delegated recognizer       | `lib/useTaskListMobileGestures.ts`                  |
+| Haptic feedback                            | `lib/mobileHaptics.ts`                              |
+| Move banner / cancel button                | `components/mobile/MobileMoveBanner.tsx`            |
+| Picker modal (replaces `<select>` on mobile) | `components/mobile/MobilePickerModal.tsx`         |
+| Mobile-aware select wrapper                | `components/mobile/MobileAwareSelect.tsx`           |
+| Debug overlay (admin debug only)           | `components/MobileModeDebugOverlay.tsx`             |
+| Glance View toggle + CSS scaffold          | `components/TaskListAndSchedule.tsx`, `app/globals.css` |
+| EOD auto-complete runner                   | `lib/eodAutoComplete.ts` (mounted in `MainApp.tsx`) |
 

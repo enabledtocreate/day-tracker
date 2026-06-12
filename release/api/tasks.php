@@ -4,13 +4,15 @@
  */
 require_once __DIR__ . '/common.php';
 require_once dirname(__DIR__) . '/lib/logger.php';
+require_once dirname(__DIR__) . '/lib/task_layout.php';
 
 $pdo = getPdoSafe();
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 logMessage('INFO', 'tasks.php branch', ['method' => $method, 'user_id' => $userId]);
 
 if ($method === 'GET') {
-    $listState = isset($_GET['list_state']) && in_array($_GET['list_state'], ['unassigned', 'pending'], true) ? $_GET['list_state'] : null;
+    $layoutGet = dt_task_layout_from_pdo($pdo);
+    $listState = isset($_GET['list_state']) && in_array((string) $_GET['list_state'], $layoutGet['bucket_ids'], true) ? (string) $_GET['list_state'] : null;
     $view = isset($_GET['view']) && $_GET['view'] === 'incomplete' ? 'incomplete' : null;
     $viewDay = isset($_GET['day']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $_GET['day']) ? $_GET['day'] : null;
     $commonOnly = isset($_GET['common']) && ($_GET['common'] === '1' || $_GET['common'] === 'true');
@@ -78,6 +80,22 @@ if ($method === 'GET') {
     $hasIsCommon = in_array('is_common', array_column($cols, 'name'), true);
     if ($hasIsCommon) {
         $columns .= ', is_common';
+    }
+    $hasAutoCompleteEod = in_array('auto_complete_eod', array_column($cols, 'name'), true);
+    if ($hasAutoCompleteEod) {
+        $columns .= ', auto_complete_eod';
+    }
+    $hasFavoriteFolderId = in_array('favorite_folder_id', array_column($cols, 'name'), true);
+    if ($hasFavoriteFolderId) {
+        $columns .= ', favorite_folder_id';
+    }
+    $hasAutoPri = in_array('auto_priority_enabled', array_column($cols, 'name'), true);
+    if ($hasAutoPri) {
+        $columns .= ', auto_priority_enabled, auto_priority_mode, auto_priority_days_per_step, auto_priority_anchor_date, auto_priority_anchor_priority';
+    }
+    $hasDefaultBlock = in_array('default_block_id', array_column($cols, 'name'), true);
+    if ($hasDefaultBlock) {
+        $columns .= ', default_block_id, default_duration_intervals';
     }
     $sql = "SELECT {$columns} FROM tasks";
     $params = [];
@@ -271,6 +289,9 @@ if ($method === 'POST') {
         exit;
     }
 
+    $layoutPost = dt_task_layout_from_pdo($pdo);
+    $defaultListState = $layoutPost['bucket_ids'][0] ?? 'unassigned';
+
     $colStmtPost = $pdo->query("PRAGMA table_info(tasks)");
     $colNamesPost = $colStmtPost ? array_column($colStmtPost->fetchAll(PDO::FETCH_ASSOC), 'name') : [];
     $hasIsCommonPost = in_array('is_common', $colNamesPost, true);
@@ -278,7 +299,7 @@ if ($method === 'POST') {
 
     $copyFrom = isset($in['copy_from']) ? (int) $in['copy_from'] : 0;
     if ($copyFrom > 0) {
-        $ls = isset($in['list_state']) && in_array($in['list_state'], ['unassigned', 'pending'], true) ? $in['list_state'] : 'unassigned';
+        $ls = isset($in['list_state']) && in_array((string) $in['list_state'], $layoutPost['bucket_ids'], true) ? (string) $in['list_state'] : $defaultListState;
         $selCols = 'id, title, priority, recurring, parent_id, created_at, list_state, list_style';
         if (in_array('recurrence_rule', $colNamesPost, true)) {
             $selCols .= ', recurrence_rule';
@@ -292,6 +313,15 @@ if ($method === 'POST') {
         if ($hasIsCommonPost) {
             $selCols .= ', is_common';
         }
+        if (in_array('auto_complete_eod', $colNamesPost, true)) {
+            $selCols .= ', auto_complete_eod';
+        }
+        if (in_array('auto_priority_enabled', $colNamesPost, true)) {
+            $selCols .= ', auto_priority_enabled';
+        }
+        if (in_array('default_block_id', $colNamesPost, true)) {
+            $selCols .= ', default_block_id, default_duration_intervals';
+        }
         $srcStmt = $pdo->prepare("SELECT {$selCols} FROM tasks WHERE id = ?");
         $srcStmt->execute([$copyFrom]);
         $src = $srcStmt->fetch(PDO::FETCH_ASSOC);
@@ -299,12 +329,17 @@ if ($method === 'POST') {
             jsonError('copy_from task not found', 404);
             exit;
         }
-        if ($src['parent_id'] !== null && $src['parent_id'] !== '') {
-            jsonError('copy_from must be a root task', 400);
-            exit;
-        }
         $title = trim((string) $src['title']);
-        $priority = in_array($src['priority'], ['commitment', 'high', 'medium', 'low'], true) ? $src['priority'] : 'medium';
+        if (!empty($in['title'])) {
+            $title = trim((string) $in['title']);
+        }
+        $fallbackCopyP = in_array('medium', $layoutPost['priority_ids'], true) ? 'medium' : ($layoutPost['priority_ids'][0] ?? 'medium');
+        $priority = isset($src['priority']) && dt_is_allowed_priority((string) $src['priority'], $layoutPost)
+            ? (string) $src['priority']
+            : $fallbackCopyP;
+        if (isset($in['priority']) && dt_is_allowed_priority((string) $in['priority'], $layoutPost)) {
+            $priority = (string) $in['priority'];
+        }
         $listStyle = ($src['list_style'] ?? 'bullet') === 'checklist' ? 'checklist' : 'bullet';
         if ($hasIsCommonPost) {
             $g = $hasGroupOrderPost ? ', group_order' : '';
@@ -353,6 +388,22 @@ if ($method === 'POST') {
                 $tIns->execute([$newId, (int) $tr['tag_id']]);
             }
         }
+        if (in_array('due_date', $colNamesPost, true) && isset($src['due_date']) && $src['due_date'] !== null && $src['due_date'] !== '') {
+            $pdo->prepare('UPDATE tasks SET due_date = ? WHERE id = ?')->execute([(string) $src['due_date'], $newId]);
+        }
+        if (in_array('auto_complete_eod', $colNamesPost, true) && isset($src['auto_complete_eod'])) {
+            $pdo->prepare('UPDATE tasks SET auto_complete_eod = ? WHERE id = ?')->execute([(int) $src['auto_complete_eod'], $newId]);
+        }
+        if (in_array('auto_priority_enabled', $colNamesPost, true) && isset($src['auto_priority_enabled'])) {
+            $pdo->prepare('UPDATE tasks SET auto_priority_enabled = ? WHERE id = ?')->execute([(int) $src['auto_priority_enabled'], $newId]);
+        }
+        if (in_array('default_block_id', $colNamesPost, true) && isset($src['default_block_id']) && $src['default_block_id'] !== null && $src['default_block_id'] !== '') {
+            $pdo->prepare('UPDATE tasks SET default_block_id = ?, default_duration_intervals = ? WHERE id = ?')->execute([
+                (int) $src['default_block_id'],
+                max(1, (int) ($src['default_duration_intervals'] ?? 1)),
+                $newId,
+            ]);
+        }
         logMessage('INFO', 'tasks POST copy_from ok', ['from' => $copyFrom, 'id' => $newId]);
         $outCopy = ['id' => $newId, 'title' => $title, 'priority' => $priority, 'recurring' => false, 'parent_id' => null, 'list_state' => $ls, 'list_style' => $listStyle];
         if ($hasIsCommonPost) {
@@ -368,7 +419,12 @@ if ($method === 'POST') {
         exit;
     }
     $title = trim($in['title']);
-    $priority = isset($in['priority']) && in_array($in['priority'], ['commitment', 'high', 'medium', 'low'], true) ? $in['priority'] : 'medium';
+    $fallbackNewP = in_array('low', $layoutPost['priority_ids'], true)
+        ? 'low'
+        : ($layoutPost['priority_ids'][count($layoutPost['priority_ids']) - 1] ?? 'medium');
+    $priority = isset($in['priority']) && dt_is_allowed_priority((string) $in['priority'], $layoutPost)
+        ? (string) $in['priority']
+        : $fallbackNewP;
     $recurring = !empty($in['recurring']) ? 1 : 0;
     $parentId = isset($in['parent_id']) ? (int) $in['parent_id'] : null;
     $listStyle = isset($in['list_style']) && $in['list_style'] === 'checklist' ? 'checklist' : 'bullet';
@@ -416,8 +472,27 @@ if ($method === 'POST') {
             $pdo->prepare("UPDATE tasks SET recurrence_rule = ? WHERE id = ?")->execute([$dailyDefault, $id]);
         }
     }
+    $hasFavoriteFolderPost = in_array('favorite_folder_id', $colNamesPost, true);
+    if ($hasFavoriteFolderPost && $isCommonNew === 1 && array_key_exists('favorite_folder_id', $in)) {
+        $rawFf = $in['favorite_folder_id'];
+        if ($rawFf === null || $rawFf === '' || $rawFf === false) {
+            // leave NULL
+        } else {
+            $fid = (int) $rawFf;
+            if ($fid > 0) {
+                $ffTable = $pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='favorite_folder'")->fetchColumn();
+                if ($ffTable) {
+                    $chk = $pdo->prepare('SELECT 1 FROM favorite_folder WHERE id = ?');
+                    $chk->execute([$fid]);
+                    if ($chk->fetchColumn()) {
+                        $pdo->prepare('UPDATE tasks SET favorite_folder_id = ? WHERE id = ?')->execute([$fid, $id]);
+                    }
+                }
+            }
+        }
+    }
     logMessage('INFO', 'tasks create ok', ['id' => $id]);
-    $outCreate = ['id' => $id, 'title' => $title, 'priority' => $priority, 'recurring' => (bool) $recurring, 'parent_id' => $parentId, 'list_state' => 'unassigned', 'list_style' => $listStyle];
+    $outCreate = ['id' => $id, 'title' => $title, 'priority' => $priority, 'recurring' => (bool) $recurring, 'parent_id' => $parentId, 'list_state' => $defaultListState, 'list_style' => $listStyle];
     if ($hasIsCommonPost) {
         $outCreate['is_common'] = (bool) $isCommonNew;
     }
@@ -428,6 +503,7 @@ if ($method === 'POST') {
 if ($method === 'PATCH') {
     logMessage('INFO', 'tasks PATCH update');
     $in = readJsonInput();
+    $layoutPatch = dt_task_layout_from_pdo($pdo);
     $id = isset($in['id']) ? (int) $in['id'] : 0;
     if ($id < 1) {
         logMessage('WARNING', 'tasks update validation failed', ['error' => 'id required']);
@@ -440,9 +516,9 @@ if ($method === 'PATCH') {
         $updates[] = 'title = ?';
         $params[] = trim($in['title']);
     }
-    if (array_key_exists('priority', $in) && in_array($in['priority'], ['commitment', 'high', 'medium', 'low'], true)) {
+    if (array_key_exists('priority', $in) && dt_is_allowed_priority((string) $in['priority'], $layoutPatch)) {
         $updates[] = 'priority = ?';
-        $params[] = $in['priority'];
+        $params[] = (string) $in['priority'];
     }
     if (array_key_exists('recurring', $in)) {
         $updates[] = 'recurring = ?';
@@ -490,6 +566,19 @@ if ($method === 'PATCH') {
                 $params[] = $nextOrder;
             }
         }
+        if ($newParentId !== null && !array_key_exists('list_state', $in)) {
+            $parentLsStmt = $pdo->prepare('SELECT list_state FROM tasks WHERE id = ?');
+            $parentLsStmt->execute([$newParentId]);
+            $parentLsRow = $parentLsStmt->fetch(PDO::FETCH_ASSOC);
+            if (
+                $parentLsRow
+                && isset($parentLsRow['list_state'])
+                && dt_is_allowed_list_state((string) $parentLsRow['list_state'], $layoutPatch)
+            ) {
+                $updates[] = 'list_state = ?';
+                $params[] = (string) $parentLsRow['list_state'];
+            }
+        }
     }
 
     if (array_key_exists('group_order', $in) && $hasGroupOrderPatch) {
@@ -498,9 +587,9 @@ if ($method === 'PATCH') {
         $updates[] = 'group_order = ?';
         $params[] = $go;
     }
-    if (array_key_exists('list_state', $in) && in_array($in['list_state'], ['unassigned', 'pending'], true)) {
+    if (array_key_exists('list_state', $in) && dt_is_allowed_list_state((string) $in['list_state'], $layoutPatch)) {
         $updates[] = 'list_state = ?';
-        $params[] = $in['list_state'];
+        $params[] = (string) $in['list_state'];
     }
     if (array_key_exists('list_style', $in) && in_array($in['list_style'], ['bullet', 'checklist'], true)) {
         $updates[] = 'list_style = ?';
@@ -528,6 +617,43 @@ if ($method === 'PATCH') {
         $params[] = $v;
     }
 
+    // Per-task: auto-complete uncompleted slots at end of day (client-driven, see TODO-mobile §0.7).
+    $hasAutoCompleteEodPatch = in_array('auto_complete_eod', $colNames, true);
+    if (array_key_exists('auto_complete_eod', $in) && $hasAutoCompleteEodPatch) {
+        $v = !empty($in['auto_complete_eod']) ? 1 : 0;
+        $updates[] = 'auto_complete_eod = ?';
+        $params[] = $v;
+    }
+
+    $hasFavoriteFolderIdPatch = in_array('favorite_folder_id', $colNames, true);
+    if (array_key_exists('favorite_folder_id', $in) && $hasFavoriteFolderIdPatch) {
+        $selfCommon = $pdo->prepare('SELECT COALESCE(is_common, 0) AS ic, parent_id FROM tasks WHERE id = ?');
+        $selfCommon->execute([$id]);
+        $sc = $selfCommon->fetch(PDO::FETCH_ASSOC);
+        if (!$sc || (int) $sc['ic'] !== 1 || $sc['parent_id'] !== null && $sc['parent_id'] !== '') {
+            jsonError('favorite_folder_id only applies to favorite (common) root tasks', 400);
+            exit;
+        }
+        $rawFf = $in['favorite_folder_id'];
+        if ($rawFf === null || $rawFf === '' || $rawFf === false) {
+            $updates[] = 'favorite_folder_id = NULL';
+        } else {
+            $fid = (int) $rawFf;
+            if ($fid < 1) {
+                jsonError('favorite_folder_id must be positive or null', 400);
+                exit;
+            }
+            $fok = $pdo->prepare('SELECT 1 FROM favorite_folder WHERE id = ?');
+            $fok->execute([$fid]);
+            if (!$fok->fetchColumn()) {
+                jsonError('favorite_folder not found', 404);
+                exit;
+            }
+            $updates[] = 'favorite_folder_id = ?';
+            $params[] = $fid;
+        }
+    }
+
     if (array_key_exists('due_date', $in) && $hasDueDatePatch) {
         $raw = $in['due_date'];
         if ($raw === null || $raw === '') {
@@ -543,6 +669,71 @@ if ($method === 'PATCH') {
         $updates[] = 'due_date = ?';
         $params[] = $dueDate;
     }
+    $hasDefaultBlockPatch = in_array('default_block_id', $colNames, true);
+    if ($hasDefaultBlockPatch && array_key_exists('default_block_id', $in)) {
+        $rawBlock = $in['default_block_id'];
+        if ($rawBlock === null || $rawBlock === '' || $rawBlock === false) {
+            $updates[] = 'default_block_id = NULL';
+        } else {
+            $bid = (int) $rawBlock;
+            if ($bid < 1) {
+                jsonError('default_block_id must be positive or null', 400);
+                exit;
+            }
+            $bok = $pdo->prepare('SELECT 1 FROM task_blocks WHERE id = ?');
+            $bok->execute([$bid]);
+            if (!$bok->fetchColumn()) {
+                jsonError('task block not found', 404);
+                exit;
+            }
+            $updates[] = 'default_block_id = ?';
+            $params[] = $bid;
+        }
+    }
+    if ($hasDefaultBlockPatch && array_key_exists('default_duration_intervals', $in)) {
+        $intervals = max(1, (int) $in['default_duration_intervals']);
+        $updates[] = 'default_duration_intervals = ?';
+        $params[] = $intervals;
+    }
+    $hasAutoPriPatch = in_array('auto_priority_enabled', $colNames, true);
+    if ($hasAutoPriPatch) {
+        if (array_key_exists('auto_priority_enabled', $in)) {
+            $en = !empty($in['auto_priority_enabled']) ? 1 : 0;
+            if ($en === 1) {
+                $curA = $pdo->prepare('SELECT priority, COALESCE(auto_priority_enabled, 0) AS ape FROM tasks WHERE id = ?');
+                $curA->execute([$id]);
+                $crow = $curA->fetch(PDO::FETCH_ASSOC);
+                if ($crow) {
+                    $wasOff = (int) $crow['ape'] === 0;
+                    $anchorPri = (string) $crow['priority'];
+                    if (array_key_exists('priority', $in) && dt_is_allowed_priority((string) $in['priority'], $layoutPatch)) {
+                        $anchorPri = (string) $in['priority'];
+                    }
+                    if ($wasOff) {
+                        $updates[] = 'auto_priority_anchor_date = ?';
+                        $params[] = date('Y-m-d');
+                        $updates[] = 'auto_priority_anchor_priority = ?';
+                        $params[] = $anchorPri;
+                    }
+                }
+                $updates[] = 'auto_priority_enabled = 1';
+            } else {
+                $updates[] = 'auto_priority_enabled = 0';
+                $updates[] = 'auto_priority_anchor_date = NULL';
+                $updates[] = 'auto_priority_anchor_priority = NULL';
+            }
+        }
+    }
+    if ($hasAutoPriPatch && array_key_exists('priority', $in) && dt_is_allowed_priority((string) $in['priority'], $layoutPatch)) {
+        $chk = $pdo->prepare('SELECT COALESCE(auto_priority_enabled, 0) FROM tasks WHERE id = ?');
+        $chk->execute([$id]);
+        if ((int) $chk->fetchColumn() === 1) {
+            $updates[] = 'auto_priority_anchor_date = ?';
+            $params[] = date('Y-m-d');
+            $updates[] = 'auto_priority_anchor_priority = ?';
+            $params[] = (string) $in['priority'];
+        }
+    }
     $hasOrgTables = $pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_category'")->fetchColumn();
     $hasOrgUpdates = $hasOrgTables && (array_key_exists('category_id', $in) || array_key_exists('subcategory_id', $in) || (array_key_exists('tag_ids', $in) && is_array($in['tag_ids'])));
     if (empty($updates) && !$hasOrgUpdates) {
@@ -556,15 +747,6 @@ if ($method === 'PATCH') {
         try {
             $pdo->prepare($sql)->execute($params);
         } catch (PDOException $e) {
-            $settingCommitment = array_key_exists('priority', $in) && ($in['priority'] ?? '') === 'commitment';
-            if ($settingCommitment) {
-                logMessage('WARNING', 'tasks update: commitment priority blocked by schema', [
-                    'task_id' => $id,
-                    'message' => $e->getMessage(),
-                ]);
-                jsonError('Priority "commitment" requires a database update. Please run migrations (e.g. visit Settings or re-run install).', 400);
-                exit;
-            }
             throw $e;
         }
     }
@@ -582,6 +764,12 @@ if ($method === 'PATCH') {
     }
     if (in_array('is_common', $colNames, true)) {
         $cols .= ', is_common';
+    }
+    if (in_array('favorite_folder_id', $colNames, true)) {
+        $cols .= ', favorite_folder_id';
+    }
+    if (in_array('auto_priority_enabled', $colNames, true)) {
+        $cols .= ', auto_priority_enabled, auto_priority_mode, auto_priority_days_per_step, auto_priority_anchor_date, auto_priority_anchor_priority';
     }
     $sel = $pdo->prepare("SELECT {$cols} FROM tasks WHERE id = ?");
     $sel->execute([$id]);
@@ -620,7 +808,62 @@ if ($method === 'DELETE') {
         jsonError('id required');
         exit;
     }
-    $pdo->prepare("DELETE FROM tasks WHERE id = ?")->execute([$id]);
+
+    $selfStmt = $pdo->prepare('SELECT parent_id, list_state FROM tasks WHERE id = ?');
+    $selfStmt->execute([$id]);
+    $selfRow = $selfStmt->fetch(PDO::FETCH_ASSOC);
+    if (!$selfRow) {
+        jsonResponse(['ok' => true]);
+        exit;
+    }
+
+    $grandparentId = $selfRow['parent_id'] !== null && $selfRow['parent_id'] !== ''
+        ? (int) $selfRow['parent_id']
+        : null;
+    $deletedListState = isset($selfRow['list_state']) ? (string) $selfRow['list_state'] : null;
+
+    // Reparent direct children before delete so ON DELETE CASCADE does not remove siblings.
+    $colStmt = $pdo->query('PRAGMA table_info(tasks)');
+    $colNames = $colStmt ? array_column($colStmt->fetchAll(PDO::FETCH_ASSOC), 'name') : [];
+    $hasGroupOrderDel = in_array('group_order', $colNames, true);
+
+    $childOrderSql = $hasGroupOrderDel
+        ? 'SELECT id FROM tasks WHERE parent_id = ? ORDER BY group_order ASC, id ASC'
+        : 'SELECT id FROM tasks WHERE parent_id = ? ORDER BY id ASC';
+    $childStmt = $pdo->prepare($childOrderSql);
+    $childStmt->execute([$id]);
+    $childIds = array_map('intval', $childStmt->fetchAll(PDO::FETCH_COLUMN));
+
+    if (count($childIds) > 0) {
+        $nextOrder = 0;
+        if ($grandparentId !== null && $hasGroupOrderDel) {
+            $nextOrderStmt = $pdo->prepare('SELECT COALESCE(MAX(group_order), -1) + 1 AS next_order FROM tasks WHERE parent_id = ?');
+            $nextOrderStmt->execute([$grandparentId]);
+            $nextOrder = (int) ($nextOrderStmt->fetchColumn() ?? 0);
+        }
+        foreach ($childIds as $childId) {
+            if ($grandparentId === null) {
+                if ($hasGroupOrderDel && $deletedListState !== null && $deletedListState !== '') {
+                    $pdo->prepare('UPDATE tasks SET parent_id = NULL, group_order = 0, list_state = ? WHERE id = ?')
+                        ->execute([$deletedListState, $childId]);
+                } elseif ($hasGroupOrderDel) {
+                    $pdo->prepare('UPDATE tasks SET parent_id = NULL, group_order = 0 WHERE id = ?')->execute([$childId]);
+                } elseif ($deletedListState !== null && $deletedListState !== '') {
+                    $pdo->prepare('UPDATE tasks SET parent_id = NULL, list_state = ? WHERE id = ?')
+                        ->execute([$deletedListState, $childId]);
+                } else {
+                    $pdo->prepare('UPDATE tasks SET parent_id = NULL WHERE id = ?')->execute([$childId]);
+                }
+            } elseif ($hasGroupOrderDel) {
+                $pdo->prepare('UPDATE tasks SET parent_id = ?, group_order = ? WHERE id = ?')
+                    ->execute([$grandparentId, $nextOrder++, $childId]);
+            } else {
+                $pdo->prepare('UPDATE tasks SET parent_id = ? WHERE id = ?')->execute([$grandparentId, $childId]);
+            }
+        }
+    }
+
+    $pdo->prepare('DELETE FROM tasks WHERE id = ?')->execute([$id]);
     logMessage('INFO', 'tasks delete ok', ['id' => $id]);
     jsonResponse(['ok' => true]);
     exit;

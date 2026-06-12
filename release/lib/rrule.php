@@ -3,7 +3,7 @@
  * Convert internal recurrence rule (JSON array) to RFC 5545 RRULE string.
  * Used for iCal export (api/ical.php).
  *
- * @param array{ freq?: string, weekDays?: int[], monthDays?: int[], lastDayOfMonth?: bool, count?: int, until?: string } $rule
+ * @param array{ freq?: string, weekDays?: int[], monthDays?: int[], lastDayOfMonth?: bool, count?: int, until?: string, endDate?: string } $rule
  * @return string RRULE value (e.g. "FREQ=WEEKLY;BYDAY=MO,WE" or "FREQ=DAILY")
  */
 function recurrenceRuleJsonToRrule(array $rule): string {
@@ -41,10 +41,23 @@ function recurrenceRuleJsonToRrule(array $rule): string {
     if (isset($rule['count']) && (int) $rule['count'] > 0) {
         $parts[] = 'COUNT=' . (int) $rule['count'];
     }
-    if (!empty($rule['until']) && preg_match('/^\d{4}-\d{2}-\d{2}/', $rule['until'])) {
-        $until = substr($rule['until'], 0, 10);
+    $until = $rule['until'] ?? $rule['endDate'] ?? null;
+    if (is_string($until) && preg_match('/^\d{4}-\d{2}-\d{2}/', $until)) {
+        $until = substr($until, 0, 10);
         $parts[] = 'UNTIL=' . str_replace('-', '', $until) . 'T235959Z';
     }
 
     return implode(';', $parts);
+}
+
+/** Last inclusive calendar day of a recurrence series, if set (matches lib/recurrence.php). */
+function recurrenceSeriesEndDateInclusive(?array $rule): ?string {
+    if ($rule === null) {
+        return null;
+    }
+    $end = $rule['endDate'] ?? $rule['until'] ?? null;
+    if (!is_string($end) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $end)) {
+        return null;
+    }
+    return $end;
 }

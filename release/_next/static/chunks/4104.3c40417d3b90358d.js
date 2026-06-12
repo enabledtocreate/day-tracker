@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[4104],{4104:function(t,e,n){n.r(e),n.d(e,{__iconNode:function(){return a},default:function(){return i}});var u=n(47411);let a=[["path",{d:"M15 3h6v6",key:"1q9fwt"}],["path",{d:"M21 3 3 21",key:"1011np"}],["path",{d:"m9 9 6 6",key:"z0biqf"}]],i=(0,u.Z)("zodiac-sagittarius",a)}}]);
