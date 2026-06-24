@@ -26,6 +26,33 @@ import { AutoBlockModal } from '@/components/AutoBlockModal';
 import { MobileModeDebugOverlay } from '@/components/MobileModeDebugOverlay';
 import { MobileAwareSelect } from '@/components/mobile/MobileAwareSelect';
 import { MobileMoveBanner } from '@/components/mobile/MobileMoveBanner';
+import { schedulePlacementSpanMinutes, durationMinutesToIntervals, durationIntervalsToMinutes } from '@/lib/taskDefaultDuration';
+import {
+  bindScheduleSlotBottomResize,
+  bindScheduleSlotTopResize,
+  type ScheduleSlotResizeDeps,
+} from '@/lib/scheduleSlotResizeHandlers';
+import {
+  snapToSlot,
+  calcMovedSlotTimes,
+  clampTopResizeStartForMinDuration,
+  clampBottomResizeEndForMinDuration,
+  clampTopResizeStartForMinGroupDuration,
+  clampBottomResizeEndForMinGroupDuration,
+  distributeGroupMemberTimes,
+  buildGroupSegmentHeightsPx as buildGroupSegmentHeightsPxCore,
+  timeToMinutes,
+  minutesToTime,
+} from '@/lib/scheduleSlotMath';
+import { desktopPointerInteractionsEnabled } from '@/lib/layoutProfile';
+import {
+  isScheduleBlockHoldExcluded,
+  SCHEDULE_BLOCK_HOLD_EXCLUDE,
+  shouldIgnoreScheduleTitleBlur,
+} from '@/lib/scheduleTitleEdit';
+import { applyTaskTitlePatch, patchCalendarSlotsByDateForTask, patchSlotTitlesForTask } from '@/lib/optimisticTaskTitle';
+import { adoptServerDataRevision, useDataSyncPoll } from '@/lib/useDataSyncPoll';
+import { DefaultDurationMinutesField } from '@/components/DefaultDurationMinutesField';
 import { useMobileMode } from '@/lib/mobileMode';
 import { useTaskListMobileGestures } from '@/lib/useTaskListMobileGestures';
 import { useMobileGestures } from '@/lib/mobileGestures';
@@ -138,20 +165,8 @@ function buildWeekDates(anchorSunday: string, scope: '7-day' | 'weekday'): strin
   });
 }
 
-function timeToMinutes(time: string | null | undefined): number {
-  if (time == null || time === '') return 0;
-  const [h, m] = time.split(':').map(Number);
-  return (h ?? 0) * 60 + (m ?? 0);
-}
-
 function slotHasTime(slot: ScheduledSlot): boolean {
   return !!(slot.start_time && slot.end_time);
-}
-
-function minutesToTime(min: number): string {
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
 }
 
 function formatTimeAMPM(totalMinutes: number): string {
@@ -212,6 +227,16 @@ function enrichScheduleBlockFromOrg(
   };
 }
 
+export {
+  snapToSlot,
+  calcMovedSlotTimes,
+  clampTopResizeStartForMinDuration,
+  clampBottomResizeEndForMinDuration,
+  clampTopResizeStartForMinGroupDuration,
+  clampBottomResizeEndForMinGroupDuration,
+  distributeGroupMemberTimes,
+};
+
 /** Pixel height per stacked row in a grouped block from actual slot boundaries (+ min-duration padding, block min-height remainder). */
 export function buildGroupSegmentHeightsPx(params: {
   groupStartMin: number;
@@ -220,58 +245,7 @@ export function buildGroupSegmentHeightsPx(params: {
   slotDurationMinutes: number;
   blockHeightPx: number;
 }): number[] {
-  const step = Math.max(1, params.slotDurationMinutes);
-  const childStarts = params.orderedChildren.map((c) => timeToMinutes(c.start_time));
-  const bounds = [params.groupStartMin, ...childStarts, params.groupEndMin];
-  const heights: number[] = [];
-  for (let i = 0; i < bounds.length - 1; i++) {
-    const rawMin = bounds[i + 1]! - bounds[i]!;
-    const durMin = Math.max(step, rawMin);
-    heights.push((durMin / step) * ROW_HEIGHT);
-  }
-  const sum = heights.reduce((a, b) => a + b, 0);
-  if (heights.length > 0 && sum + 0.5 < params.blockHeightPx) {
-    heights[heights.length - 1]! += params.blockHeightPx - sum;
-  }
-  return heights;
-}
-
-/**
- * Snap absolute minutes to the schedule grid.
- * Use `kind: 'end'` when snapping a block's `end_time`: it may equal `end_hour * 60` (bottom of the view).
- * `kind: 'start'` keeps the legacy cap at `end_hour * 60 - step` (last slot *start* line).
- */
-export function snapToSlot(
-  minutes: number,
-  startHour: number,
-  endHour: number,
-  slotDuration: number,
-  kind: 'start' | 'end' = 'start'
-): number {
-  const start = startHour * 60;
-  const end = endHour * 60;
-  const step = Math.max(1, slotDuration);
-  const offset = minutes - start;
-  const slot = Math.round(offset / step) * step + start;
-  const upperBound = kind === 'end' ? end : end - step;
-  return Math.max(start, Math.min(upperBound, slot));
-}
-
-export function calcMovedSlotTimes(params: {
-  scheduleDropStartMin: number;
-  viewEndMin: number;
-  slotDurationMinutes: number;
-  originalDurationMin: number;
-  startHour: number;
-  endHour: number;
-}): { newStartMin: number; newEndMin: number; preservedDurationMin: number } {
-  const preservedDurationMin = Math.max(0, Math.max(params.originalDurationMin, params.slotDurationMinutes));
-  const latestStartMin = params.viewEndMin - preservedDurationMin;
-  const candidateStartMin = Math.min(params.scheduleDropStartMin, latestStartMin);
-  // Re-snap to the slot grid, but never allow end_time to pass viewEndMin.
-  const snappedStartMin = snapToSlot(candidateStartMin, params.startHour, params.endHour, params.slotDurationMinutes);
-  const newStartMin = Math.min(snappedStartMin, latestStartMin);
-  return { newStartMin, newEndMin: newStartMin + preservedDurationMin, preservedDurationMin };
+  return buildGroupSegmentHeightsPxCore({ ...params, rowHeightPx: ROW_HEIGHT });
 }
 
 /** Walk `parent_id` (task id) chain to the root slot row for this day. */
@@ -307,93 +281,6 @@ export function reorderGroupSiblingIds(params: {
   const [removed] = next.splice(fromIndex, 1);
   next.splice(toIndex, 0, removed);
   return next;
-}
-
-export function clampTopResizeStartForMinDuration(params: {
-  candidateStartMin: number;
-  endMin: number;
-  slotDurationMinutes: number;
-}): number {
-  const step = Math.max(1, params.slotDurationMinutes);
-  return Math.min(params.candidateStartMin, params.endMin - step);
-}
-
-export function clampBottomResizeEndForMinDuration(params: {
-  startMin: number;
-  candidateEndMin: number;
-  slotDurationMinutes: number;
-}): number {
-  const step = Math.max(1, params.slotDurationMinutes);
-  return Math.max(params.candidateEndMin, params.startMin + step);
-}
-
-export function clampTopResizeStartForMinGroupDuration(params: {
-  candidateStartMin: number;
-  endMin: number;
-  slotDurationMinutes: number;
-  memberCount: number;
-  startHour: number;
-  endHour: number;
-  /** Group start at drag begin; avoids vertical snap when span is shorter than members×interval (overcrowded groups). */
-  currentStartMin?: number;
-}): number {
-  const step = Math.max(1, params.slotDurationMinutes);
-  const minTotal = Math.max(1, params.memberCount) * step;
-  let maxStart = params.endMin - minTotal;
-  if (params.currentStartMin !== undefined) {
-    const span = params.endMin - params.currentStartMin;
-    if (span < minTotal) {
-      maxStart = Math.max(maxStart, params.currentStartMin);
-    }
-  }
-  const dayStart = params.startHour * 60;
-  if (maxStart < dayStart) {
-    return params.currentStartMin ?? dayStart;
-  }
-  let s = Math.min(params.candidateStartMin, maxStart);
-  s = Math.max(dayStart, s);
-  s = snapToSlot(s, params.startHour, params.endHour, step);
-  if (s > maxStart) {
-    const k = Math.max(0, Math.floor((maxStart - dayStart) / step));
-    s = dayStart + k * step;
-  }
-  return s;
-}
-
-export function clampBottomResizeEndForMinGroupDuration(params: {
-  startMin: number;
-  candidateEndMin: number;
-  slotDurationMinutes: number;
-  memberCount: number;
-}): number {
-  const step = Math.max(1, params.slotDurationMinutes);
-  const minTotal = Math.max(1, params.memberCount) * step;
-  return Math.max(params.candidateEndMin, params.startMin + minTotal);
-}
-
-export function distributeGroupMemberTimes(params: {
-  groupStartMin: number;
-  groupEndMin: number;
-  slotDurationMinutes: number;
-  memberCount: number;
-}): Array<{ startMin: number; endMin: number }> {
-  const memberCount = Math.max(1, params.memberCount | 0);
-  const totalMin = Math.max(0, params.groupEndMin - params.groupStartMin);
-  const slotDur = params.slotDurationMinutes;
-  const totalIntervals = slotDur > 0 ? Math.round(totalMin / slotDur) : 0;
-  const baseIntervals = memberCount > 0 ? Math.floor(totalIntervals / memberCount) : 0;
-  const remainderIntervals = memberCount > 0 ? totalIntervals - baseIntervals * memberCount : 0;
-
-  const out: Array<{ startMin: number; endMin: number }> = [];
-  let cur = params.groupStartMin;
-  for (let i = 0; i < memberCount; i++) {
-    const intervalsForThis = baseIntervals + (i === memberCount - 1 ? remainderIntervals : 0);
-    const startMin = cur;
-    const endMin = cur + intervalsForThis * slotDur;
-    out.push({ startMin, endMin });
-    cur = endMin;
-  }
-  return out;
 }
 
 export function lockTextSelection(body: HTMLElement = document.body): { prevUserSelect: string; prevWebkitUserSelect: string } {
@@ -473,6 +360,7 @@ export function TaskListAndSchedule({
   onMainSlideChange,
   refetchOrganizationRef,
 }: Props) {
+  const desktopPointer = desktopPointerInteractionsEnabled(isMobile);
   const [viewDate, setViewDate] = useState(today());
   const [adminDebug, setAdminDebug] = useState(false);
   const [showDebugOverlays, setShowDebugOverlays] = useState(false);
@@ -656,6 +544,7 @@ export function TaskListAndSchedule({
   }, [openPrioritySlotId]);
   const [editingScheduleTaskId, setEditingScheduleTaskId] = useState<number | null>(null);
   const [editingScheduleTitle, setEditingScheduleTitle] = useState('');
+  const scheduleTitleEditOpenedAtRef = useRef(0);
   const scheduleDraftRef = useRef<{
     taskId: number;
     slotId: number;
@@ -723,22 +612,11 @@ export function TaskListAndSchedule({
     [cancelScheduleDraft, scheduleTab]
   );
 
-  const handleScheduleTitleCommit = useCallback(
-    (taskId: number, title: string) => {
-      if (isScheduleDraftTaskId(taskId)) {
-        void commitScheduleDraft(title);
-        return;
-      }
-      const t = title.trim();
-      if (t) {
-        api.tasks.update({ id: taskId, title: t }).then(() => {
-          setTasks((prev) => prev.map((task) => (task.id === taskId ? { ...task, title: t } : task)));
-        });
-      }
-      setEditingScheduleTaskId(null);
-    },
-    [commitScheduleDraft]
-  );
+  const openScheduleTitleEdit = useCallback((taskId: number, title: string) => {
+    scheduleTitleEditOpenedAtRef.current = performance.now();
+    setEditingScheduleTaskId(taskId);
+    setEditingScheduleTitle(title ?? 'Task');
+  }, []);
 
   useEffect(() => {
     const onPointerDown = (e: PointerEvent) => {
@@ -790,7 +668,7 @@ export function TaskListAndSchedule({
         calendarSlotsByDate,
         calendarFeedEventsByDate,
         today(),
-        { tasksById: calendarTasksById, categoriesById: calendarCategoriesById }
+        { tasksById: calendarTasksById, categoriesById: calendarCategoriesById, timezone: settings.timezone }
       ),
     [
       calendarMonth,
@@ -798,6 +676,7 @@ export function TaskListAndSchedule({
       calendarFeedEventsByDate,
       calendarTasksById,
       calendarCategoriesById,
+      settings.timezone,
     ]
   );
   const [scheduleBlocks, setScheduleBlocks] = useState<ScheduleBlock[]>([]);
@@ -885,6 +764,8 @@ export function TaskListAndSchedule({
   const cancelUpRef = useRef<(() => void) | null>(null);
   const initialLoadRef = useRef(true);
   const textSelectionLockRef = useRef<ReturnType<typeof lockTextSelection> | null>(null);
+  const lastDataRevisionRef = useRef<string | null>(null);
+  const pendingLocalWritesRef = useRef(0);
 
   const [scheduleAutoScrollBlink, setScheduleAutoScrollBlink] = useState(false);
   const scheduleAutoScrollBlinkTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1061,12 +942,17 @@ export function TaskListAndSchedule({
       .catch(() => setWeekFeedByDate({}));
   }, [scheduleTab, isMobile, weekAnchorSunday, weekScope, settings.timezone]);
 
-  const loadData = useCallback(() => {
-    if (initialLoadRef.current) {
+  const loadData = useCallback((opts?: { silent?: boolean } | unknown) => {
+    const silent =
+      typeof opts === 'object' &&
+      opts !== null &&
+      'silent' in opts &&
+      (opts as { silent?: boolean }).silent === true;
+    if (initialLoadRef.current && !silent) {
       setLoading(true);
       initialLoadRef.current = false;
     }
-    setError(null);
+    if (!silent) setError(null);
     const run = async () => {
       try {
         await api.dataIntegrity.ensure().catch(() => {});
@@ -1204,11 +1090,16 @@ export function TaskListAndSchedule({
           const { from, to } = getMonthRange(calendarMonth);
           api.slots.listByDateRange(from, to).then((r) => setCalendarSlotsByDate(r.byDate ?? {})).catch(() => setCalendarSlotsByDate({}));
         }
+        void adoptServerDataRevision(lastDataRevisionRef);
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        if (!silent) setError(err instanceof Error ? err.message : String(err));
       } finally {
-        setLoading(false);
-        setInitialDataReady(true);
+        if (!silent) {
+          setLoading(false);
+          setInitialDataReady(true);
+        } else {
+          setInitialDataReady(true);
+        }
       }
     };
     run();
@@ -1270,6 +1161,7 @@ export function TaskListAndSchedule({
   }, [refetchTaskContent, loadData]);
 
   const mergeTaskFromPatch = useCallback((patched: Task) => {
+    const title = patched.title;
     setTasks((prev) =>
       prev.map((x) => {
         if (x.id !== patched.id) return x;
@@ -1288,7 +1180,58 @@ export function TaskListAndSchedule({
         return { ...x, ...p };
       })
     );
+    if (title) {
+      setSlots((prev) => patchSlotTitlesForTask(prev, patched.id, title));
+      setCalendarSlotsByDate((prev) => patchCalendarSlotsByDateForTask(prev, patched.id, title));
+    }
   }, []);
+
+  const commitTaskTitleUpdate = useCallback(
+    (taskId: number, title: string) => {
+      const t = title.trim();
+      if (!t) return;
+      applyTaskTitlePatch(
+        { setTasks, setCommonTasks, setSlots, setCalendarSlotsByDate },
+        taskId,
+        t
+      );
+      pendingLocalWritesRef.current += 1;
+      void api.tasks
+        .update({ id: taskId, title: t })
+        .then((r) => {
+          if (r.task) mergeTaskFromPatch(r.task as Task);
+          return adoptServerDataRevision(lastDataRevisionRef);
+        })
+        .catch((err) => {
+          loadData({ silent: true });
+          setError(err instanceof Error ? err.message : String(err));
+        })
+        .finally(() => {
+          pendingLocalWritesRef.current -= 1;
+        });
+    },
+    [mergeTaskFromPatch, loadData]
+  );
+
+  const handleScheduleTitleCommit = useCallback(
+    (taskId: number, title: string) => {
+      if (isScheduleDraftTaskId(taskId)) {
+        void commitScheduleDraft(title);
+        return;
+      }
+      setEditingScheduleTaskId(null);
+      commitTaskTitleUpdate(taskId, title);
+    },
+    [commitScheduleDraft, commitTaskTitleUpdate]
+  );
+
+  const onScheduleTitleInputBlur = useCallback(
+    (taskId: number, e: React.FocusEvent<HTMLInputElement>) => {
+      if (shouldIgnoreScheduleTitleBlur(scheduleTitleEditOpenedAtRef.current)) return;
+      handleScheduleTitleCommit(taskId, e.currentTarget.value);
+    },
+    [handleScheduleTitleCommit]
+  );
 
   const refetchOrganization = useCallback(() => {
     api.organization.list().then((r) => {
@@ -1326,6 +1269,17 @@ export function TaskListAndSchedule({
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  useDataSyncPoll({
+    enabled: initialDataReady,
+    pendingWritesRef: pendingLocalWritesRef,
+    lastRevisionRef: lastDataRevisionRef,
+    onRemoteChange: () => loadData({ silent: true }),
+    isPaused: () =>
+      editingScheduleTaskId !== null ||
+      editingTaskId !== null ||
+      dragState !== null,
+  });
 
   /** Prefetch current week slots (today first) so Week view is warm after load. */
   useEffect(() => {
@@ -1681,6 +1635,66 @@ export function TaskListAndSchedule({
   }
   const totalHeight = slotLabels.length * ROW_HEIGHT;
 
+  const makeScheduleSlotResizeDeps = useCallback(
+    (params: {
+      slot: ScheduledSlot;
+      childSlots: ScheduledSlot[];
+      startMin: number;
+      endMin: number;
+    }): ScheduleSlotResizeDeps => ({
+      ...params,
+      viewStartMinutes,
+      slotDurationMinutes,
+      startHour: settings.start_hour,
+      endHour: settings.end_hour,
+      rowHeightPx: ROW_HEIGHT,
+      taskTitle: tasks.find((t) => t.id === params.slot.task_id)?.title ?? '',
+      setSlots,
+      onRecurringResize: (payload) => setRecurringResizeModal(payload),
+      onCommit: () => refetchSlotsForViewDay(),
+      onError: (err) => {
+        setError(err instanceof Error ? err.message : String(err));
+        loadData();
+      },
+      patchSlots: async (updates) => {
+        await Promise.all(updates.map((u) => api.slots.update(u)));
+      },
+    }),
+    [
+      viewStartMinutes,
+      slotDurationMinutes,
+      settings.start_hour,
+      settings.end_hour,
+      tasks,
+      refetchSlotsForViewDay,
+      loadData,
+    ]
+  );
+
+  const scheduleDropGhostSpanMin = useMemo(() => {
+    if (!dragState) return slotDurationMinutes;
+    const ids = dragState.taskIds ?? [dragState.taskId];
+    const rootId = ids[0];
+    const task = tasks.find((t) => t.id === rootId);
+    const memberCount =
+      task && task.parent_id == null
+        ? 1 + tasks.filter((t) => t.parent_id === task.id).length
+        : 1;
+    return schedulePlacementSpanMinutes({ task, memberCount, slotDurationMinutes });
+  }, [dragState, tasks, slotDurationMinutes]);
+
+  const bindSlotResizeTop = useCallback(
+    (slot: ScheduledSlot, childSlots: ScheduledSlot[], startMin: number, endMin: number) =>
+      bindScheduleSlotTopResize(makeScheduleSlotResizeDeps({ slot, childSlots, startMin, endMin })),
+    [makeScheduleSlotResizeDeps]
+  );
+
+  const bindSlotResizeBottom = useCallback(
+    (slot: ScheduledSlot, childSlots: ScheduledSlot[], startMin: number, endMin: number) =>
+      bindScheduleSlotBottomResize(makeScheduleSlotResizeDeps({ slot, childSlots, startMin, endMin })),
+    [makeScheduleSlotResizeDeps]
+  );
+
   const sortTasks = useCallback(
     (list: Task[]) => {
       const dir = orderDir === 'asc' ? 1 : -1;
@@ -1783,31 +1797,37 @@ export function TaskListAndSchedule({
     return ids;
   };
 
-  const getNextAvailableTimeForDay = async (dayId: number): Promise<{ start_time: string; end_time: string }> => {
+  const getNextAvailableTimeForDay = async (
+    dayId: number,
+    durationMinutes: number = slotDurationMinutes
+  ): Promise<{ start_time: string; end_time: string }> => {
     const r = await api.slots.list(dayId);
     const daySlots = (r.slots || []).filter((s) => s.id && slotHasTime(s));
     const startMin = settings.start_hour * 60;
     const endMin = settings.end_hour * 60;
     const step = slotDurationMinutes;
+    const span = Math.max(step, durationMinutes);
     const ranges: Array<[number, number]> = daySlots
       .map((s): [number, number] => [timeToMinutes(s.start_time), timeToMinutes(s.end_time)])
       .sort((a, b) => a[0] - b[0]);
     let slotStart = startMin;
-    while (slotStart < endMin - step) {
-      const slotEnd = slotStart + step;
+    while (slotStart <= endMin - span) {
+      const slotEnd = slotStart + span;
       const overlaps = ranges.some(([s, e]) => slotStart < e && slotEnd > s);
       if (!overlaps) return { start_time: minutesToTime(slotStart), end_time: minutesToTime(slotEnd) };
       slotStart += step;
     }
-    return { start_time: minutesToTime(startMin), end_time: minutesToTime(startMin + step) };
+    return { start_time: minutesToTime(startMin), end_time: minutesToTime(startMin + span) };
   };
 
   const getNextAvailableGroupTimeForDay = async (
     dayId: number,
-    memberCount: number
+    memberCount: number,
+    groupDurationMinutes?: number
   ): Promise<{ start_time: string; end_time: string }> => {
     const count = Math.max(1, memberCount | 0);
-    if (count <= 1) return getNextAvailableTimeForDay(dayId);
+    const groupDur = groupDurationMinutes ?? count * slotDurationMinutes;
+    if (count <= 1) return getNextAvailableTimeForDay(dayId, groupDur);
 
     const r = await api.slots.list(dayId);
     const daySlots = (r.slots || []).filter((s) => s.id && slotHasTime(s));
@@ -1821,7 +1841,6 @@ export function TaskListAndSchedule({
     const startMin = settings.start_hour * 60;
     const endMin = settings.end_hour * 60;
     const step = slotDurationMinutes;
-    const groupDur = count * slotDurationMinutes;
 
     let slotStart = startMin;
     while (slotStart <= endMin - groupDur) {
@@ -2533,8 +2552,13 @@ export function TaskListAndSchedule({
                       : [];
                 const memberIds = isGroupRoot ? [rootTaskId, ...orderedDirectChildren.map((c) => c.id)] : [rootTaskId];
                 const memberCount = memberIds.length;
+                const placementSpanMin = schedulePlacementSpanMinutes({
+                  task: template,
+                  memberCount,
+                  slotDurationMinutes,
+                });
 
-                const gt = await getNextAvailableGroupTimeForDay(day.id, memberCount);
+                const gt = await getNextAvailableGroupTimeForDay(day.id, memberCount, placementSpanMin);
                 const gtStartMin = timeToMinutes(gt.start_time);
                 const gtEndMin = timeToMinutes(gt.end_time);
                 const memberTimes = distributeGroupMemberTimes({
@@ -2671,9 +2695,14 @@ export function TaskListAndSchedule({
                       : [];
                 const memberIds = isGroupRoot ? [rootTaskId, ...orderedDirectChildren.map((c) => c.id)] : [rootTaskId];
                 const memberCount = memberIds.length;
+                const placementSpanMin = schedulePlacementSpanMinutes({
+                  task: template,
+                  memberCount,
+                  slotDurationMinutes,
+                });
 
                 const groupStartMinCandidate = nextStartMin != null
-                  ? Math.min(nextStartMin, viewEndMin - memberCount * slotDurationMinutes)
+                  ? Math.min(nextStartMin, viewEndMin - placementSpanMin)
                   : null;
                 let rootStartMin: number;
                 let rootEndMin: number;
@@ -2681,10 +2710,10 @@ export function TaskListAndSchedule({
 
                 if (groupStartMinCandidate != null) {
                   rootStartMin = groupStartMinCandidate;
-                  rootEndMin = groupStartMinCandidate + memberCount * slotDurationMinutes;
+                  rootEndMin = groupStartMinCandidate + placementSpanMin;
                   memberTimes = distributeGroupMemberTimes({ groupStartMin: rootStartMin, groupEndMin: rootEndMin, slotDurationMinutes, memberCount });
                 } else {
-                  const gt = await getNextAvailableGroupTimeForDay(day.id, memberCount);
+                  const gt = await getNextAvailableGroupTimeForDay(day.id, memberCount, placementSpanMin);
                   const gtStartMin = timeToMinutes(gt.start_time);
                   const gtEndMin = timeToMinutes(gt.end_time);
                   rootStartMin = gtStartMin;
@@ -2697,7 +2726,7 @@ export function TaskListAndSchedule({
                   });
                 }
 
-                if (nextStartMin != null) nextStartMin += memberCount * slotDurationMinutes;
+                if (nextStartMin != null) nextStartMin += placementSpanMin;
 
                 await Promise.all(
                   memberIds.map((id, idx) =>
@@ -2816,6 +2845,7 @@ export function TaskListAndSchedule({
   );
 
   const enterDragMode = useCallback(() => {
+    if (!desktopPointer) return;
     if (holdTimeoutRef.current) {
       clearTimeout(holdTimeoutRef.current);
       holdTimeoutRef.current = null;
@@ -3039,10 +3069,12 @@ export function TaskListAndSchedule({
     tasks,
     bucketListIds,
     primaryListId,
+    desktopPointer,
   ]);
 
   const startBulkScheduleMoveHold = useCallback(
     (anchorTaskId: number, clientX: number, clientY: number) => {
+      if (!desktopPointer) return;
       if (scheduleTab === 'week' && !isMobile) {
         const anchorSlot = slots.find(
           (s) =>
@@ -3089,7 +3121,7 @@ export function TaskListAndSchedule({
         enterDragMode();
       }, HOLD_MS);
     },
-    [cancelHold, enterDragMode, selectedScheduleRootSlotIds, slots, viewDate, scheduleTab, isMobile, slotDayByRecordId]
+    [cancelHold, enterDragMode, selectedScheduleRootSlotIds, slots, viewDate, scheduleTab, isMobile, slotDayByRecordId, desktopPointer]
   );
 
   const startHold = useCallback(
@@ -3102,6 +3134,7 @@ export function TaskListAndSchedule({
       scheduleColumnDate?: string,
       onShortPress?: () => void
     ) => {
+      if (!desktopPointer) return;
       if (source === 'schedule' && scheduleBulkMode && !scheduleBulkMoveMode) return;
       if (source === 'schedule') {
         const col = scheduleColumnDate ?? viewDate;
@@ -3135,7 +3168,7 @@ export function TaskListAndSchedule({
         enterDragMode();
       }, HOLD_MS);
     },
-    [cancelHold, enterDragMode, selectedTaskIds, tasks, getChildTaskIds, viewDate, scheduleBulkMode, scheduleBulkMoveMode]
+    [cancelHold, enterDragMode, selectedTaskIds, tasks, getChildTaskIds, viewDate, scheduleBulkMode, scheduleBulkMoveMode, desktopPointer]
   );
 
   const goPrev = () => {
@@ -3521,6 +3554,7 @@ export function TaskListAndSchedule({
   /** Drag horizontal boundary between grouped child N and N+1; redistributes adjacent slice lengths. */
   const onGroupBoundaryPointerDown = useCallback(
     (e: React.PointerEvent, slot: ScheduledSlot, orderedChildren: ScheduledSlot[], boundaryChildIndex: number) => {
+      if (!desktopPointer) return;
       e.preventDefault();
       e.stopPropagation();
       if (scheduleDayPast) return;
@@ -3599,7 +3633,7 @@ export function TaskListAndSchedule({
       window.addEventListener('pointercancel', up, { once: true });
       handleEl.addEventListener('lostpointercapture', up, { once: true });
     },
-    [scheduleDayPast, slotDurationMinutes, settings.start_hour, settings.end_hour, setSlots, setError, loadData, refetchSlotsForViewDay]
+    [scheduleDayPast, slotDurationMinutes, settings.start_hour, settings.end_hour, setSlots, setError, loadData, refetchSlotsForViewDay, desktopPointer]
   );
 
   const duplicateScheduleSlot = useCallback(
@@ -4599,8 +4633,8 @@ export function TaskListAndSchedule({
                                 setEditingTitle(title);
                               }}
                               onEditSave={(id, title) => {
-                                api.tasks.update({ id, title }).then(loadData);
                                 setEditingTaskId(null);
+                                commitTaskTitleUpdate(id, title);
                               }}
                               onEditCancel={() => setEditingTaskId(null)}
                               onPriorityChange={(id, p) => api.tasks.update({ id, priority: p }).then(loadData)}
@@ -4816,8 +4850,8 @@ export function TaskListAndSchedule({
                             setEditingTitle(title);
                           }}
                           onEditSave={(id, title) => {
-                            api.tasks.update({ id, title }).then(loadData);
                             setEditingTaskId(null);
+                            commitTaskTitleUpdate(id, title);
                           }}
                           onEditCancel={() => setEditingTaskId(null)}
                           onPriorityChange={(id, p) => api.tasks.update({ id, priority: p }).then(loadData)}
@@ -4967,7 +5001,7 @@ export function TaskListAndSchedule({
             className="left-main-resize"
             ref={scheduleResizeRef}
             onPointerDown={(e) => {
-              if (e.button !== 0) return;
+              if (!desktopPointer || e.button !== 0) return;
               const startY = e.clientY;
               const startH = taskViewHeightPx;
               const el = scheduleResizeRef.current;
@@ -5671,10 +5705,10 @@ export function TaskListAndSchedule({
                               onPointerDown={(e) => e.stopPropagation()}
                               onClick={(e) => e.stopPropagation()}
                               onDoubleClick={(e) => e.stopPropagation()}
-                              onBlur={() => handleScheduleTitleCommit(slot.task_id, editingScheduleTitle)}
+                              onBlur={(e) => onScheduleTitleInputBlur(slot.task_id, e)}
                               onKeyDown={(e) => {
                                 if (e.key === 'Enter') {
-                                  handleScheduleTitleCommit(slot.task_id, editingScheduleTitle);
+                                  handleScheduleTitleCommit(slot.task_id, e.currentTarget.value);
                                 }
                                 if (e.key === 'Escape') {
                                   if (isScheduleDraftTaskId(slot.task_id)) cancelScheduleDraft();
@@ -5687,14 +5721,26 @@ export function TaskListAndSchedule({
                           ) : (
                             <span
                               className="schedule-untimed-title"
-                              onDoubleClick={(e) => {
+                              onMouseDown={
+                                desktopPointer
+                                  ? (e) => {
+                                      if (e.button !== 0) return;
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                    }
+                                  : undefined
+                              }
+                              onDoubleClick={
+                                desktopPointer
+                                  ? (e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
                                 if (scheduleDayPast || isScheduleDraftTaskId(slot.task_id)) return;
-                                setEditingScheduleTaskId(slot.task_id);
-                                setEditingScheduleTitle(slot.title ?? 'Task');
-                              }}
-                              title="Double-click to edit title"
+                                openScheduleTitleEdit(slot.task_id, slot.title ?? 'Task');
+                              }
+                                  : undefined
+                              }
+                              title={desktopPointer ? 'Double-click to edit title' : undefined}
                             >
                               {isScheduleDraftTaskId(slot.task_id) ? 'New task…' : (slot.title ?? 'Task')}
                             </span>
@@ -5718,10 +5764,13 @@ export function TaskListAndSchedule({
                                     <button
                                       type="button"
                                       title="Edit title"
+                                      onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                      }}
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        setEditingScheduleTaskId(slot.task_id);
-                                        setEditingScheduleTitle(slot.title ?? 'Task');
+                                        openScheduleTitleEdit(slot.task_id, slot.title ?? 'Task');
                                         setOpenScheduleDrawerSlotId(null);
                                       }}
                                     >
@@ -6127,6 +6176,7 @@ export function TaskListAndSchedule({
                                   }}
                                   title={`${blockTitle} (${block.start_time} - ${block.end_time}). Hold to move; release without dragging to change type.`}
                                   onPointerDown={(e) => {
+                                    if (isMobile) return;
                                     if (e.pointerType === 'mouse' && e.button !== 0) return;
                                     const t = e.target as HTMLElement;
                                     if (t.closest('.schedule-time-block-resize, .schedule-time-block-delete, .schedule-time-block-type-select')) return;
@@ -6235,6 +6285,7 @@ export function TaskListAndSchedule({
                                     title="Resize block start"
                                     aria-label="Resize block start"
                                     onPointerDown={(e) => {
+                                      if (!desktopPointer) return;
                                       if (e.pointerType === 'mouse' && e.button !== 0) return;
                                       e.preventDefault();
                                       e.stopPropagation();
@@ -6324,6 +6375,7 @@ export function TaskListAndSchedule({
                                     title="Resize block end"
                                     aria-label="Resize block end"
                                     onPointerDown={(e) => {
+                                      if (!desktopPointer) return;
                                       if (e.pointerType === 'mouse' && e.button !== 0) return;
                                       e.preventDefault();
                                       e.stopPropagation();
@@ -6454,7 +6506,9 @@ export function TaskListAndSchedule({
                           setScheduleAddTaskGhost((g) => (g?.columnDate === viewDate ? null : g))
                         }
                         onClick={(e) => handleScheduleGridClick(viewDate, e)}
-                        onDoubleClick={(e) => {
+                        onDoubleClick={
+                          desktopPointer
+                            ? (e) => {
                           if (scheduleDayPast) return;
                           if ((e.target as HTMLElement).closest('.time-block, .schedule-time-block-lane-item, button, a, .time-block-resize, .time-block-resize-top, .time-block-complete-rail, .time-block-complete-checkbox, .time-block-drag-to-list, .time-block-title, .time-block-edit, .schedule-untimed-title, .schedule-untimed-title-input, .schedule-untimed-feed-chip')) return;
                           const container = e.currentTarget as HTMLElement;
@@ -6470,7 +6524,9 @@ export function TaskListAndSchedule({
                           const viewEndMin = settings.end_hour * 60;
                           if (startMin >= viewEndMin - slotDurationMinutes) return;
                           void createScheduleTaskAt(viewDate, startMin);
-                        }}
+                            }
+                            : undefined
+                        }
                       >
                         {viewDate === today() && currentTimeMinutes >= viewStartMinutes && currentTimeMinutes < settings.end_hour * 60 && (
                           <div
@@ -6496,7 +6552,7 @@ export function TaskListAndSchedule({
                             className="time-block time-block-ghost"
                             style={{
                               top: ((scheduleDropGhostMin - viewStartMinutes) / slotDurationMinutes) * ROW_HEIGHT + 'px',
-                              height: ROW_HEIGHT + 'px',
+                              height: (scheduleDropGhostSpanMin / slotDurationMinutes) * ROW_HEIGHT + 'px',
                               left: '2%',
                               width: '96%',
                               pointerEvents: 'none',
@@ -6640,9 +6696,7 @@ export function TaskListAndSchedule({
                                   if (
                                     scheduleBulkMoveMode &&
                                     selectedScheduleRootSlotIds.has(slot.id) &&
-                                    !(e.target as HTMLElement).closest(
-                                      'button, a, .time-block-resize, .time-block-resize-top, .time-block-complete-rail, .time-block-complete-checkbox, .time-block-drag-to-list, .time-block-link-inline, .time-block-link, .time-block-title, .time-block-edit, .time-block-group-boundary, .time-block-group-split-icon-btn'
-                                    )
+                                    !(e.target as HTMLElement).closest(SCHEDULE_BLOCK_HOLD_EXCLUDE)
                                   ) {
                                     e.preventDefault();
                                     e.stopPropagation();
@@ -6654,7 +6708,8 @@ export function TaskListAndSchedule({
                                   toggleScheduleRootInSelection(slot.id);
                                   return;
                                 }
-                                if ((e.target as HTMLElement).closest('button, a, .time-block-resize, .time-block-resize-top, .time-block-complete-rail, .time-block-complete-checkbox, .time-block-drag-to-list, .time-block-link-inline, .time-block-link, .time-block-title, .time-block-edit, .time-block-group-boundary, .time-block-group-split-icon-btn')) return;
+                                if (isScheduleBlockHoldExcluded(e.target)) return;
+                                if (isMobile) return;
                                 e.preventDefault();
                                 startHold(slot.task_id, 'schedule', e.clientX, e.clientY);
                               }}
@@ -6670,7 +6725,7 @@ export function TaskListAndSchedule({
                                   />
                                 </div>
                               )}
-                              {!scheduleDayPast && !slot.is_recurring_occurrence && (
+                              {!scheduleDayPast && !slot.is_recurring_occurrence && desktopPointer && (
                               <div
                                 className="time-block-resize time-block-resize-top"
                                 title="Drag to change start time"
@@ -7006,10 +7061,13 @@ export function TaskListAndSchedule({
                                         }
                                         value={editingScheduleTitle}
                                         onChange={(e) => setEditingScheduleTitle(e.target.value)}
-                                        onBlur={() => handleScheduleTitleCommit(slot.task_id, editingScheduleTitle)}
+                                        onPointerDown={(e) => e.stopPropagation()}
+                                        onClick={(e) => e.stopPropagation()}
+                                        onDoubleClick={(e) => e.stopPropagation()}
+                                        onBlur={(e) => onScheduleTitleInputBlur(slot.task_id, e)}
                                         onKeyDown={(e) => {
                                           if (e.key === 'Enter') {
-                                            handleScheduleTitleCommit(slot.task_id, editingScheduleTitle);
+                                            handleScheduleTitleCommit(slot.task_id, e.currentTarget.value);
                                           }
                                           if (e.key === 'Escape') {
                                             if (isScheduleDraftTaskId(slot.task_id)) cancelScheduleDraft();
@@ -7022,14 +7080,26 @@ export function TaskListAndSchedule({
                                     ) : (
                                       <div
                                         className="time-block-title"
-                                        onDoubleClick={(e) => {
+                                        onMouseDown={
+                                          desktopPointer
+                                            ? (e) => {
+                                                if (e.button !== 0) return;
+                                                e.preventDefault();
+                                                e.stopPropagation();
+                                              }
+                                            : undefined
+                                        }
+                                        onDoubleClick={
+                                          desktopPointer
+                                            ? (e) => {
                                           e.preventDefault();
                                           e.stopPropagation();
                                           if (scheduleDayPast || isScheduleDraftTaskId(slot.task_id) || (slot.is_recurring_occurrence && viewDate > today())) return;
-                                          setEditingScheduleTaskId(slot.task_id);
-                                          setEditingScheduleTitle(slot.title ?? 'Task');
-                                        }}
-                                        title="Double-click to edit title"
+                                          openScheduleTitleEdit(slot.task_id, slot.title ?? 'Task');
+                                        }
+                                            : undefined
+                                        }
+                                        title={desktopPointer ? 'Double-click to edit title' : undefined}
                                       >
                                         {isScheduleDraftTaskId(slot.task_id) ? 'New task…' : (slot.title ?? 'Task')}
                                       </div>
@@ -7235,11 +7305,14 @@ export function TaskListAndSchedule({
                                         type="button"
                                         title="Edit title"
                                         disabled={scheduleDayPast}
+                                        onMouseDown={(e) => {
+                                          e.preventDefault();
+                                          e.stopPropagation();
+                                        }}
                                         onClick={(e) => {
                                           e.stopPropagation();
                                           if (scheduleDayPast) return;
-                                          setEditingScheduleTaskId(slot.task_id);
-                                          setEditingScheduleTitle(slot.title ?? '');
+                                          openScheduleTitleEdit(slot.task_id, slot.title ?? '');
                                           setOpenScheduleDrawerSlotId(null);
                                         }}
                                       >
@@ -7499,10 +7572,13 @@ export function TaskListAndSchedule({
                                                   }
                                                   value={editingScheduleTitle}
                                                   onChange={(e) => setEditingScheduleTitle(e.target.value)}
-                                                  onBlur={() => handleScheduleTitleCommit(c.task_id, editingScheduleTitle)}
+                                                  onPointerDown={(e) => e.stopPropagation()}
+                                                  onClick={(e) => e.stopPropagation()}
+                                                  onDoubleClick={(e) => e.stopPropagation()}
+                                                  onBlur={(e) => onScheduleTitleInputBlur(c.task_id, e)}
                                                   onKeyDown={(e) => {
                                                     if (e.key === 'Enter') {
-                                                      handleScheduleTitleCommit(c.task_id, editingScheduleTitle);
+                                                      handleScheduleTitleCommit(c.task_id, e.currentTarget.value);
                                                     }
                                                     if (e.key === 'Escape') {
                                                       if (isScheduleDraftTaskId(c.task_id)) cancelScheduleDraft();
@@ -7514,14 +7590,26 @@ export function TaskListAndSchedule({
                                               ) : (
                                                 <div
                                                   className="time-block-title"
-                                                  onDoubleClick={(e) => {
+                                                  onMouseDown={
+                                                    desktopPointer
+                                                      ? (e) => {
+                                                          if (e.button !== 0) return;
+                                                          e.preventDefault();
+                                                          e.stopPropagation();
+                                                        }
+                                                      : undefined
+                                                  }
+                                                  onDoubleClick={
+                                                    desktopPointer
+                                                      ? (e) => {
                                                     e.preventDefault();
                                                     e.stopPropagation();
                                                     if (scheduleDayPast || isScheduleDraftTaskId(c.task_id) || viewDate > today()) return;
-                                                    setEditingScheduleTaskId(c.task_id);
-                                                    setEditingScheduleTitle(c.title ?? 'Task');
-                                                  }}
-                                                  title="Double-click to edit title"
+                                                    openScheduleTitleEdit(c.task_id, c.title ?? 'Task');
+                                                  }
+                                                      : undefined
+                                                  }
+                                                  title={desktopPointer ? 'Double-click to edit title' : undefined}
                                                 >
                                                   {isScheduleDraftTaskId(c.task_id) ? 'New task…' : (c.title ?? 'Task')}
                                                 </div>
@@ -7600,11 +7688,14 @@ export function TaskListAndSchedule({
                                                 type="button"
                                                 title="Edit title"
                                                 disabled={scheduleDayPast}
+                                                onMouseDown={(e) => {
+                                                  e.preventDefault();
+                                                  e.stopPropagation();
+                                                }}
                                                 onClick={(e) => {
                                                   e.stopPropagation();
                                                   if (scheduleDayPast) return;
-                                                  setEditingScheduleTaskId(c.task_id);
-                                                  setEditingScheduleTitle(c.title ?? '');
+                                                  openScheduleTitleEdit(c.task_id, c.title ?? '');
                                                   setOpenScheduleDrawerSlotId(null);
                                                 }}
                                               >
@@ -7786,7 +7877,7 @@ export function TaskListAndSchedule({
                                   })}
                                 </div>
                                 </div>
-                              {!scheduleDayPast && !slot.is_recurring_occurrence && (
+                              {!scheduleDayPast && !slot.is_recurring_occurrence && desktopPointer && (
                               <div
                                 className="time-block-resize"
                                 title="Drag to resize"
@@ -8109,7 +8200,9 @@ export function TaskListAndSchedule({
                                   style={{ height: totalHeight + 'px' }}
                                   data-schedule-drop="true"
                                   data-schedule-day={colDate}
-                                  onDoubleClick={(e) => {
+                                  onDoubleClick={
+                                    desktopPointer
+                                      ? (e) => {
                                     if (colPast) return;
                                     if (
                                       (e.target as HTMLElement).closest(
@@ -8148,7 +8241,9 @@ export function TaskListAndSchedule({
                                         setError(err instanceof Error ? err.message : String(err));
                                         loadData();
                                       });
-                                  }}
+                                      }
+                                      : undefined
+                                  }
                                 >
                                   {slotLabels.map((_, i) => {
                                     const min = viewStartMinutes + i * slotDurationMinutes;
@@ -8176,7 +8271,7 @@ export function TaskListAndSchedule({
                                       className="time-block time-block-ghost"
                                       style={{
                                         top: ((scheduleDropGhostMin - viewStartMinutes) / slotDurationMinutes) * ROW_HEIGHT + 'px',
-                                        height: ROW_HEIGHT + 'px',
+                                        height: (scheduleDropGhostSpanMin / slotDurationMinutes) * ROW_HEIGHT + 'px',
                                         left: '2%',
                                         width: '96%',
                                         pointerEvents: 'none',
@@ -8218,6 +8313,17 @@ export function TaskListAndSchedule({
                                     onStartBulkScheduleMoveHold={startBulkScheduleMoveHold}
                                     onCompleteSlot={(slot, children) => handleWeekColumnComplete(colDate, slot, children)}
                                     hideScheduleTags={hideScheduleTags}
+                                    resizeEnabled={desktopPointer}
+                                    bindSlotResizeTop={bindSlotResizeTop}
+                                    bindSlotResizeBottom={bindSlotResizeBottom}
+                                    editingScheduleTaskId={editingScheduleTaskId}
+                                    editingScheduleTitle={editingScheduleTitle}
+                                    onEditingScheduleTitleChange={setEditingScheduleTitle}
+                                    onScheduleTitleInputBlur={onScheduleTitleInputBlur}
+                                    onScheduleTitleCommit={handleScheduleTitleCommit}
+                                    onOpenScheduleTitleEdit={openScheduleTitleEdit}
+                                    onCancelScheduleTitleEdit={() => setEditingScheduleTaskId(null)}
+                                    desktopPointer={desktopPointer}
                                     onIcalComplete={(eventId, completed) =>
                                       api.icalEvents
                                         .setCompleted(eventId, completed)
@@ -8298,7 +8404,9 @@ export function TaskListAndSchedule({
                                   setScheduleAddTaskGhost((g) => (g?.columnDate === colDate ? null : g))
                                 }
                                 onClick={(e) => handleScheduleGridClick(colDate, e)}
-                                onDoubleClick={(e) => {
+                                onDoubleClick={
+                                  desktopPointer
+                                    ? (e) => {
                                   if (colPast) return;
                                   if (
                                     (e.target as HTMLElement).closest(
@@ -8337,7 +8445,9 @@ export function TaskListAndSchedule({
                                       setError(err instanceof Error ? err.message : String(err));
                                       loadData();
                                     });
-                                }}
+                                    }
+                                    : undefined
+                                }
                               >
                                 {slotLabels.map((_, i) => {
                                   const min = viewStartMinutes + i * slotDurationMinutes;
@@ -8365,7 +8475,7 @@ export function TaskListAndSchedule({
                                     className="time-block time-block-ghost"
                                     style={{
                                       top: ((scheduleDropGhostMin - viewStartMinutes) / slotDurationMinutes) * ROW_HEIGHT + 'px',
-                                      height: ROW_HEIGHT + 'px',
+                                      height: (scheduleDropGhostSpanMin / slotDurationMinutes) * ROW_HEIGHT + 'px',
                                       left: '2%',
                                       width: '96%',
                                       pointerEvents: 'none',
@@ -8422,6 +8532,18 @@ export function TaskListAndSchedule({
                                   }
                                   onStartBulkScheduleMoveHold={startBulkScheduleMoveHold}
                                   onCompleteSlot={(slot, children) => handleWeekColumnComplete(colDate, slot, children)}
+                                  hideScheduleTags={hideScheduleTags}
+                                  resizeEnabled={desktopPointer}
+                                  bindSlotResizeTop={bindSlotResizeTop}
+                                  bindSlotResizeBottom={bindSlotResizeBottom}
+                                  editingScheduleTaskId={editingScheduleTaskId}
+                                  editingScheduleTitle={editingScheduleTitle}
+                                  onEditingScheduleTitleChange={setEditingScheduleTitle}
+                                  onScheduleTitleInputBlur={onScheduleTitleInputBlur}
+                                  onScheduleTitleCommit={handleScheduleTitleCommit}
+                                  onOpenScheduleTitleEdit={openScheduleTitleEdit}
+                                  onCancelScheduleTitleEdit={() => setEditingScheduleTaskId(null)}
+                                  desktopPointer={desktopPointer}
                                   onIcalComplete={(eventId, completed) =>
                                     api.icalEvents
                                       .setCompleted(eventId, completed)
@@ -8472,7 +8594,7 @@ export function TaskListAndSchedule({
           aria-orientation="vertical"
           className="resize-handle"
           onPointerDown={(e) => {
-            if (e.button !== 0) return;
+            if (!desktopPointer || e.button !== 0) return;
             const startX = e.clientX;
             const startW = rightPanelWidth;
             const minW = 280;
@@ -9487,7 +9609,9 @@ function OrganizationTaskModal({
   const [autoCompleteEod, setAutoCompleteEod] = useState(() => Number(task.auto_complete_eod) === 1);
   const [listState, setListState] = useState(() => task.list_state ?? defaultBucketId);
   const [defaultBlockId, setDefaultBlockId] = useState<number | null>(task.default_block_id ?? null);
-  const [durationIntervals, setDurationIntervals] = useState(() => Math.max(1, task.default_duration_intervals ?? 1));
+  const [durationMinutes, setDurationMinutes] = useState(() =>
+    durationIntervalsToMinutes(Math.max(1, task.default_duration_intervals ?? 1), slotDurationMinutes)
+  );
   const [tagInput, setTagInput] = useState('');
   const [tagSuggestOpen, setTagSuggestOpen] = useState(false);
 
@@ -9528,14 +9652,16 @@ function OrganizationTaskModal({
     setAutoCompleteEod(Number(task.auto_complete_eod) === 1);
     setListState(task.list_state ?? defaultBucketId);
     setDefaultBlockId(task.default_block_id ?? null);
-    setDurationIntervals(Math.max(1, task.default_duration_intervals ?? 1));
+    setDurationMinutes(
+      durationIntervalsToMinutes(Math.max(1, task.default_duration_intervals ?? 1), slotDurationMinutes)
+    );
     setChangeDueDate(false);
     setChangeAuto(false);
     setChangeCategory(false);
     setChangeBucket(false);
     setChangeDefaultBlock(false);
     setTagBulkIntent({});
-  }, [task.id, task.category_id, task.subcategory_id, task.tag_ids, task.due_date, task.auto_priority_enabled, task.auto_complete_eod, task.list_state, task.default_block_id, task.default_duration_intervals, defaultBucketId]);
+  }, [task.id, task.category_id, task.subcategory_id, task.tag_ids, task.due_date, task.auto_priority_enabled, task.auto_complete_eod, task.list_state, task.default_block_id, task.default_duration_intervals, defaultBucketId, slotDurationMinutes]);
 
   useEffect(() => {
     if (categoryId == null) setSubcategoryId(null);
@@ -9627,7 +9753,7 @@ function OrganizationTaskModal({
         list_state: listState,
         changeDefaultBlock,
         default_block_id: defaultBlockId,
-        default_duration_intervals: durationIntervals,
+        default_duration_intervals: durationMinutesToIntervals(durationMinutes, slotDurationMinutes),
         tagsAdd,
         tagsRemove,
       });
@@ -9652,7 +9778,7 @@ function OrganizationTaskModal({
       auto_complete_eod: autoCompleteEod,
       list_state: listState,
       default_block_id: defaultBlockId,
-      default_duration_intervals: durationIntervals,
+      default_duration_intervals: durationMinutesToIntervals(durationMinutes, slotDurationMinutes),
     });
   };
 
@@ -9780,21 +9906,15 @@ function OrganizationTaskModal({
               style={{ padding: '0.35rem' }}
             />
           </label>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', marginTop: '0.5rem' }}>
-            Default duration ({slotDurationMinutes} min per step)
-            <input
-              type="number"
-              min={1}
-              step={1}
+          <div style={{ marginTop: '0.5rem' }}>
+            <DefaultDurationMinutesField
+              slotDurationMinutes={slotDurationMinutes}
+              minutes={durationMinutes}
+              onMinutesChange={setDurationMinutes}
               disabled={isBulk && !changeDefaultBlock}
-              value={durationIntervals}
-              onChange={(e) => setDurationIntervals(Math.max(1, parseInt(e.target.value, 10) || 1))}
-              style={{ padding: '0.35rem', maxWidth: '6rem' }}
+              helpText="Used when scheduling this task (drag onto the schedule, Auto Block, and new timed slots). Defaults to one increment if unset."
             />
-          </label>
-          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0.25rem 0 0' }}>
-            Used only by Auto Block to place this task into matching schedule blocks.
-          </p>
+          </div>
         </div>
 
         <div className={isBulk ? bulkFieldClass(changeCategory) : undefined}>
@@ -10167,6 +10287,7 @@ function TaskCard({
   }, []);
   const startGroupSelectHold = useCallback(
     (rootTaskId: number, e: React.PointerEvent, alsoSelectTaskId?: number) => {
+      if (isMobile) return;
       cancelBulkGroupHold();
       if (alsoSelectTaskId != null) onToggleSelect?.(alsoSelectTaskId);
       bulkGroupHoldPointerRef.current = { x: e.clientX, y: e.clientY };
@@ -10190,7 +10311,7 @@ function TaskCard({
         window.removeEventListener('pointerup', onUp);
       }, 500);
     },
-    [cancelBulkGroupHold, onToggleSelect, onToggleSelectGroup]
+    [cancelBulkGroupHold, onToggleSelect, onToggleSelectGroup, isMobile]
   );
 
   const isGrouped = childTasks.length > 0;
@@ -10467,10 +10588,14 @@ function TaskCard({
                           <span
                             className="task-card-list-content"
                             style={item.completed ? { color: 'var(--text-muted)', textDecoration: 'line-through' } : undefined}
-                            onDoubleClick={() => {
+                            onDoubleClick={
+                              isMobile
+                                ? undefined
+                                : () => {
                               setEditingListItemId(item.id);
                               setEditingListItemContent(item.content);
-                            }}
+                            }
+                            }
                           >
                             {item.content}
                           </span>
@@ -10666,7 +10791,7 @@ function TaskCard({
                     autoFocus
                   />
                 ) : (
-                  <span className="task-title" onDoubleClick={() => onEditStart(task.id, task.title)}>
+                  <span className="task-title" onDoubleClick={isMobile ? undefined : () => onEditStart(task.id, task.title)}>
                     {task.title}
                   </span>
                 )}
@@ -11064,7 +11189,7 @@ function TaskCard({
                               autoFocus
                             />
                           ) : (
-                            <span className="task-title" onDoubleClick={() => onEditStart(segTask.id, segTask.title)}>
+                            <span className="task-title" onDoubleClick={isMobile ? undefined : () => onEditStart(segTask.id, segTask.title)}>
                               {segTask.title}
                             </span>
                           )}

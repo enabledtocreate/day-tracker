@@ -10,6 +10,7 @@ import { ICAL_FEED_BLOCK_BG, scheduleBlockBgColor } from '@/lib/scheduleBlockCol
 import { ScheduleSlotCompleteCheckbox } from '@/components/ScheduleSlotCompleteCheckbox';
 import { scheduleTagPillStyle } from '@/lib/scheduleMetaContrast';
 import { useScheduleContrastSurface } from '@/lib/useScheduleContrastSurface';
+import { isScheduleBlockHoldExcluded } from '@/lib/scheduleTitleEdit';
 
 function slotHasTime(slot: ScheduledSlot): boolean {
   return !!(slot.start_time && slot.end_time);
@@ -46,6 +47,28 @@ export type WeekColumnBlocksProps = {
   onIcalComplete?: (eventId: number, completed: boolean) => void;
   onIcalExclude?: (uid: string, title: string) => void;
   hideScheduleTags?: boolean;
+  /** Desktop week view: drag top/bottom edges to resize timed blocks. */
+  resizeEnabled?: boolean;
+  bindSlotResizeTop?: (
+    slot: ScheduledSlot,
+    childSlots: ScheduledSlot[],
+    startMin: number,
+    endMin: number
+  ) => (e: React.PointerEvent) => void;
+  bindSlotResizeBottom?: (
+    slot: ScheduledSlot,
+    childSlots: ScheduledSlot[],
+    startMin: number,
+    endMin: number
+  ) => (e: React.PointerEvent) => void;
+  editingScheduleTaskId?: number | null;
+  editingScheduleTitle?: string;
+  onEditingScheduleTitleChange?: (value: string) => void;
+  onScheduleTitleInputBlur?: (taskId: number, e: React.FocusEvent<HTMLInputElement>) => void;
+  onScheduleTitleCommit?: (taskId: number, title: string) => void;
+  onOpenScheduleTitleEdit?: (taskId: number, title: string) => void;
+  onCancelScheduleTitleEdit?: () => void;
+  desktopPointer?: boolean;
 };
 
 export function WeekColumnBlocks({
@@ -60,7 +83,7 @@ export function WeekColumnBlocks({
   slotDurationMinutes,
   feedEvents,
   allowTaskComplete,
-  isMobile: _isMobile,
+  isMobile,
   scheduleBulkMode,
   scheduleBulkMoveMode,
   selectedScheduleRootSlotIds,
@@ -72,6 +95,17 @@ export function WeekColumnBlocks({
   onIcalComplete,
   onIcalExclude,
   hideScheduleTags = false,
+  resizeEnabled = false,
+  bindSlotResizeTop,
+  bindSlotResizeBottom,
+  editingScheduleTaskId = null,
+  editingScheduleTitle = '',
+  onEditingScheduleTitleChange,
+  onScheduleTitleInputBlur,
+  onScheduleTitleCommit,
+  onOpenScheduleTitleEdit,
+  onCancelScheduleTitleEdit,
+  desktopPointer = false,
 }: WeekColumnBlocksProps) {
   const { surface: scheduleContrastSurface } = useScheduleContrastSurface();
   const priorityDisplay = priorityDisplayProp ?? getDefaultPriorityDisplay();
@@ -137,6 +171,12 @@ export function WeekColumnBlocks({
           children.length > 0 && height >= listHeaderPad + listLines * listLinePx;
         const showCompleteRail =
           allowTaskComplete && !colPast && !(slot.is_recurring_occurrence && columnDate > t) && !!onCompleteSlot;
+        const canResize =
+          resizeEnabled &&
+          !colPast &&
+          !slot.is_recurring_occurrence &&
+          !!bindSlotResizeTop &&
+          !!bindSlotResizeBottom;
         return (
           <div
             key={slot.id}
@@ -160,15 +200,18 @@ export function WeekColumnBlocks({
             }}
             onPointerDown={(e) => {
               if (e.button !== 0) return;
+              if ((e.target as HTMLElement).closest('.time-block-resize, .time-block-resize-top')) return;
               if (scheduleBulkMode && slot.id > 0) {
                 if (
                   scheduleBulkMoveMode &&
                   selectedScheduleRootSlotIds.has(slot.id) &&
-                  !(e.target as HTMLElement).closest('button, .time-block-title')
+                  !isScheduleBlockHoldExcluded(e.target)
                 ) {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onStartBulkScheduleMoveHold(slot.task_id, e.clientX, e.clientY);
+                  if (!isMobile) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onStartBulkScheduleMoveHold(slot.task_id, e.clientX, e.clientY);
+                  }
                   return;
                 }
                 e.preventDefault();
@@ -176,11 +219,19 @@ export function WeekColumnBlocks({
                 onToggleScheduleRootInSelection(slot.id);
                 return;
               }
-              if ((e.target as HTMLElement).closest('button, .time-block-title, .time-block-complete-rail, .time-block-complete-checkbox')) return;
+              if (isMobile) return;
+              if (isScheduleBlockHoldExcluded(e.target)) return;
               e.preventDefault();
               onStartScheduleHold(slot.task_id, 'schedule', e.clientX, e.clientY, columnDate);
             }}
           >
+            {canResize && (
+              <div
+                className="time-block-resize time-block-resize-top"
+                title="Drag to change start time"
+                onPointerDown={bindSlotResizeTop!(slot, children, startMin, endMin)}
+              />
+            )}
             {showCompleteRail && (
               <div className="time-block-complete-rail">
                 <ScheduleSlotCompleteCheckbox
@@ -200,8 +251,44 @@ export function WeekColumnBlocks({
                   {priorityDisplay.icon((slot.priority as Priority) ?? task?.priority ?? 'low')}
                 </div>
                 <div className="time-block-title" title={slot.title ?? 'Task'}>
-                  {children.length === 0 ? (
-                    slot.title ?? 'Task'
+                  {editingScheduleTaskId === slot.task_id && onEditingScheduleTitleChange && onScheduleTitleInputBlur ? (
+                    <input
+                      className="time-block-edit"
+                      value={editingScheduleTitle}
+                      onChange={(e) => onEditingScheduleTitleChange(e.target.value)}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => e.stopPropagation()}
+                      onDoubleClick={(e) => e.stopPropagation()}
+                      onBlur={(e) => onScheduleTitleInputBlur(slot.task_id, e)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') onScheduleTitleCommit?.(slot.task_id, editingScheduleTitle);
+                        if (e.key === 'Escape') onCancelScheduleTitleEdit?.();
+                      }}
+                      autoFocus
+                    />
+                  ) : children.length === 0 ? (
+                    <span
+                      onMouseDown={
+                        desktopPointer && onOpenScheduleTitleEdit
+                          ? (e) => {
+                              if (e.button !== 0 || colPast) return;
+                              e.preventDefault();
+                              e.stopPropagation();
+                            }
+                          : undefined
+                      }
+                      onDoubleClick={
+                        desktopPointer && onOpenScheduleTitleEdit && !colPast && !slot.is_recurring_occurrence
+                          ? (e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              onOpenScheduleTitleEdit(slot.task_id, slot.title ?? 'Task');
+                            }
+                          : undefined
+                      }
+                    >
+                      {slot.title ?? 'Task'}
+                    </span>
                   ) : showTaskList ? (
                     <div className="time-block-week-group-list">
                       <div>{slot.title ?? 'Task'}</div>
@@ -228,6 +315,13 @@ export function WeekColumnBlocks({
                 )}
               </div>
             </div>
+            {canResize && (
+              <div
+                className="time-block-resize"
+                title="Drag to resize"
+                onPointerDown={bindSlotResizeBottom!(slot, children, startMin, endMin)}
+              />
+            )}
           </div>
         );
       })}

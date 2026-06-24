@@ -5,6 +5,7 @@
 require_once __DIR__ . '/common.php';
 require_once dirname(__DIR__) . '/lib/logger.php';
 require_once dirname(__DIR__) . '/lib/task_layout.php';
+require_once dirname(__DIR__) . '/lib/data_revision.php';
 
 $pdo = getPdoSafe();
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
@@ -742,6 +743,7 @@ if ($method === 'PATCH') {
         exit;
     }
     if (!empty($updates)) {
+        dt_append_updated_at($updates, $pdo, 'tasks');
         $params[] = $id;
         $sql = "UPDATE tasks SET " . implode(', ', $updates) . " WHERE id = ?";
         try {

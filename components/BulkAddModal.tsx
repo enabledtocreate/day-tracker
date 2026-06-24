@@ -13,6 +13,8 @@ import {
   parseBulkImportFile,
 } from '@/lib/bulkImportCsv';
 import { BulkImportErrorModal, type BulkImportErrorPayload } from '@/components/BulkImportErrorModal';
+import { DefaultDurationMinutesField } from '@/components/DefaultDurationMinutesField';
+import { durationMinutesToIntervals } from '@/lib/taskDefaultDuration';
 
 type BulkAddMode = 'choose' | 'quick' | 'upload';
 
@@ -63,7 +65,7 @@ export function BulkAddModal({
   const [autoEnabled, setAutoEnabled] = useState(false);
   const [autoCompleteEod, setAutoCompleteEod] = useState(false);
   const [defaultBlockId, setDefaultBlockId] = useState<number | null>(null);
-  const [durationIntervals, setDurationIntervals] = useState(1);
+  const [durationMinutes, setDurationMinutes] = useState(slotDurationMinutes);
   const [tagInput, setTagInput] = useState('');
   const [tagSuggestOpen, setTagSuggestOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -90,9 +92,9 @@ export function BulkAddModal({
     setAutoEnabled(false);
     setAutoCompleteEod(false);
     setDefaultBlockId(null);
-    setDurationIntervals(1);
+    setDurationMinutes(slotDurationMinutes);
     setTagInput('');
-  }, [defaultBucketId, priorityLevels]);
+  }, [defaultBucketId, priorityLevels, slotDurationMinutes]);
 
   const resetAndClose = useCallback(() => {
     setMode('choose');
@@ -206,17 +208,11 @@ export function BulkAddModal({
           style={{ padding: '0.35rem' }}
         />
       </label>
-      <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontSize: '0.85rem' }}>
-        Default duration ({slotDurationMinutes} min per step)
-        <input
-          type="number"
-          min={1}
-          step={1}
-          value={durationIntervals}
-          onChange={(e) => setDurationIntervals(Math.max(1, parseInt(e.target.value, 10) || 1))}
-          style={{ padding: '0.35rem', maxWidth: '6rem' }}
-        />
-      </label>
+      <DefaultDurationMinutesField
+        slotDurationMinutes={slotDurationMinutes}
+        minutes={durationMinutes}
+        onMinutesChange={setDurationMinutes}
+      />
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontSize: '0.85rem' }}>
         <span>Tags (all tasks)</span>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', alignItems: 'center' }}>
@@ -312,7 +308,7 @@ export function BulkAddModal({
         auto_priority_enabled: autoEnabled,
         auto_complete_eod: autoCompleteEod,
         default_block_id: defaultBlockId,
-        default_duration_intervals: durationIntervals,
+        default_duration_intervals: durationMinutesToIntervals(durationMinutes, slotDurationMinutes),
       })
       .then((res) => {
         onReload();

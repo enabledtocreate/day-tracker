@@ -155,10 +155,26 @@ function getLastAppliedMigrations(): array {
     return $GLOBALS['_daytracker_last_applied_migrations'] ?? [];
 }
 
+/** True when a migration statement can be skipped (partial apply / safe retry). */
+function isSkippableMigrationError(string $message): bool {
+    if (stripos($message, 'duplicate column name') !== false) {
+        return true;
+    }
+    // e.g. "trigger sync_bump_tasks_ins already exists" after a partial 036 apply
+    if (stripos($message, 'already exists') !== false && stripos($message, 'trigger') !== false) {
+        return true;
+    }
+    return false;
+}
+
+function recordMigrationApplied(PDO $pdo, string $filename): void {
+    $pdo->exec("INSERT OR IGNORE INTO schema_migrations (filename) VALUES (" . $pdo->quote($filename) . ")");
+}
+
 /**
  * Run pending migrations from a migrations folder.
  * Logs: "Begin migration", then one line per file run, then "migration completed".
- * Always records each run migration in schema_migrations (PDO::exec may only run first statement).
+ * Records each applied migration in schema_migrations.
  * @return list of filenames that were applied this run
  */
 function runMigrationsIn(PDO $pdo, string $migrationsDir): array {
@@ -179,13 +195,11 @@ function runMigrationsIn(PDO $pdo, string $migrationsDir): array {
             $pdo->exec($sql);
             logMessage('INFO', 'migration file: ' . $filename);
             $applied[] = $filename;
-            // Always record so multi-statement files (e.g. 005) get recorded even if only first statement ran
-            $pdo->exec("INSERT OR IGNORE INTO schema_migrations (filename) VALUES (" . $pdo->quote($filename) . ")");
+            recordMigrationApplied($pdo, $filename);
         } catch (Throwable $e) {
-            // Migration 006 can fail with "duplicate column name" if it ran once but wasn't recorded
-            if (strpos($e->getMessage(), 'duplicate column name') !== false) {
-                $pdo->exec("INSERT OR IGNORE INTO schema_migrations (filename) VALUES (" . $pdo->quote($filename) . ")");
-                logMessage('INFO', 'migration recorded (duplicate column, already applied): ' . $filename);
+            if (isSkippableMigrationError($e->getMessage())) {
+                recordMigrationApplied($pdo, $filename);
+                logMessage('INFO', 'migration recorded (idempotent retry): ' . $filename, ['error' => $e->getMessage()]);
                 $applied[] = $filename;
                 continue;
             }

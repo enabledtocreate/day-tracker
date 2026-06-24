@@ -63,6 +63,7 @@ export interface Task {
   parent_id: number | null;
   group_order?: number;
   created_at: string;
+  updated_at?: string | null;
   due_date?: string | null;
   /** Bucket slug: default `unassigned`|`pending`, or custom ids from `bucket_layout_json`. */
   list_state?: string;
@@ -127,6 +128,7 @@ export interface ScheduledSlot {
   has_list?: number;
   /** True when slot is a recurring occurrence on this day (no real slot row); show in orange. */
   is_recurring_occurrence?: boolean;
+  updated_at?: string | null;
 }
 
 export interface ScheduleBlock {
@@ -710,5 +712,14 @@ export const api = {
     getErrorLog: () => request<{ lines: string[] }>('api/admin.php?action=error_log'),
     clearIcalFeedEvents: () =>
       request<{ ok: boolean; deleted?: number }>('api/admin.php', { method: 'PATCH', body: { clear_ical_feed_events: true } }),
+  },
+  sync: {
+    get: () =>
+      request<{
+        revision: string;
+        server_time: string;
+        tasks_updated_at?: string | null;
+        slots_updated_at?: string | null;
+      }>('api/sync.php'),
   },
 };

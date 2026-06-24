@@ -6,6 +6,7 @@ require_once __DIR__ . '/common.php';
 require_once __DIR__ . '/../lib/recurrence.php';
 require_once dirname(__DIR__) . '/lib/data_integrity.php';
 require_once dirname(__DIR__) . '/lib/logger.php';
+require_once dirname(__DIR__) . '/lib/data_revision.php';
 
 $pdo = getPdoSafe();
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
@@ -599,6 +600,7 @@ if ($method === 'PATCH') {
         jsonError('No fields to update');
         exit;
     }
+    dt_append_updated_at($updates, $pdo, 'scheduled_slots');
     $params[] = $id;
     $pdo->prepare("UPDATE scheduled_slots SET " . implode(', ', $updates) . " WHERE id = ?")->execute($params);
     if (

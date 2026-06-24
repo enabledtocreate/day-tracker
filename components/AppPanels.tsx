@@ -2,14 +2,12 @@
 
 import { useState, useCallback, useRef } from 'react';
 import type { AuthUser } from '@/lib/auth';
-import { useMediaQuery } from '@/lib/useMediaQuery';
+import { useMobileLayout } from '@/lib/layoutProfile';
 import { MobileModeProvider } from '@/lib/mobileMode';
 import { UserSettingsView } from '@/components/UserSettingsView';
 import { AdminSettingsView } from '@/components/AdminSettingsView';
 import { TaskListAndSchedule } from '@/components/TaskListAndSchedule';
 import { DT } from '@/lib/uiIdentifiers';
-
-const MOBILE_BREAKPOINT = '(max-width: 768px)';
 
 type Props = {
   user: AuthUser;
@@ -30,7 +28,7 @@ export function AppPanels({
   onLogout,
   onUserUpdated,
 }: Props) {
-  const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
+  const isMobile = useMobileLayout();
   const [mainSlideIndex, setMainSlideIndex] = useState(1); // 0=Completed, 1=Tasks, 2=AI
   const refetchOrganizationRef = useRef<(() => void) | null>(null);
 
@@ -75,6 +73,7 @@ export function AppPanels({
         <AdminSettingsView user={user} onClose={onCloseSettings} />
       </div>
       <div
+        data-layout={isMobile ? 'mobile' : 'desktop'}
         className={`${panelsClassName} ${DT.mainPanels}`}
         id="main-panels"
         style={{ display: 'flex' }}

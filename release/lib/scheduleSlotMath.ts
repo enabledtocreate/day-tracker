@@ -1,0 +1,159 @@
+import type { ScheduledSlot } from '@/lib/api';
+
+export function timeToMinutes(time: string | null | undefined): number {
+  if (time == null || time === '') return 0;
+  const [h, m] = time.split(':').map(Number);
+  return (h ?? 0) * 60 + (m ?? 0);
+}
+
+export function minutesToTime(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+}
+
+/**
+ * Snap absolute minutes to the schedule grid.
+ * Use `kind: 'end'` when snapping a block's `end_time`: it may equal `end_hour * 60`.
+ */
+export function snapToSlot(
+  minutes: number,
+  startHour: number,
+  endHour: number,
+  slotDuration: number,
+  kind: 'start' | 'end' = 'start'
+): number {
+  const start = startHour * 60;
+  const end = endHour * 60;
+  const step = Math.max(1, slotDuration);
+  const offset = minutes - start;
+  const slot = Math.round(offset / step) * step + start;
+  const upperBound = kind === 'end' ? end : end - step;
+  return Math.max(start, Math.min(upperBound, slot));
+}
+
+export function clampTopResizeStartForMinDuration(params: {
+  candidateStartMin: number;
+  endMin: number;
+  slotDurationMinutes: number;
+}): number {
+  const step = Math.max(1, params.slotDurationMinutes);
+  return Math.min(params.candidateStartMin, params.endMin - step);
+}
+
+export function clampBottomResizeEndForMinDuration(params: {
+  startMin: number;
+  candidateEndMin: number;
+  slotDurationMinutes: number;
+}): number {
+  const step = Math.max(1, params.slotDurationMinutes);
+  return Math.max(params.candidateEndMin, params.startMin + step);
+}
+
+export function clampTopResizeStartForMinGroupDuration(params: {
+  candidateStartMin: number;
+  endMin: number;
+  slotDurationMinutes: number;
+  memberCount: number;
+  startHour: number;
+  endHour: number;
+  currentStartMin?: number;
+}): number {
+  const step = Math.max(1, params.slotDurationMinutes);
+  const minTotal = Math.max(1, params.memberCount) * step;
+  let maxStart = params.endMin - minTotal;
+  if (params.currentStartMin !== undefined) {
+    const span = params.endMin - params.currentStartMin;
+    if (span < minTotal) {
+      maxStart = Math.max(maxStart, params.currentStartMin);
+    }
+  }
+  const dayStart = params.startHour * 60;
+  if (maxStart < dayStart) {
+    return params.currentStartMin ?? dayStart;
+  }
+  let s = Math.min(params.candidateStartMin, maxStart);
+  s = Math.max(dayStart, s);
+  s = snapToSlot(s, params.startHour, params.endHour, step);
+  if (s > maxStart) {
+    const k = Math.max(0, Math.floor((maxStart - dayStart) / step));
+    s = dayStart + k * step;
+  }
+  return s;
+}
+
+export function clampBottomResizeEndForMinGroupDuration(params: {
+  startMin: number;
+  candidateEndMin: number;
+  slotDurationMinutes: number;
+  memberCount: number;
+}): number {
+  const step = Math.max(1, params.slotDurationMinutes);
+  const minTotal = Math.max(1, params.memberCount) * step;
+  return Math.max(params.candidateEndMin, params.startMin + minTotal);
+}
+
+export function distributeGroupMemberTimes(params: {
+  groupStartMin: number;
+  groupEndMin: number;
+  slotDurationMinutes: number;
+  memberCount: number;
+}): Array<{ startMin: number; endMin: number }> {
+  const memberCount = Math.max(1, params.memberCount | 0);
+  const totalMin = Math.max(0, params.groupEndMin - params.groupStartMin);
+  const slotDur = params.slotDurationMinutes;
+  const totalIntervals = slotDur > 0 ? Math.round(totalMin / slotDur) : 0;
+  const baseIntervals = memberCount > 0 ? Math.floor(totalIntervals / memberCount) : 0;
+  const remainderIntervals = memberCount > 0 ? totalIntervals - baseIntervals * memberCount : 0;
+
+  const out: Array<{ startMin: number; endMin: number }> = [];
+  let cur = params.groupStartMin;
+  for (let i = 0; i < memberCount; i++) {
+    const intervalsForThis = baseIntervals + (i === memberCount - 1 ? remainderIntervals : 0);
+    const startMin = cur;
+    const endMin = cur + intervalsForThis * slotDur;
+    out.push({ startMin, endMin });
+    cur = endMin;
+  }
+  return out;
+}
+
+export function calcMovedSlotTimes(params: {
+  scheduleDropStartMin: number;
+  viewEndMin: number;
+  slotDurationMinutes: number;
+  originalDurationMin: number;
+  startHour: number;
+  endHour: number;
+}): { newStartMin: number; newEndMin: number; preservedDurationMin: number } {
+  const preservedDurationMin = Math.max(0, Math.max(params.originalDurationMin, params.slotDurationMinutes));
+  const latestStartMin = params.viewEndMin - preservedDurationMin;
+  const candidateStartMin = Math.min(params.scheduleDropStartMin, latestStartMin);
+  const snappedStartMin = snapToSlot(candidateStartMin, params.startHour, params.endHour, params.slotDurationMinutes);
+  const newStartMin = Math.min(snappedStartMin, latestStartMin);
+  return { newStartMin, newEndMin: newStartMin + preservedDurationMin, preservedDurationMin };
+}
+
+export function buildGroupSegmentHeightsPx(params: {
+  groupStartMin: number;
+  groupEndMin: number;
+  orderedChildren: ScheduledSlot[];
+  slotDurationMinutes: number;
+  blockHeightPx: number;
+  rowHeightPx: number;
+}): number[] {
+  const step = Math.max(1, params.slotDurationMinutes);
+  const childStarts = params.orderedChildren.map((c) => timeToMinutes(c.start_time));
+  const bounds = [params.groupStartMin, ...childStarts, params.groupEndMin];
+  const heights: number[] = [];
+  for (let i = 0; i < bounds.length - 1; i++) {
+    const rawMin = bounds[i + 1]! - bounds[i]!;
+    const durMin = Math.max(step, rawMin);
+    heights.push((durMin / step) * params.rowHeightPx);
+  }
+  const sum = heights.reduce((a, b) => a + b, 0);
+  if (heights.length > 0 && sum + 0.5 < params.blockHeightPx) {
+    heights[heights.length - 1]! += params.blockHeightPx - sum;
+  }
+  return heights;
+}

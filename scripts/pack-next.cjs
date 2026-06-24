@@ -72,6 +72,19 @@ for (const file of ['install.php', 'config.example.php', '.htaccess']) {
   if (fs.existsSync(src)) fs.copyFileSync(src, path.join(releaseDir, file));
 }
 
+// Local dev only: copy config.php + data/ when DAYTRACKER_LOCAL_PACK=1 so
+// `php -S localhost:8080 -t release` works after every build. Never set this when
+// packaging for production upload — preserve the server's existing config.php and data/.
+const rootConfig = path.join(root, 'config.php');
+const rootData = path.join(root, 'data');
+if (process.env.DAYTRACKER_LOCAL_PACK === '1' && fs.existsSync(rootConfig)) {
+  fs.copyFileSync(rootConfig, path.join(releaseDir, 'config.php'));
+  if (fs.existsSync(rootData)) {
+    copyRecursive(rootData, path.join(releaseDir, 'data'));
+  }
+  console.log('Local PHP config: copied config.php + data/ into release/ (DAYTRACKER_LOCAL_PACK=1).');
+}
+
 // Favicon if Next didn't include it
 const releaseFavicon = path.join(releaseDir, 'favicon.ico');
 if (!fs.existsSync(releaseFavicon)) {

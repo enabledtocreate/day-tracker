@@ -60,7 +60,11 @@ function getPdoSafe(): PDO
             'line' => $e->getLine(),
             'trace' => $e->getTraceAsString(),
         ]);
-        jsonError('Database not configured. Run install.php first.', 503);
+        $message = 'Database not configured. Run install.php first.';
+        if (function_exists('isAdmin') && isAdmin()) {
+            $message = 'Database error: ' . $e->getMessage();
+        }
+        jsonError($message, 503);
         exit;
     }
 }

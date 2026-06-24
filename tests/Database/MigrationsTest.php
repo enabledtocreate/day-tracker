@@ -79,4 +79,14 @@ final class MigrationsTest extends TestCase
         $stmt = $this->pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='accomplished'");
         $this->assertFalse($stmt && $stmt->fetch(), 'Legacy accomplished table should be dropped (011)');
     }
+
+    public function testMigrationsAreIdempotent(): void
+    {
+        runMigrationsIn($this->pdo, $this->migrationsDir);
+        runMigrationsIn($this->pdo, $this->migrationsDir);
+        $stmt = $this->pdo->query('SELECT COUNT(*) FROM schema_migrations');
+        $count = $stmt ? (int) $stmt->fetchColumn() : 0;
+        $files = glob($this->migrationsDir . '/*.sql');
+        $this->assertSame(count($files), $count, 'Second migration run should not duplicate records');
+    }
 }

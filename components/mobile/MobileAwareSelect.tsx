@@ -20,6 +20,7 @@
  */
 
 import { useMemo, useState, type CSSProperties } from 'react';
+import { MOBILE_LAYOUT_MEDIA_QUERY } from '@/lib/layoutProfile';
 import { useMediaQuery } from '@/lib/useMediaQuery';
 import { MobilePickerModal, type MobilePickerOption } from '@/components/mobile/MobilePickerModal';
 
@@ -42,7 +43,7 @@ export type MobileAwareSelectProps<T extends string | number> = {
   renderTriggerLabel?: (selected: MobilePickerOption<T> | null) => React.ReactNode;
 };
 
-const MOBILE_QUERY = '(max-width: 768px)';
+const MOBILE_QUERY = MOBILE_LAYOUT_MEDIA_QUERY;
 
 export function MobileAwareSelect<T extends string | number>(props: MobileAwareSelectProps<T>) {
   const {

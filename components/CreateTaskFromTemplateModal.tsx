@@ -5,6 +5,8 @@ import { Modal } from '@/components/Modal';
 import { Button } from '@/components/Button';
 import { MobileAwareSelect } from '@/components/mobile/MobileAwareSelect';
 import { api, type Task, type TaskLink, type TaskListItem } from '@/lib/api';
+import { DefaultDurationMinutesField } from '@/components/DefaultDurationMinutesField';
+import { durationIntervalsToMinutes, durationMinutesToIntervals } from '@/lib/taskDefaultDuration';
 import type { PriorityDisplay } from '@/lib/priorityTheme';
 
 export type CreateTaskFromTemplatePayload = {
@@ -68,7 +70,7 @@ export function CreateTaskFromTemplateModal({
   const [subcategoryId, setSubcategoryId] = useState<number | null>(null);
   const [tagIds, setTagIds] = useState<number[]>([]);
   const [defaultBlockId, setDefaultBlockId] = useState<number | null>(null);
-  const [durationIntervals, setDurationIntervals] = useState(1);
+  const [durationMinutes, setDurationMinutes] = useState(slotDurationMinutes);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -83,8 +85,10 @@ export function CreateTaskFromTemplateModal({
     setSubcategoryId(template.subcategory_id ?? null);
     setTagIds(template.tag_ids ?? []);
     setDefaultBlockId(template.default_block_id ?? null);
-    setDurationIntervals(Math.max(1, template.default_duration_intervals ?? 1));
-  }, [open, template, defaultBucketId, priorityDisplay.levels]);
+    setDurationMinutes(
+      durationIntervalsToMinutes(Math.max(1, template.default_duration_intervals ?? 1), slotDurationMinutes)
+    );
+  }, [open, template, defaultBucketId, priorityDisplay.levels, slotDurationMinutes]);
 
   const subcategoryOptions = subcategories.filter((s) => s.category_id === (categoryId ?? 0));
 
@@ -122,7 +126,7 @@ export function CreateTaskFromTemplateModal({
         subcategory_id: subcategoryId,
         tag_ids: tagIds,
         default_block_id: defaultBlockId,
-        default_duration_intervals: durationIntervals,
+        default_duration_intervals: durationMinutesToIntervals(durationMinutes, slotDurationMinutes),
         list_state: listState,
       });
       onReload();
@@ -244,17 +248,11 @@ export function CreateTaskFromTemplateModal({
             style={{ padding: '0.35rem' }}
           />
         </label>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-          Default duration ({slotDurationMinutes} min per step)
-          <input
-            type="number"
-            min={1}
-            step={1}
-            value={durationIntervals}
-            onChange={(e) => setDurationIntervals(Math.max(1, parseInt(e.target.value, 10) || 1))}
-            style={{ padding: '0.35rem', maxWidth: '6rem' }}
-          />
-        </label>
+        <DefaultDurationMinutesField
+          slotDurationMinutes={slotDurationMinutes}
+          minutes={durationMinutes}
+          onMinutesChange={setDurationMinutes}
+        />
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
           {tags
             .filter((t) => (template.tag_ids ?? []).includes(t.id))

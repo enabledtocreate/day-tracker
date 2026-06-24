@@ -17,6 +17,7 @@ export function ScheduleCalendarGrid({ days, onDayClick, onDayDoubleClick, class
                 (dateStr ? (cell.isPast ? ' calendar-day-past' : cell.isToday ? ' calendar-day-today' : '') : '')
               }
               data-date={dateStr || ''}
+              tabIndex={dateStr ? 0 : undefined}
               onClick={() => {
                 if (!dateStr) return;
                 onDayClick(dateStr);
@@ -51,14 +52,24 @@ export function ScheduleCalendarGrid({ days, onDayClick, onDayDoubleClick, class
                       >
                         {s.completed ? '☑' : s.recurring || s.isRecurringOccurrence ? '↻' : '☐'}
                       </span>
+                      {s.timeLabel ? (
+                        <span className="calendar-task-time" title={s.timeLabel}>
+                          {s.timeLabel}
+                        </span>
+                      ) : null}
                       <span className="calendar-task-desc">{s.title}</span>
                     </li>
                   ))}
                   {cell.feedEvents.map((e) => (
                     <li key={e.listKey} className="calendar-day-task calendar-day-feed-event">
-                      <span className="calendar-task-icon" aria-hidden>
+                      <span className="calendar-task-icon shrink-0" aria-hidden>
                         ◐
                       </span>
+                      {e.timeLabel ? (
+                        <span className="calendar-task-time" title={e.timeLabel}>
+                          {e.timeLabel}
+                        </span>
+                      ) : null}
                       <span className="calendar-task-desc">{e.title}</span>
                     </li>
                   ))}

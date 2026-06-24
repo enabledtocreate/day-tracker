@@ -11,11 +11,14 @@ export type CalendarGridTaskRow = {
   isRecurringOccurrence: boolean;
   /** Optional hex color from the task's category (used for a left accent stripe). */
   categoryColor?: string | null;
+  /** e.g. "9:00 AM – 10:00 AM" when the slot is timed. */
+  timeLabel?: string | null;
 };
 
 export type CalendarGridFeedRow = {
   listKey: string;
   title: string;
+  timeLabel?: string | null;
 };
 
 /** One cell in the month grid (padding cells use `dateStr: null`). */

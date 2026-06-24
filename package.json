@@ -17,6 +17,7 @@
     "preview": "vite preview",
     "pack": "node scripts/pack.cjs",
     "pack:next": "node scripts/pack-next.cjs",
+    "serve:release": "php -S localhost:8080 -t release",
     "gen:org-icons": "node scripts/gen-org-lucide-icons.mjs",
     "deploy": "npm run build",
     "deploy:vite": "npm run build:vite"

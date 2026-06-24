@@ -1,5 +1,10 @@
 import type { IcalFeedEvent, ScheduledSlot, Task } from '@/lib/api';
 import { buildCalendarDays } from '@/lib/schedule-calendar-grid/calendarLayout';
+import {
+  formatFeedEventTimeLabel,
+  formatSlotTimeLabel,
+  slotSortMinutes,
+} from '@/lib/schedule-calendar-grid/formatCalendarTime';
 import type { ScheduleCalendarDayCell } from '@/lib/schedule-calendar-grid/types';
 
 function rootSlotsForDay(daySlots: ScheduledSlot[]): ScheduledSlot[] {
@@ -12,6 +17,8 @@ export type CalendarCategoryLookup = {
   tasksById?: Map<number, Pick<Task, 'category_id'>>;
   /** category_id → { color } */
   categoriesById?: Map<number, { color?: string | null }>;
+  /** App timezone for iCal feed time labels. */
+  timezone?: string;
 };
 
 /**
@@ -38,7 +45,9 @@ export function buildScheduleCalendarDayCells(
   };
   return dayStrs.map((dateStr, i) => {
     const daySlots = dateStr ? (slotsByDate[dateStr] ?? []) : [];
-    const dayRoots = dateStr ? rootSlotsForDay(daySlots) : [];
+    const dayRoots = dateStr
+      ? rootSlotsForDay(daySlots).slice().sort((a, b) => slotSortMinutes(a) - slotSortMinutes(b))
+      : [];
     const dayFeed = dateStr ? (feedByDate[dateStr] ?? []) : [];
     const isPast = !!(dateStr && dateStr < todayYmd);
     const isTodayDate = dateStr === todayYmd;
@@ -56,10 +65,12 @@ export function buildScheduleCalendarDayCells(
         recurring: !!s.recurring,
         isRecurringOccurrence: !!s.is_recurring_occurrence,
         categoryColor: resolveColor(s.task_id),
+        timeLabel: formatSlotTimeLabel(s),
       })),
       feedEvents: dayFeed.map((e) => ({
         listKey: e.uid + e.start,
         title: e.title || 'Event',
+        timeLabel: formatFeedEventTimeLabel(e, lookup?.timezone),
       })),
     };
   });

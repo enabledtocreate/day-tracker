@@ -2817,10 +2817,7 @@ hr.task-card-group-stack-divider {
 .calendar-view .calendar-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  /* Each row sets a base of 88px but is allowed to grow when the day card
-     overflow becomes scrollable. The cell itself caps at this height via
-     .calendar-day {height: 88px}, so the grid stays predictable on desktop. */
-  grid-auto-rows: minmax(88px, auto);
+  grid-auto-rows: 88px;
   gap: 3px;
   font-size: 0.68rem;
 }
@@ -2828,17 +2825,24 @@ hr.task-card-group-stack-divider {
 .calendar-view .calendar-day {
   border: 1px solid var(--border);
   border-radius: 4px;
-  /* Day number sits flush in the top-left; ensure no extra padding pushes it
-     down (we still keep a tiny inset so the border doesn't touch the text). */
-  padding: 0.12rem 0.18rem 0.1rem;
+  padding: 0.08rem 0.12rem 0.06rem;
   min-height: 88px;
   height: 88px;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: 1fr;
+  align-content: start;
   background: var(--surface);
-  /* The cell itself stays clipped; the task list inside is the scroller. */
   overflow: hidden;
+  cursor: pointer;
+  transition: background-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.calendar-view .calendar-day:hover,
+.calendar-view .calendar-day:focus-within {
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .calendar-view .calendar-day-past {
@@ -2846,10 +2850,21 @@ hr.task-card-group-stack-divider {
   opacity: 0.75;
 }
 
+.calendar-view .calendar-day-past:hover,
+.calendar-view .calendar-day-past:focus-within {
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  opacity: 0.85;
+}
+
 .calendar-view .calendar-day-today {
   background: var(--surface);
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent);
+}
+
+.calendar-view .calendar-day-today:hover,
+.calendar-view .calendar-day-today:focus-within {
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface));
 }
 
 .calendar-view .calendar-day.calendar-day-drag-over {
@@ -2861,55 +2876,61 @@ hr.task-card-group-stack-divider {
 .calendar-view .calendar-day-num {
   font-weight: 600;
   color: var(--text-muted);
-  /* Tight top-left placement (per user feedback): minimal padding/margin so
-     the tasks below get as much vertical real estate as possible. The day
-     number is intentionally smaller than the task font so tasks lead the eye. */
-  align-self: flex-start;
-  margin: 0 0 0.05rem;
+  margin: 0;
   padding: 0;
-  font-size: 0.6rem;
+  font-size: 0.58rem;
   line-height: 1;
+  height: 0.7rem;
   flex-shrink: 0;
+  align-self: start;
 }
 
 .calendar-view .calendar-day-tasks {
   list-style: none;
   margin: 0;
   padding: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  flex: 1;
   min-height: 0;
-  /* Keep scroll inside the day card instead of leaking out to the calendar
-     grid (desktop bug: "scrolling should work within a day card"). */
+  overflow-y: hidden;
+  overflow-x: hidden;
   overscroll-behavior: contain;
-  /* Allow native touch scrolling on mobile day cards. */
   -webkit-overflow-scrolling: touch;
+  align-self: stretch;
+}
+
+.calendar-view .calendar-day:hover .calendar-day-tasks,
+.calendar-view .calendar-day:focus-within .calendar-day-tasks {
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 .calendar-view .calendar-day-task {
-  /* One row per task: ellipsize titles that don't fit. Stacking happens via
-     the parent flex list since each <li> is auto-height of a single line. */
-  padding: 0.04rem 0;
+  padding: 0.02rem 0;
   display: flex;
   align-items: center;
-  /* Optional left-edge color stripe sourced from the task's category. Falls
-     back to transparent when the task has no category. */
   border-left: 3px solid var(--cal-task-cat-color, transparent);
-  padding-left: 0.2rem;
-  gap: 0.18rem;
+  padding-left: 0.15rem;
+  gap: 0.12rem;
   cursor: pointer;
   border-radius: 2px;
-  /* Single-line rows: ellipsize overflow, stack rows in the parent list. */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+  line-height: 1.15;
 }
 .calendar-view .calendar-day-task .calendar-task-icon {
   flex-shrink: 0;
   color: var(--text-muted);
-  font-size: 0.58rem;
+  font-size: 0.55rem;
+  width: 0.65rem;
+}
+.calendar-view .calendar-day-task .calendar-task-time {
+  flex-shrink: 0;
+  font-size: 0.52rem;
+  color: var(--text-muted);
+  max-width: 5.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .calendar-view .calendar-day-task .calendar-task-desc {
   flex: 1;
@@ -5528,10 +5549,12 @@ html.light .time-grid-line.increment {
   border-radius: 3px;
   font-size: 0.85rem;
   outline: none;
+  user-select: text;
+  cursor: text;
 }
 
 /* ========== Mobile: sliding panels and touch UX ========== */
-@media (max-width: 768px) {
+@media (max-width: 768px), ((max-height: 520px) and (pointer: coarse)) {
   #app {
     overflow-x: hidden;
   }
@@ -5624,31 +5647,41 @@ html.light .time-grid-line.increment {
   }
 
   .calendar-view .calendar-day {
-    /* Stretch each day card so internal scrolling works inside dense months. */
     min-height: 72px;
-    height: auto;
-    padding: 0.08rem 0.14rem;
+    height: 72px;
+    padding: 0.06rem 0.1rem 0.05rem;
   }
+
+  .calendar-view .calendar-grid {
+    grid-auto-rows: 72px;
+  }
+
   .calendar-view .calendar-day-num {
-    /* On mobile the day number is even more compact (smaller than task font)
-       and tucked into the top-left corner. */
-    font-size: 0.55rem;
-    margin: 0 0 0.04rem;
+    font-size: 0.52rem;
+    height: 0.65rem;
   }
+
+  .calendar-view .calendar-day-tasks {
+    overflow-y: auto;
+  }
+
   .calendar-view .calendar-day-task .calendar-task-icon {
     display: none;
   }
   .calendar-view .calendar-day-task {
-    /* Per spec: show description only (icon already hidden). Keep one line
-       per task with an ellipsis when titles overflow. */
-    padding: 0.02rem 0;
+    padding: 0.01rem 0;
     border-left-width: 2px;
-    padding-left: 0.15rem;
+    padding-left: 0.12rem;
+    gap: 0.08rem;
+  }
+  .calendar-view .calendar-day-task .calendar-task-time {
+    font-size: 0.5rem;
+    max-width: 4.5rem;
   }
   .calendar-view .calendar-day-task .calendar-task-desc,
   .calendar-view .calendar-day-feed-event .calendar-task-desc {
-    font-size: 0.62rem;
-    line-height: 1.15;
+    font-size: 0.6rem;
+    line-height: 1.1;
   }
 
   .panel-slide-tasks .left-bottom {
@@ -6063,10 +6096,11 @@ html.light .time-grid-line.increment {
     -webkit-overflow-scrolling: touch;
   }
 
-  /* Prevent schedule scroll when dragging time-block resize on touch */
+  /* Desktop resize handles are hidden on mobile layout */
   .time-block-resize,
-  .time-block-resize-top {
-    touch-action: none;
+  .time-block-resize-top,
+  .schedule-time-block-resize {
+    display: none !important;
   }
 
   /* Touch-friendly tap targets */
