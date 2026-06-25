@@ -8,7 +8,9 @@ import { timedSlotLayoutBounds } from '@/lib/timedSlotLayout';
 import { computeOverlapMaps } from '@/lib/scheduleOccupiedRects';
 import { ICAL_FEED_BLOCK_BG, scheduleBlockBgColor } from '@/lib/scheduleBlockColors';
 import { ScheduleSlotCompleteCheckbox } from '@/components/ScheduleSlotCompleteCheckbox';
-import { scheduleTagPillStyle } from '@/lib/scheduleMetaContrast';
+import { scheduleBlockDensityClasses } from '@/lib/scheduleBlockDensity';
+import { scheduleCategoryMetaStyle, scheduleTagPillStyle } from '@/lib/scheduleMetaContrast';
+import { OrgLucideIcon } from '@/components/OrgLucideIcon';
 import { useScheduleContrastSurface } from '@/lib/useScheduleContrastSurface';
 import { isScheduleBlockHoldExcluded } from '@/lib/scheduleTitleEdit';
 
@@ -26,6 +28,7 @@ export type WeekColumnBlocksProps = {
   columnSlots: ScheduledSlot[];
   tasks: Task[];
   organizationCategories: Array<{ id: number; name: string; color?: string | null; icon?: string | null }>;
+  organizationSubcategories?: Array<{ id: number; category_id: number; name: string }>;
   organizationTags: Array<{ id: number; name: string; color?: string | null }>;
   settings: TimeSettings;
   /** Task list priority icons/labels/colors (optional; defaults match built-in theme). */
@@ -47,6 +50,7 @@ export type WeekColumnBlocksProps = {
   onIcalComplete?: (eventId: number, completed: boolean) => void;
   onIcalExclude?: (uid: string, title: string) => void;
   hideScheduleTags?: boolean;
+  hideScheduleCategory?: boolean;
   /** Desktop week view: drag top/bottom edges to resize timed blocks. */
   resizeEnabled?: boolean;
   bindSlotResizeTop?: (
@@ -76,6 +80,7 @@ export function WeekColumnBlocks({
   columnSlots,
   tasks,
   organizationCategories,
+  organizationSubcategories = [],
   organizationTags,
   settings,
   priorityDisplay: priorityDisplayProp,
@@ -95,6 +100,7 @@ export function WeekColumnBlocks({
   onIcalComplete,
   onIcalExclude,
   hideScheduleTags = false,
+  hideScheduleCategory = false,
   resizeEnabled = false,
   bindSlotResizeTop,
   bindSlotResizeBottom,
@@ -156,9 +162,14 @@ export function WeekColumnBlocks({
         const leftPct = ov.col * wPct;
         const task = tasks.find((x) => x.id === slot.task_id);
         const slotCategory = task?.category_id != null ? organizationCategories.find((c) => c.id === task.category_id) : null;
+        const slotSubcategory =
+          task?.subcategory_id != null ? organizationSubcategories.find((s) => s.id === task.subcategory_id) : null;
         const slotTagList = (task?.tag_ids ?? [])
           .map((tid) => organizationTags.find((t) => t.id === tid))
           .filter(Boolean) as Array<{ id: number; name: string; color?: string | null }>;
+        const slotHasOrgMeta =
+          (!hideScheduleCategory && (slotCategory != null || slotSubcategory != null)) ||
+          (!hideScheduleTags && slotTagList.length > 0);
         const slotBgColor = scheduleBlockBgColor(slotCategory?.color);
         const slotCompleted = Number(slot.completed) === 1;
         const groupAllDone =
@@ -177,6 +188,7 @@ export function WeekColumnBlocks({
           !slot.is_recurring_occurrence &&
           !!bindSlotResizeTop &&
           !!bindSlotResizeBottom;
+        const densityClasses = scheduleBlockDensityClasses(height, wPct);
         return (
           <div
             key={slot.id}
@@ -189,7 +201,8 @@ export function WeekColumnBlocks({
               (dragState?.source === 'schedule' && dragState.taskIds?.includes(slot.task_id) ? ' time-block-dragging' : '') +
               (colPast ? ' time-block-readonly' : '') +
               (selectedScheduleRootSlotIds.has(slot.id) ? ' time-block-bulk-selected' : '') +
-              (showCompleteRail ? ' time-block-has-complete-rail' : '')
+              (showCompleteRail ? ' time-block-has-complete-rail' : '') +
+              densityClasses
             }
             style={{
               top: top + 'px',
@@ -197,7 +210,8 @@ export function WeekColumnBlocks({
               left: leftPct + '%',
               width: (wPct > 0 ? wPct - 0.5 : 99.5) + '%',
               backgroundColor: slotBgColor,
-            }}
+              ['--tb-h' as string]: `${Math.round(height)}px`,
+            } as React.CSSProperties}
             onPointerDown={(e) => {
               if (e.button !== 0) return;
               if ((e.target as HTMLElement).closest('.time-block-resize, .time-block-resize-top')) return;
@@ -243,75 +257,116 @@ export function WeekColumnBlocks({
               </div>
             )}
             <div className="time-block-header">
-              <div className="time-block-title-wrap">
+              <div className="time-block-header-leading">
                 <div
                   className={'time-block-priority time-block-child-priority'}
                   style={priorityDisplay.colorStyle((slot.priority as Priority) ?? task?.priority ?? 'low')}
                 >
                   {priorityDisplay.icon((slot.priority as Priority) ?? task?.priority ?? 'low')}
                 </div>
-                <div className="time-block-title" title={slot.title ?? 'Task'}>
-                  {editingScheduleTaskId === slot.task_id && onEditingScheduleTitleChange && onScheduleTitleInputBlur ? (
-                    <input
-                      className="time-block-edit"
-                      value={editingScheduleTitle}
-                      onChange={(e) => onEditingScheduleTitleChange(e.target.value)}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={(e) => e.stopPropagation()}
-                      onDoubleClick={(e) => e.stopPropagation()}
-                      onBlur={(e) => onScheduleTitleInputBlur(slot.task_id, e)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') onScheduleTitleCommit?.(slot.task_id, editingScheduleTitle);
-                        if (e.key === 'Escape') onCancelScheduleTitleEdit?.();
-                      }}
-                      autoFocus
-                    />
-                  ) : children.length === 0 ? (
-                    <span
-                      onMouseDown={
-                        desktopPointer && onOpenScheduleTitleEdit
-                          ? (e) => {
-                              if (e.button !== 0 || colPast) return;
-                              e.preventDefault();
-                              e.stopPropagation();
-                            }
-                          : undefined
-                      }
-                      onDoubleClick={
-                        desktopPointer && onOpenScheduleTitleEdit && !colPast && !slot.is_recurring_occurrence
-                          ? (e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              onOpenScheduleTitleEdit(slot.task_id, slot.title ?? 'Task');
-                            }
-                          : undefined
-                      }
-                    >
-                      {slot.title ?? 'Task'}
-                    </span>
-                  ) : showTaskList ? (
-                    <div className="time-block-week-group-list">
-                      <div>{slot.title ?? 'Task'}</div>
-                      {children.map((c) => (
-                        <div key={c.id}>{c.title ?? 'Task'}</div>
-                      ))}
-                    </div>
-                  ) : (
-                    `${slot.title ?? 'Task'} (+${children.length})`
-                  )}
-                </div>
-                {!hideScheduleTags && slotTagList.length > 0 && (
-                  <span className="time-block-tags">
-                    {slotTagList.map((tg) => (
-                      <span
-                        key={tg.id}
-                        className="time-block-tag-pill"
-                        style={scheduleTagPillStyle(tg.color, scheduleContrastSurface)}
-                      >
-                        {tg.name}
-                      </span>
+              </div>
+              <div
+                className={
+                  'time-block-title-wrap' +
+                  (showTaskList ? '' : ' time-block-title-wrap-stacked') +
+                  (showTaskList
+                    ? ''
+                    : children.length > 0 || !slotHasOrgMeta
+                      ? ' time-block-title-wrap-no-meta'
+                      : ' time-block-title-wrap-with-meta')
+                }
+              >
+                {showTaskList ? (
+                  <div className="time-block-week-group-list">
+                    <div>{slot.title ?? 'Task'}</div>
+                    {children.map((c) => (
+                      <div key={c.id}>{c.title ?? 'Task'}</div>
                     ))}
-                  </span>
+                  </div>
+                ) : children.length > 0 ? (
+                  <div className="time-block-title-line">
+                    <div className="time-block-title" title={slot.title ?? 'Task'}>
+                      {`${slot.title ?? 'Task'} (+${children.length})`}
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="time-block-title-line">
+                      {editingScheduleTaskId === slot.task_id && onEditingScheduleTitleChange && onScheduleTitleInputBlur ? (
+                        <input
+                          className="time-block-edit"
+                          value={editingScheduleTitle}
+                          onChange={(e) => onEditingScheduleTitleChange(e.target.value)}
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => e.stopPropagation()}
+                          onDoubleClick={(e) => e.stopPropagation()}
+                          onBlur={(e) => onScheduleTitleInputBlur(slot.task_id, e)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') onScheduleTitleCommit?.(slot.task_id, editingScheduleTitle);
+                            if (e.key === 'Escape') onCancelScheduleTitleEdit?.();
+                          }}
+                          autoFocus
+                        />
+                      ) : (
+                        <div
+                          className="time-block-title"
+                          title={slot.title ?? 'Task'}
+                          onMouseDown={
+                            desktopPointer && onOpenScheduleTitleEdit
+                              ? (e) => {
+                                  if (e.button !== 0 || colPast) return;
+                                  e.preventDefault();
+                                }
+                              : undefined
+                          }
+                          onDoubleClick={
+                            desktopPointer && onOpenScheduleTitleEdit && !colPast && !slot.is_recurring_occurrence
+                              ? (e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  onOpenScheduleTitleEdit(slot.task_id, slot.title ?? 'Task');
+                                }
+                              : undefined
+                          }
+                        >
+                          {slot.title ?? 'Task'}
+                        </div>
+                      )}
+                    </div>
+                    {slotHasOrgMeta && (
+                      <div className="time-block-meta-line">
+                        {!hideScheduleCategory && (slotCategory != null || slotSubcategory != null) && (
+                          <div
+                            className="time-block-category-sub"
+                            style={scheduleCategoryMetaStyle(slotBgColor, scheduleContrastSurface)}
+                            title={
+                              slotCategory != null
+                                ? slotCategory.name + (slotSubcategory != null ? ` › ${slotSubcategory.name}` : '')
+                                : slotSubcategory?.name
+                            }
+                          >
+                            {slotCategory != null && <OrgLucideIcon name={slotCategory.icon} size={12} />}
+                            {slotCategory?.name}
+                            {slotSubcategory != null ? ` › ${slotSubcategory.name}` : ''}
+                          </div>
+                        )}
+                        {!hideScheduleTags && slotTagList.length > 0 && (
+                          <span className="time-block-tags">
+                            {slotTagList.map((tg) => (
+                              <span
+                                key={tg.id}
+                                className="time-block-tag-pill"
+                                style={scheduleTagPillStyle(tg.color, scheduleContrastSurface)}
+                                title={tg.name}
+                              >
+                                {tg.name}
+                              </span>
+                            ))}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>

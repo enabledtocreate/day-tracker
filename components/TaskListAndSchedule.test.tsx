@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ScheduledSlot } from '@/lib/api';
 import {
   TaskListAndSchedule,
@@ -15,9 +16,9 @@ import {
   createDelayedEdgeAction,
   reorderGroupSiblingIds,
   resolveScheduleRootSlotId,
-  scheduleBlockDensityClasses,
   buildGroupSegmentHeightsPx,
 } from './TaskListAndSchedule';
+import { scheduleBlockDensityClasses } from '@/lib/scheduleBlockDensity';
 import { timedSlotLayoutBounds } from '@/lib/timedSlotLayout';
 
 const dayGetOrCreate = vi.fn();
@@ -77,6 +78,7 @@ vi.mock('@/lib/api', () => ({
       delete: vi.fn(),
     },
     favoriteFolders: { list: vi.fn().mockResolvedValue({ folders: [] }) },
+    sync: { get: vi.fn().mockResolvedValue({ revision: 'test-rev', server_time: '2026-01-01T00:00:00Z' }) },
   },
 }));
 
@@ -87,6 +89,13 @@ const defaultUser = {
   is_admin: false,
   sso: [],
 };
+
+function renderSchedule(ui: React.ReactElement) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: Infinity } },
+  });
+  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
 
 describe('TaskListAndSchedule', () => {
   beforeEach(() => {
@@ -112,7 +121,7 @@ describe('TaskListAndSchedule', () => {
   });
 
   it('renders schedule area with Today, Week (desktop), and Calendar tabs', async () => {
-    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} isMobile={false} />);
+    renderSchedule(<TaskListAndSchedule user={defaultUser} aiEnabled={false} isMobile={false} />);
 
     await screen.findByRole('button', { name: /today/i });
     expect(screen.getByRole('button', { name: /today/i })).toBeInTheDocument();
@@ -121,7 +130,7 @@ describe('TaskListAndSchedule', () => {
   });
 
   it('schedule: bulk toolbar shows Bulk select on the current day', async () => {
-    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
+    renderSchedule(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
     const scheduleToolbar = await screen.findByRole('group', { name: /schedule bulk actions/i });
     expect(within(scheduleToolbar).getByRole('button', { name: /bulk select/i })).toBeInTheDocument();
   });
@@ -187,7 +196,7 @@ describe('TaskListAndSchedule', () => {
   });
 
   it('task view: search input sits in the Order by row and matches add-task styling', async () => {
-    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
+    renderSchedule(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
 
     const searchInput = screen.getByPlaceholderText(/search tasks, links, list items/i) as HTMLInputElement;
     const sortRow = document.querySelector('.task-list-sort-row') as HTMLElement | null;
@@ -203,7 +212,7 @@ describe('TaskListAndSchedule', () => {
   });
 
   it('task view: New task input is styled via add-task-row CSS (same title font token as search)', async () => {
-    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
+    renderSchedule(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
 
     const newTaskInput = screen.getByPlaceholderText(/new task/i) as HTMLInputElement;
     const row = document.querySelector('.add-task-row');
@@ -229,7 +238,7 @@ describe('TaskListAndSchedule', () => {
         ],
       },
     });
-    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
+    renderSchedule(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
     await screen.findByRole('button', { name: /today/i });
     screen.getByRole('button', { name: /calendar/i }).click();
 
@@ -277,7 +286,7 @@ describe('TaskListAndSchedule', () => {
       ],
     });
 
-    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
+    renderSchedule(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
 
     await screen.findByRole('button', { name: /today/i });
     screen.getByRole('button', { name: /today/i }).click();
@@ -340,7 +349,7 @@ describe('TaskListAndSchedule', () => {
       blocks: [],
     });
 
-    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
+    renderSchedule(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
 
     await screen.findByText('Task With Tags');
 
@@ -403,7 +412,7 @@ describe('TaskListAndSchedule', () => {
       ],
     });
 
-    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} isMobile />);
+    renderSchedule(<TaskListAndSchedule user={defaultUser} aiEnabled={false} isMobile />);
 
     await screen.findByText('Drawer Test Task');
 
@@ -416,7 +425,7 @@ describe('TaskListAndSchedule', () => {
 
   it('shows error message and does not crash when tasks.list fails (500/network)', async () => {
     tasksList.mockRejectedValueOnce(new Error('Internal Server Error'));
-    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
+    renderSchedule(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
 
     const errors = await screen.findAllByText(/internal server error/i);
     expect(errors.length).toBeGreaterThanOrEqual(1);
@@ -435,7 +444,7 @@ describe('TaskListAndSchedule', () => {
     });
     slotsUpdate.mockRejectedValueOnce(new Error('Network error'));
 
-    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
+    renderSchedule(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
     await screen.findByText('T');
 
     const completeCheckbox = document.querySelector('.time-block input[type="checkbox"]') as HTMLInputElement | null;
@@ -641,7 +650,7 @@ describe('TaskListAndSchedule', () => {
 
     (window as any).confirm = vi.fn(() => true);
 
-    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
+    renderSchedule(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
     await screen.findByText('Root');
 
     // Open priority picker on the group root and set to high.
@@ -672,7 +681,7 @@ describe('TaskListAndSchedule', () => {
     tasksList.mockResolvedValue({ tasks: [root, child1, child2] });
     (window as any).confirm = vi.fn(() => true);
 
-    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
+    renderSchedule(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
     await screen.findByText('Root');
 
     const ungroupBtn = screen.getByTitle(/split group/i);
@@ -697,7 +706,7 @@ describe('TaskListAndSchedule', () => {
       ],
     });
     (window as any).confirm = vi.fn(() => true);
-    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
+    renderSchedule(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
     await screen.findByText('Child 1');
     const splitBtn = screen.getByTitle(/split group \(tasks stay scheduled/i);
     fireEvent.click(splitBtn);
@@ -738,7 +747,7 @@ describe('TaskListAndSchedule', () => {
         },
       ],
     });
-    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
+    renderSchedule(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
     await screen.findByText('Recurring root');
     const checkBtn = screen.getByTitle(/mark complete/i);
     fireEvent.click(checkBtn);
@@ -772,7 +781,7 @@ describe('TaskListAndSchedule', () => {
     });
     slotsCreate.mockResolvedValue({ ok: true, id: 999 });
 
-    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
+    renderSchedule(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
     await screen.findByText('T');
 
     const dateBtn = document.querySelector('.time-block-date') as HTMLElement | null;
@@ -816,7 +825,7 @@ describe('TaskListAndSchedule', () => {
     });
     slotsCreate.mockResolvedValue({ ok: true, id: 999 });
 
-    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
+    renderSchedule(<TaskListAndSchedule user={defaultUser} aiEnabled={false} />);
     await screen.findByText('T');
 
     const dateBtn = document.querySelector('.time-block-date') as HTMLElement | null;
@@ -898,7 +907,7 @@ describe('TaskListAndSchedule', () => {
       ],
     });
 
-    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} isMobile />);
+    renderSchedule(<TaskListAndSchedule user={defaultUser} aiEnabled={false} isMobile />);
     await screen.findByText('T');
 
     const btn = document.querySelector('.time-block-complete-checkbox') as HTMLButtonElement | null;
@@ -975,7 +984,7 @@ describe('TaskListAndSchedule', () => {
       ],
     });
 
-    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} isMobile />);
+    renderSchedule(<TaskListAndSchedule user={defaultUser} aiEnabled={false} isMobile />);
     await screen.findByText('T');
 
     const btnBefore = document.querySelector('.time-block-complete-checkbox') as HTMLButtonElement | null;
@@ -1043,7 +1052,7 @@ describe('TaskListAndSchedule', () => {
       return { ok: true };
     });
 
-    render(<TaskListAndSchedule user={defaultUser} aiEnabled={false} isMobile={false} />);
+    renderSchedule(<TaskListAndSchedule user={defaultUser} aiEnabled={false} isMobile={false} />);
 
     await screen.findByText('Resize height probe', {}, { timeout: 15_000 });
 

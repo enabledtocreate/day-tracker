@@ -6,20 +6,29 @@ import {
 } from '@/lib/scheduleTitleEdit';
 
 describe('scheduleTitleEdit', () => {
-  it('treats title line and edit input as hold excluded', () => {
+  it('allows hold on title area but not on task-owned buttons/inputs', () => {
     document.body.innerHTML = `
       <div class="time-block">
-        <div class="time-block-title-line">
-          <div class="time-block-title">Task</div>
+        <div class="time-block-header">
+          <div class="time-block-title-wrap">
+            <div class="time-block-title-line">
+              <div class="time-block-title">Task</div>
+            </div>
+          </div>
+          <button type="button">Priority</button>
         </div>
         <input class="time-block-edit" />
       </div>
     `;
-    const titleLine = document.querySelector('.time-block-title-line')!;
     const title = document.querySelector('.time-block-title')!;
+    const titleLine = document.querySelector('.time-block-title-line')!;
+    const header = document.querySelector('.time-block-header')!;
+    const button = document.querySelector('button')!;
     const input = document.querySelector('.time-block-edit')!;
-    expect(isScheduleBlockHoldExcluded(titleLine)).toBe(true);
-    expect(isScheduleBlockHoldExcluded(title)).toBe(true);
+    expect(isScheduleBlockHoldExcluded(title)).toBe(false);
+    expect(isScheduleBlockHoldExcluded(titleLine)).toBe(false);
+    expect(isScheduleBlockHoldExcluded(header)).toBe(false);
+    expect(isScheduleBlockHoldExcluded(button)).toBe(true);
     expect(isScheduleBlockHoldExcluded(input)).toBe(true);
     expect(isScheduleBlockHoldExcluded(document.querySelector('.time-block')!)).toBe(false);
   });

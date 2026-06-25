@@ -1,11 +1,15 @@
 'use client';
 
-import type React from 'react';
+import { useRef, type CSSProperties } from 'react';
 import type { ScheduleCalendarGridProps } from '@/lib/schedule-calendar-grid/types';
+import { useCalendarDayWheelScroll } from '@/lib/schedule-calendar-grid/useCalendarDayWheelScroll';
 
 export function ScheduleCalendarGrid({ days, onDayClick, onDayDoubleClick, className }: ScheduleCalendarGridProps) {
+  const viewRef = useRef<HTMLDivElement>(null);
+  useCalendarDayWheelScroll(viewRef);
+
   return (
-    <div className={'calendar-view visible' + (className ? ` ${className}` : '')}>
+    <div ref={viewRef} className={'calendar-view visible' + (className ? ` ${className}` : '')}>
       <div className="calendar-grid">
         {days.map((cell) => {
           const { dateStr } = cell;
@@ -41,7 +45,7 @@ export function ScheduleCalendarGrid({ days, onDayClick, onDayDoubleClick, class
                       }
                       style={
                         s.categoryColor
-                          ? ({ ['--cal-task-cat-color' as string]: s.categoryColor } as React.CSSProperties)
+                          ? ({ ['--cal-task-cat-color' as string]: s.categoryColor } as CSSProperties)
                           : undefined
                       }
                     >

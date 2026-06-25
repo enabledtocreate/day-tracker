@@ -52,6 +52,15 @@ import {
 } from '@/lib/scheduleTitleEdit';
 import { applyTaskTitlePatch, patchCalendarSlotsByDateForTask, patchSlotTitlesForTask } from '@/lib/optimisticTaskTitle';
 import { adoptServerDataRevision, useDataSyncPoll } from '@/lib/useDataSyncPoll';
+import {
+  buildWeekDates,
+  formatLocalYmd,
+  getMonthRange,
+  sundayOfWeekContaining,
+  todayLocalYmd,
+} from '@/lib/scheduleDateUtils';
+import { useScheduleDataQueries } from '@/lib/scheduleData';
+import type { DayScheduleBundle, MonthSlotsBundle, ScheduleCoreData, WeekScheduleBundle } from '@/lib/scheduleData';
 import { DefaultDurationMinutesField } from '@/components/DefaultDurationMinutesField';
 import { useMobileMode } from '@/lib/mobileMode';
 import { useTaskListMobileGestures } from '@/lib/useTaskListMobileGestures';
@@ -102,6 +111,7 @@ import { DT, DT_ID } from '@/lib/uiIdentifiers';
 import { priorityDisplayFromSettings, type PriorityDisplay } from '@/lib/priorityTheme';
 import { bucketLayoutFromSettings, canDropTaskOnBucketZone } from '@/lib/taskBuckets';
 import { SCHEDULE_SLOT_ROW_HEIGHT_PX } from '@/lib/scheduleSlotMetrics';
+import { scheduleBlockDensityClasses } from '@/lib/scheduleBlockDensity';
 import { timedSlotLayoutBounds, computeGroupMemberSlotTimes } from '@/lib/timedSlotLayout';
 import { computeAddTaskGhostPlacement, type AddTaskGhostPlacement } from '@/lib/scheduleAddTaskGhost';
 import { buildDayScheduleOccupiedRects, computeOverlapMaps } from '@/lib/scheduleOccupiedRects';
@@ -130,39 +140,7 @@ type Props = {
 };
 
 function today(): string {
-  return formatLocalYmd(new Date());
-}
-
-/** Local calendar date YYYY-MM-DD (avoid `toISOString()` day shifts in non-UTC time zones). */
-function formatLocalYmd(d: Date): string {
-  const y = d.getFullYear();
-  const m = d.getMonth() + 1;
-  const day = d.getDate();
-  return `${y}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-}
-
-/** Sunday local date for the calendar week (Sun–Sat) that contains dateStr. */
-function sundayOfWeekContaining(dateStr: string): string {
-  const d = new Date(dateStr + 'T12:00:00');
-  const day = d.getDay();
-  d.setDate(d.getDate() - day);
-  return formatLocalYmd(d);
-}
-
-/** Week columns: anchor is Sunday. 7-day = Sun–Sat; weekday = Mon–Fri of that week. */
-function buildWeekDates(anchorSunday: string, scope: '7-day' | 'weekday'): string[] {
-  if (scope === '7-day') {
-    return Array.from({ length: 7 }, (_, i) => {
-      const d = new Date(anchorSunday + 'T12:00:00');
-      d.setDate(d.getDate() + i);
-      return formatLocalYmd(d);
-    });
-  }
-  return Array.from({ length: 5 }, (_, i) => {
-    const d = new Date(anchorSunday + 'T12:00:00');
-    d.setDate(d.getDate() + 1 + i);
-    return formatLocalYmd(d);
-  });
+  return todayLocalYmd();
 }
 
 function slotHasTime(slot: ScheduledSlot): boolean {
@@ -202,16 +180,6 @@ function logScheduleTaskResize(
   }
 ) {
   console.info('[schedule-task-resize]', JSON.stringify({ phase, iso: new Date().toISOString(), ...detail }));
-}
-
-/** §5.12: CSS hooks for short/narrow schedule blocks (font scale, hide tags, action drawer). */
-export function scheduleBlockDensityClasses(heightPx: number, widthPctSlot: number): string {
-  const parts: string[] = [];
-  if (heightPx < 40) parts.push('time-block-density-micro');
-  else if (heightPx < 72) parts.push('time-block-density-tight');
-  // Drawer mode should be driven by horizontal crowding, not short duration alone.
-  if (widthPctSlot < 34) parts.push('time-block-density-actions-drawer');
-  return parts.length ? ' ' + parts.join(' ') : '';
 }
 
 function enrichScheduleBlockFromOrg(
@@ -338,15 +306,6 @@ function extractUrlFromDrop(e: React.DragEvent): string | null {
     if (/^https?:\/\/\S+/i.test(t)) return t.replace(/\s.*$/, '').trim();
   }
   return null;
-}
-
-function getMonthRange(date: string): { from: string; to: string } {
-  const d = new Date(date + 'T12:00:00');
-  const y = d.getFullYear();
-  const m = d.getMonth();
-  const first = new Date(y, m, 1);
-  const last = new Date(y, m + 1, 0);
-  return { from: formatLocalYmd(first), to: formatLocalYmd(last) };
 }
 
 /** Width of the on-screen edge-buffer overlay (admin debug only). */
@@ -693,7 +652,6 @@ export function TaskListAndSchedule({
     columnDate: string;
     placement: AddTaskGhostPlacement;
   } | null>(null);
-  const weekPrefetchStartedRef = useRef(false);
   const optimisticIdRef = useRef(-1);
   const [organizationModalTaskId, setOrganizationModalTaskId] = useState<number | null>(null);
   const [organizationBulkTaskIds, setOrganizationBulkTaskIds] = useState<number[] | null>(null);
@@ -942,168 +900,82 @@ export function TaskListAndSchedule({
       .catch(() => setWeekFeedByDate({}));
   }, [scheduleTab, isMobile, weekAnchorSunday, weekScope, settings.timezone]);
 
-  const loadData = useCallback((opts?: { silent?: boolean } | unknown) => {
-    const silent =
-      typeof opts === 'object' &&
-      opts !== null &&
-      'silent' in opts &&
-      (opts as { silent?: boolean }).silent === true;
-    if (initialLoadRef.current && !silent) {
-      setLoading(true);
-      initialLoadRef.current = false;
-    }
-    if (!silent) setError(null);
-    const run = async () => {
-      try {
-        await api.dataIntegrity.ensure().catch(() => {});
-        const isWeek = scheduleTab === 'week' && !isMobile;
-        const weekDatesList = isWeek ? buildWeekDates(weekAnchorSunday, weekScope) : [];
-        if (isWeek && weekDatesList.includes(today())) await api.rollover(today());
-        if (!isWeek && viewDate === today()) await api.rollover(viewDate);
-        const day = !isWeek ? await api.day.getOrCreate(viewDate) : null;
-        const todayStr = today();
-        const future = new Date(todayStr + 'T12:00:00');
-        future.setFullYear(future.getFullYear() + 1);
-        const futureStr = formatLocalYmd(future);
-
-        const withExt = 'links,list_items,organization';
-
-        let slotRes: {
-          slots: ScheduledSlot[];
-          linksByTaskId?: Record<number, TaskLink[]>;
-          listItemsByTaskId?: Record<number, TaskListItem[]>;
-        };
-        let scheduleBlockRes: { blocks: ScheduleBlock[] } = { blocks: [] };
-        if (isWeek) {
-          const results = await Promise.all(
-            weekDatesList.map(async (ds) => {
-              const dr = await api.day.getOrCreate(ds);
-              return api.slots.list(dr.id, { with: 'links,list_items' });
-            })
-          );
-          const mergedSlots: ScheduledSlot[] = [];
-          const dayMap: Record<number, string> = {};
-          const linksByTaskId: Record<number, TaskLink[]> = {};
-          const listItemsByTaskId: Record<number, TaskListItem[]> = {};
-          for (let i = 0; i < results.length; i++) {
-            const ds = weekDatesList[i]!;
-            const r = results[i]!;
-            for (const s of r.slots) {
-              mergedSlots.push(s);
-              const drId = Number(s.day_record_id);
-              if (Number.isFinite(drId)) dayMap[drId] = ds;
-            }
-            if (r.linksByTaskId) Object.assign(linksByTaskId, r.linksByTaskId);
-            if (r.listItemsByTaskId) {
-              for (const [tid, arr] of Object.entries(r.listItemsByTaskId)) {
-                const id = Number(tid);
-                listItemsByTaskId[id] = (listItemsByTaskId[id] ?? []).concat(arr);
-              }
-            }
-          }
-          setSlotDayByRecordId(dayMap);
-          slotRes = { slots: mergedSlots, linksByTaskId, listItemsByTaskId };
-          scheduleBlockRes = { blocks: [] };
-        } else {
-          slotRes = await api.slots.list(day!.id, { with: 'links,list_items' });
-          scheduleBlockRes = await api.scheduleBlocks.list(day!.id).catch(() => ({ blocks: [] }));
-          const dm: Record<number, string> = {};
-          slotRes.slots.forEach((s) => {
-            const drId = Number(s.day_record_id);
-            if (Number.isFinite(drId)) dm[drId] = viewDate;
-          });
-          setSlotDayByRecordId(dm);
-        }
-
-        const [allTasksRes, accomplishedRes, scheduledRangeRes, settingsRes, organizationRes, favoriteFoldersRes] =
-          await Promise.all([
-            api.tasks.list({ with: withExt }),
-            api.accomplished.listAll({ with: withExt }),
-            api.slots.listByDateRange(todayStr, futureStr),
-            api.settings.get(),
-            api.organization.list().catch(() => ({ categories: [], subcategories: [], tags: [], blocks: [] })),
-            api.favoriteFolders.list().catch(() => ({ folders: [] as FavoriteFolder[] })),
-          ]);
-
-        const bucketsForFetch = bucketLayoutFromSettings(settingsRes);
-        const bucketTaskRes = await Promise.all(
-          bucketsForFetch.map((b) => api.tasks.list({ list_state: b.id, with: withExt }))
-        );
-
-        const allTasks = allTasksRes.tasks ?? [];
-        setTasks(allTasks);
-        setCommonTasks(allTasks.filter((t) => !!t.is_common && t.parent_id == null));
-        setSlots(slotRes.slots);
-        setSettings(settingsRes);
-        setOrganizationCategories(organizationRes.categories ?? []);
-        setOrganizationSubcategories(organizationRes.subcategories ?? []);
-        setOrganizationTags(organizationRes.tags ?? []);
-        setOrganizationBlocks(organizationRes.blocks ?? []);
-        setScheduleBlocks(scheduleBlockRes.blocks ?? []);
-        setFavoriteFolders(favoriteFoldersRes.folders ?? []);
-
-        const linksByTaskId: Record<number, TaskLink[]> = {};
-        const listItemsByTaskId: Record<number, TaskListItem[]> = {};
-        for (const res of [
-          allTasksRes,
-          ...bucketTaskRes,
-          accomplishedRes,
-          slotRes as { linksByTaskId?: Record<number, TaskLink[]>; listItemsByTaskId?: Record<number, TaskListItem[]> },
-        ]) {
-          const links = (res as { linksByTaskId?: Record<number, TaskLink[]> }).linksByTaskId;
-          if (links) Object.assign(linksByTaskId, links);
-          const items = (res as { listItemsByTaskId?: Record<number, TaskListItem[]> }).listItemsByTaskId;
-          if (items) {
-            for (const [tid, arr] of Object.entries(items)) {
-              const id = Number(tid);
-              listItemsByTaskId[id] = (listItemsByTaskId[id] ?? []).concat(arr);
-            }
-          }
-        }
-        const sortedListItems: Record<number, TaskListItem[]> = {};
-        Object.keys(listItemsByTaskId).forEach((tid) => {
-          const arr = listItemsByTaskId[Number(tid)];
-          const seen = new Set<number>();
-          sortedListItems[Number(tid)] = arr
-            .filter((i) => {
-              if (seen.has(i.id)) return false;
-              seen.add(i.id);
-              return true;
-            })
-            .sort((a, b) => a.order_index - b.order_index);
-        });
-        setTaskLinksByTaskId(linksByTaskId);
-        setTaskListItemsByTaskId(sortedListItems);
-
-        const permanentlyCompletedIds = new Set<number>();
-        Object.entries(accomplishedRes.byDate ?? {}).forEach(([day, arr]) => {
-          if (day < todayStr) {
-            arr.forEach((a) => permanentlyCompletedIds.add(a.task_id));
-          }
-        });
-        setAccomplishedTaskIds(permanentlyCompletedIds);
-        const schedIds = new Set<number>();
-        Object.values(scheduledRangeRes.byDate ?? {}).forEach((arr: ScheduledSlot[]) => arr.forEach((s) => schedIds.add(s.task_id)));
-        setScheduledTaskIdsFromTodayOnward(schedIds);
-
-        if (scheduleTab === 'calendar') {
-          const { from, to } = getMonthRange(calendarMonth);
-          api.slots.listByDateRange(from, to).then((r) => setCalendarSlotsByDate(r.byDate ?? {})).catch(() => setCalendarSlotsByDate({}));
-        }
-        void adoptServerDataRevision(lastDataRevisionRef);
-      } catch (err) {
-        if (!silent) setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        if (!silent) {
-          setLoading(false);
-          setInitialDataReady(true);
-        } else {
-          setInitialDataReady(true);
-        }
+  const mergeBundleLinks = useCallback(
+    (linksByTaskId: Record<number, TaskLink[]>, listItemsByTaskId: Record<number, TaskListItem[]>) => {
+      if (Object.keys(linksByTaskId).length > 0) {
+        setTaskLinksByTaskId((prev) => ({ ...prev, ...linksByTaskId }));
       }
-    };
-    run();
-  }, [viewDate, scheduleTab, calendarMonth, weekAnchorSunday, weekScope, isMobile]);
+      if (Object.keys(listItemsByTaskId).length > 0) {
+        setTaskListItemsByTaskId((prev) => {
+          const next = { ...prev };
+          Object.entries(listItemsByTaskId).forEach(([tid, arr]) => {
+            const id = Number(tid);
+            next[id] = [...(next[id] ?? []), ...arr]
+              .filter((item, i, a) => a.findIndex((x) => x.id === item.id) === i)
+              .sort((a, b) => a.order_index - b.order_index);
+          });
+          return next;
+        });
+      }
+    },
+    []
+  );
+
+  const scheduleDataHandlers = useMemo(
+    () => ({
+      applyCoreData: (data: ScheduleCoreData) => {
+        setTasks(data.tasks);
+        setCommonTasks(data.commonTasks);
+        setSettings(data.settings);
+        setOrganizationCategories(data.organizationCategories);
+        setOrganizationSubcategories(data.organizationSubcategories);
+        setOrganizationTags(data.organizationTags);
+        setOrganizationBlocks(data.organizationBlocks);
+        setFavoriteFolders(data.favoriteFolders);
+        setTaskLinksByTaskId(data.taskLinksByTaskId);
+        setTaskListItemsByTaskId(data.taskListItemsByTaskId);
+        setAccomplishedTaskIds(data.accomplishedTaskIds);
+        setScheduledTaskIdsFromTodayOnward(data.scheduledTaskIdsFromTodayOnward);
+      },
+      applyDayBundle: (data: DayScheduleBundle) => {
+        setSlots(data.slots);
+        setScheduleBlocks(data.scheduleBlocks);
+        setSlotDayByRecordId((prev) => ({ ...prev, ...data.slotDayByRecordId }));
+        mergeBundleLinks(data.linksByTaskId, data.listItemsByTaskId);
+      },
+      applyWeekBundle: (data: WeekScheduleBundle) => {
+        setSlots(data.slots);
+        setScheduleBlocks([]);
+        setSlotDayByRecordId((prev) => ({ ...prev, ...data.slotDayByRecordId }));
+        mergeBundleLinks(data.linksByTaskId, data.listItemsByTaskId);
+      },
+      applyMonthSlots: (data: MonthSlotsBundle) => {
+        setCalendarSlotsByDate(data.byDate);
+      },
+      setLoading,
+      setInitialDataReady,
+      setError,
+    }),
+    [mergeBundleLinks]
+  );
+
+  const {
+    reload: loadData,
+    invalidateDay,
+    invalidateWeek,
+    invalidateMonth,
+    invalidateFromSync,
+  } = useScheduleDataQueries({
+    viewDate,
+    scheduleTab,
+    calendarMonth,
+    weekAnchorSunday,
+    weekScope,
+    isMobile,
+    handlers: scheduleDataHandlers,
+    lastDataRevisionRef,
+    initialLoadRef,
+  });
 
   const refetchTaskContent = useCallback((taskId: number) => {
     Promise.all([
@@ -1121,38 +993,12 @@ export function TaskListAndSchedule({
   const refetchSlotsForViewDay = useCallback(
     (overrideDate?: string) => {
       if (scheduleTab === 'week' && !isMobile) {
-        loadData();
+        invalidateWeek();
         return;
       }
-      const date = overrideDate ?? viewDate;
-      api.day
-        .getOrCreate(date)
-        .then((d) =>
-          api.slots.list(d.id, { with: 'links,list_items' }).then((r) => {
-            setSlots(r.slots);
-            const dm: Record<number, string> = {};
-            r.slots.forEach((s) => {
-              const drId = Number(s.day_record_id);
-              if (Number.isFinite(drId)) dm[drId] = date;
-            });
-            setSlotDayByRecordId((prev) => ({ ...prev, ...dm }));
-            if (r.linksByTaskId) setTaskLinksByTaskId((prev) => ({ ...prev, ...r.linksByTaskId }));
-            if (r.listItemsByTaskId) {
-              setTaskListItemsByTaskId((prev) => {
-                const next = { ...prev };
-                Object.entries(r.listItemsByTaskId!).forEach(([tid, arr]) => {
-                  next[Number(tid)] = [...(next[Number(tid)] ?? []), ...arr]
-                    .filter((item, i, a) => a.findIndex((x) => x.id === item.id) === i)
-                    .sort((a, b) => a.order_index - b.order_index);
-                });
-                return next;
-              });
-            }
-          })
-        )
-        .catch(() => {});
+      invalidateDay(overrideDate ?? viewDate);
     },
-    [scheduleTab, isMobile, loadData, viewDate]
+    [scheduleTab, isMobile, invalidateWeek, invalidateDay, viewDate]
   );
 
   const handleRefresh = useCallback((taskId?: number) => {
@@ -1266,53 +1112,21 @@ export function TaskListAndSchedule({
     [loadData]
   );
 
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
-
   useDataSyncPoll({
     enabled: initialDataReady,
     pendingWritesRef: pendingLocalWritesRef,
     lastRevisionRef: lastDataRevisionRef,
-    onRemoteChange: () => loadData({ silent: true }),
+    onRemoteChange: () => {
+      void api.sync
+        .get()
+        .then(() => invalidateFromSync())
+        .catch(() => invalidateFromSync());
+    },
     isPaused: () =>
       editingScheduleTaskId !== null ||
       editingTaskId !== null ||
       dragState !== null,
   });
-
-  /** Prefetch current week slots (today first) so Week view is warm after load. */
-  useEffect(() => {
-    if (isMobile || weekPrefetchStartedRef.current) return;
-    weekPrefetchStartedRef.current = true;
-    const anchor = sundayOfWeekContaining(today());
-    const dates = buildWeekDates(anchor, weekScope);
-    const todayStr = today();
-    const ordered = [todayStr, ...dates.filter((d) => d !== todayStr)];
-    void (async () => {
-      const dayMap: Record<number, string> = {};
-      const merged: ScheduledSlot[] = [];
-      for (const ds of ordered) {
-        try {
-          const dr = await api.day.getOrCreate(ds);
-          const r = await api.slots.list(dr.id);
-          for (const s of r.slots) {
-            merged.push(s);
-            const drId = Number(s.day_record_id);
-            if (Number.isFinite(drId)) dayMap[drId] = ds;
-          }
-          setSlots((prev) => {
-            const byId = new Map(prev.map((s) => [s.id, s]));
-            merged.forEach((s) => byId.set(s.id, s));
-            return Array.from(byId.values());
-          });
-          setSlotDayByRecordId((prev) => ({ ...prev, ...dayMap }));
-        } catch {
-          /* ignore prefetch errors */
-        }
-      }
-    })();
-  }, [isMobile, weekScope]);
 
   useEffect(() => {
     if (viewDate < today()) {
@@ -1454,11 +1268,10 @@ export function TaskListAndSchedule({
       .catch(() => {});
   }, [scheduleTab, viewDate, settings.timezone, icalClientTriggersSync]);
 
-  // Calendar: load slots and feed events for month
+  // Calendar: load feed events for month (slots come from React Query month cache)
   useEffect(() => {
     if (scheduleTab !== 'calendar') return;
     const { from, to } = getMonthRange(calendarMonth);
-    api.slots.listByDateRange(from, to).then((r) => setCalendarSlotsByDate(r.byDate ?? {})).catch(() => setCalendarSlotsByDate({}));
     runIcalFetchWithPhase(from, to, { sync_if_stale: icalClientTriggersSync })
       .then((r) => {
         const byDate: Record<string, IcalFeedEvent[]> = {};
@@ -5635,8 +5448,7 @@ export function TaskListAndSchedule({
                   : {})}
               {...(isMobile && scheduleTab === 'today' ? { 'data-schedule-mobile-split': '' as const } : {})}
             >
-            {scheduleTab === 'today' && (
-              <>
+            <div className="schedule-view-panel" hidden={scheduleTab !== 'today'}>
                 <div
                   className={
                     'schedule-untimed-drop-zone' +
@@ -5726,7 +5538,6 @@ export function TaskListAndSchedule({
                                   ? (e) => {
                                       if (e.button !== 0) return;
                                       e.preventDefault();
-                                      e.stopPropagation();
                                     }
                                   : undefined
                               }
@@ -7085,7 +6896,6 @@ export function TaskListAndSchedule({
                                             ? (e) => {
                                                 if (e.button !== 0) return;
                                                 e.preventDefault();
-                                                e.stopPropagation();
                                               }
                                             : undefined
                                         }
@@ -7595,7 +7405,6 @@ export function TaskListAndSchedule({
                                                       ? (e) => {
                                                           if (e.button !== 0) return;
                                                           e.preventDefault();
-                                                          e.stopPropagation();
                                                         }
                                                       : undefined
                                                   }
@@ -8160,11 +7969,9 @@ export function TaskListAndSchedule({
                   </div>
                 )}
                 </div>
-              </>
-            )}
-            {scheduleTab === 'week' && !isMobile && (
-              <>
-                {(!initialDataReady || loading) ? (
+            </div>
+            <div className="schedule-view-panel" hidden={scheduleTab !== 'week' || isMobile}>
+                {(!initialDataReady && loading) ? (
                   <div className="time-view-placeholder" style={{ padding: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '120px' }}>
                     <div className="loading-spinner" aria-hidden />
                   </div>
@@ -8294,6 +8101,7 @@ export function TaskListAndSchedule({
                                     columnSlots={colSlots}
                                     tasks={tasks}
                                     organizationCategories={organizationCategories}
+                                    organizationSubcategories={organizationSubcategories}
                                     organizationTags={organizationTags}
                                     settings={settings}
                                     priorityDisplay={priorityDisplay}
@@ -8313,6 +8121,7 @@ export function TaskListAndSchedule({
                                     onStartBulkScheduleMoveHold={startBulkScheduleMoveHold}
                                     onCompleteSlot={(slot, children) => handleWeekColumnComplete(colDate, slot, children)}
                                     hideScheduleTags={hideScheduleTags}
+                                    hideScheduleCategory={hideScheduleCategory}
                                     resizeEnabled={desktopPointer}
                                     bindSlotResizeTop={bindSlotResizeTop}
                                     bindSlotResizeBottom={bindSlotResizeBottom}
@@ -8514,6 +8323,7 @@ export function TaskListAndSchedule({
                                   columnSlots={colSlots}
                                   tasks={tasks}
                                   organizationCategories={organizationCategories}
+                                  organizationSubcategories={organizationSubcategories}
                                   organizationTags={organizationTags}
                                   settings={settings}
                                   priorityDisplay={priorityDisplay}
@@ -8533,6 +8343,7 @@ export function TaskListAndSchedule({
                                   onStartBulkScheduleMoveHold={startBulkScheduleMoveHold}
                                   onCompleteSlot={(slot, children) => handleWeekColumnComplete(colDate, slot, children)}
                                   hideScheduleTags={hideScheduleTags}
+                                  hideScheduleCategory={hideScheduleCategory}
                                   resizeEnabled={desktopPointer}
                                   bindSlotResizeTop={bindSlotResizeTop}
                                   bindSlotResizeBottom={bindSlotResizeBottom}
@@ -8565,9 +8376,8 @@ export function TaskListAndSchedule({
                     </div>
                   </div>
                 )}
-              </>
-            )}
-            {scheduleTab === 'calendar' && (
+            </div>
+            <div className="schedule-view-panel" hidden={scheduleTab !== 'calendar'}>
               <ScheduleCalendarGrid
                 days={scheduleCalendarCells}
                 onDayClick={(dateStr) => {
@@ -8582,7 +8392,7 @@ export function TaskListAndSchedule({
                   void createScheduleTaskAt(dateStr, 9 * 60);
                 }}
               />
-            )}
+            </div>
             </div>
           </div>
         </div>
@@ -9317,7 +9127,7 @@ export function TaskListAndSchedule({
               }
               if (scheduleTab === 'calendar') {
                 const { from, to } = getMonthRange(calendarMonth);
-                api.slots.listByDateRange(from, to).then((r) => setCalendarSlotsByDate(r.byDate ?? {})).catch(() => {});
+                invalidateMonth(from, to);
               }
               refetchSlotsForViewDay();
             }).catch((err) => {
