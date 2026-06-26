@@ -126,4 +126,47 @@ final class DemoSeedIntegrationTest extends TestCase
         $taskCategoryRows = (int) $pdo->query('SELECT COUNT(*) FROM task_category')->fetchColumn();
         $this->assertGreaterThan(0, $taskCategoryRows, 'At least one task should have a category assigned');
     }
+
+    public function testResetDemoUserSeedsCommonTasksAndScheduleBlocks(): void
+    {
+        resetDemoUser($this->master, $this->dataDir);
+        $row = $this->master->query("SELECT db_name FROM users WHERE username = 'demo'")->fetch(PDO::FETCH_ASSOC);
+        $pdo = new PDO('sqlite:' . $this->dataDir . '/' . $row['db_name'], null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+        $hasIsCommon = in_array('is_common', array_column($pdo->query('PRAGMA table_info(tasks)')->fetchAll(PDO::FETCH_ASSOC), 'name'), true);
+        if (!$hasIsCommon) {
+            $this->markTestSkipped('is_common column not present');
+        }
+        $common = (int) $pdo->query('SELECT COUNT(*) FROM tasks WHERE is_common = 1')->fetchColumn();
+        $this->assertGreaterThanOrEqual(3, $common, 'Demo should seed Common Tasks templates');
+
+        $hasScheduleBlocks = $pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schedule_blocks'")->fetchColumn();
+        if (!$hasScheduleBlocks) {
+            $this->markTestSkipped('schedule_blocks table not present');
+        }
+        $blocks = (int) $pdo->query('SELECT COUNT(*) FROM schedule_blocks')->fetchColumn();
+        $this->assertGreaterThan(0, $blocks, 'Demo should seed schedule block instances');
+        $blockTypes = (int) $pdo->query('SELECT COUNT(*) FROM task_blocks')->fetchColumn();
+        $this->assertGreaterThanOrEqual(3, $blockTypes, 'Demo should seed block types');
+    }
+
+    public function testResetDemoUserSeedsTaskGroupOnSchedule(): void
+    {
+        resetDemoUser($this->master, $this->dataDir);
+        $row = $this->master->query("SELECT db_name FROM users WHERE username = 'demo'")->fetch(PDO::FETCH_ASSOC);
+        $pdo = new PDO('sqlite:' . $this->dataDir . '/' . $row['db_name'], null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+        $rootId = (int) $pdo->query("SELECT id FROM tasks WHERE title = 'Client launch'")->fetchColumn();
+        $this->assertGreaterThan(0, $rootId);
+        $memberStmt = $pdo->prepare('SELECT COUNT(*) FROM tasks WHERE parent_id = ?');
+        $memberStmt->execute([$rootId]);
+        $this->assertSame(2, (int) $memberStmt->fetchColumn());
+        $today = date('Y-m-d');
+        $dayStmt = $pdo->prepare('SELECT id FROM day_record WHERE date = ?');
+        $dayStmt->execute([$today]);
+        $dayId = (int) $dayStmt->fetchColumn();
+        $slotStmt = $pdo->prepare(
+            'SELECT COUNT(*) FROM scheduled_slots s JOIN tasks t ON t.id = s.task_id WHERE s.day_record_id = ? AND (t.id = ? OR t.parent_id = ?)'
+        );
+        $slotStmt->execute([$dayId, $rootId, $rootId]);
+        $this->assertSame(3, (int) $slotStmt->fetchColumn(), 'Client launch group should have root + 2 member slots today');
+    }
 }

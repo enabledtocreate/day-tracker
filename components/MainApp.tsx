@@ -8,6 +8,7 @@ import { api } from '@/lib/api';
 import { LoginScreen } from '@/components/LoginScreen';
 import { AppBar } from '@/components/AppBar';
 import { AppPanels } from '@/components/AppPanels';
+import { ScheduleQueryUserGuard } from '@/lib/scheduleData';
 import { DT_ID } from '@/lib/uiIdentifiers';
 import { useEodAutoComplete } from '@/lib/eodAutoComplete';
 
@@ -82,11 +83,17 @@ export function MainApp() {
   }
 
   if (user === null) {
-    return <LoginScreen onSuccess={handleLoginSuccess} />;
+    return (
+      <>
+        <ScheduleQueryUserGuard userId={null} />
+        <LoginScreen onSuccess={handleLoginSuccess} />
+      </>
+    );
   }
 
   return (
     <div id={DT_ID.appShell}>
+      <ScheduleQueryUserGuard userId={user.id} />
       <AppBar
         user={user}
         onUserClick={() => setShowUserSettings(true)}

@@ -3,16 +3,29 @@ import { scheduleKeys } from '@/lib/scheduleData/keys';
 import { buildWeekDates, getMonthRange } from '@/lib/scheduleDateUtils';
 
 describe('scheduleKeys', () => {
-  it('builds stable hierarchical keys', () => {
-    expect(scheduleKeys.core()).toEqual(['schedule', 'core']);
-    expect(scheduleKeys.day('2026-06-03')).toEqual(['schedule', 'day', '2026-06-03']);
-    expect(scheduleKeys.week('2026-06-01', '7-day')).toEqual(['schedule', 'week', '2026-06-01', '7-day']);
-    expect(scheduleKeys.month('2026-06-01', '2026-06-30')).toEqual([
+  const userId = 42;
+
+  it('builds stable hierarchical keys scoped by user', () => {
+    expect(scheduleKeys.core(userId)).toEqual(['schedule', userId, 'core']);
+    expect(scheduleKeys.day(userId, '2026-06-03')).toEqual(['schedule', userId, 'day', '2026-06-03']);
+    expect(scheduleKeys.week(userId, '2026-06-01', '7-day')).toEqual([
       'schedule',
+      userId,
+      'week',
+      '2026-06-01',
+      '7-day',
+    ]);
+    expect(scheduleKeys.month(userId, '2026-06-01', '2026-06-30')).toEqual([
+      'schedule',
+      userId,
       'month',
       '2026-06-01',
       '2026-06-30',
     ]);
+  });
+
+  it('isolates keys between accounts', () => {
+    expect(scheduleKeys.core(1)).not.toEqual(scheduleKeys.core(2));
   });
 });
 

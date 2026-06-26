@@ -4655,6 +4655,8 @@ html.light .schedule-add-task-ghost {
   overflow: hidden;
   box-sizing: border-box;
   min-height: 0;
+  justify-content: flex-start;
+  align-items: stretch;
 }
 .time-block-group-segment > .time-block-header:has(.time-block-title-wrap-stacked) {
   flex: 0 0 var(--schedule-slot-row-height);
@@ -4662,11 +4664,14 @@ html.light .schedule-add-task-ghost {
   max-height: var(--schedule-slot-row-height);
   min-height: var(--schedule-slot-row-height);
   overflow: hidden;
+  align-self: stretch;
 }
 .time-block-group-segment > .time-block-header:not(:has(.time-block-title-wrap-stacked)) {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: visible;
+  flex: 0 0 var(--schedule-slot-row-height);
+  min-height: var(--schedule-slot-row-height);
+  max-height: var(--schedule-slot-row-height);
+  overflow: hidden;
+  align-self: stretch;
 }
 .time-block-group-stack > .time-block-group-segment > .time-block-header,
 .time-block-group-stack .time-block-group-member-header {
@@ -4677,6 +4682,15 @@ html.light .schedule-add-task-ghost {
   border-radius: 0;
   padding-left: 0;
   padding-right: 0;
+  align-items: center;
+}
+.time-block-group-segment .time-block-title-wrap-stacked {
+  justify-content: flex-start;
+  align-content: flex-start;
+}
+.time-block-group-segment .time-block-title-wrap-no-meta.time-block-title-wrap-stacked {
+  justify-content: flex-start;
+  align-content: flex-start;
 }
 .time-block-group-stack .time-block-header-leading {
   padding: 0;
@@ -4697,11 +4711,22 @@ html.light .schedule-add-task-ghost {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.time-block-group-boundary {
+.time-block-group-segment:not(:last-child)::after {
+  content: '';
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.28);
+  pointer-events: none;
+  z-index: 2;
+}
+.time-block-group-boundary {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -5px;
   height: 10px;
   margin: 0;
   padding: 0;
@@ -4710,18 +4735,15 @@ html.light .schedule-add-task-ghost {
   box-sizing: border-box;
   cursor: ns-resize;
   touch-action: none;
-  z-index: 3;
-  background: linear-gradient(
-    to bottom,
-    rgba(255, 255, 255, 0.3) 0,
-    rgba(255, 255, 255, 0.3) 1px,
-    transparent 1px,
-    transparent 100%
-  );
+  z-index: 4;
+  background: transparent;
+}
+.time-block-group-boundary:hover {
+  background: rgba(255, 255, 255, 0.1);
 }
 .time-block-group-member-header {
   margin: 0;
-  padding-top: 0.05rem;
+  padding-top: 0;
 }
 .time-block.completed .time-block-group-member-completed .time-block-title {
   color: var(--text-muted);

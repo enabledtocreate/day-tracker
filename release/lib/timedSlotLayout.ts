@@ -1,4 +1,5 @@
 import type { ScheduledSlot } from '@/lib/api';
+import { resolveGroupMemberTimes } from '@/lib/scheduleSlotMath';
 
 function timeToMinutes(time: string | null | undefined): number {
   if (time == null || time === '') return 0;
@@ -31,14 +32,16 @@ export function computeGroupMemberSlotTimes(
   groupEndMin: number,
   slotDurationMinutes: number
 ): Array<{ slot: ScheduledSlot; startMin: number; endMin: number }> {
-  const step = Math.max(1, slotDurationMinutes);
-  const childStarts = orderedChildren.map((c) => timeToMinutes(c.start_time));
-  const bounds = [groupStartMin, ...childStarts, groupEndMin];
   const members = [rootSlot, ...orderedChildren];
-  return members.map((slot, i) => {
-    const startMin = bounds[i]!;
-    let endMin = bounds[i + 1]!;
-    if (endMin - startMin < step) endMin = startMin + step;
-    return { slot, startMin, endMin };
+  const times = resolveGroupMemberTimes({
+    groupStartMin,
+    groupEndMin,
+    orderedChildren,
+    slotDurationMinutes,
   });
+  return members.map((slot, i) => ({
+    slot,
+    startMin: times[i]!.startMin,
+    endMin: times[i]!.endMin,
+  }));
 }

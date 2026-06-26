@@ -144,28 +144,32 @@ describe('TaskListAndSchedule', () => {
     expect(scheduleBlockDensityClasses(80, 30)).toContain('time-block-density-actions-drawer');
   });
 
-  it('buildGroupSegmentHeightsPx matches child start boundaries and absorbs extra block min-height in the last segment', () => {
+  it('buildGroupSegmentHeightsPx distributes interval multiples and sums to block height', () => {
     const orderedChildren = [
       { id: 1, start_time: '16:15', end_time: '16:30' },
       { id: 2, start_time: '16:30', end_time: '16:45' },
     ] as ScheduledSlot[];
-    const exact = buildGroupSegmentHeightsPx({
+    const equal = buildGroupSegmentHeightsPx({
       groupStartMin: 16 * 60,
       groupEndMin: 16 * 60 + 45,
       orderedChildren,
       slotDurationMinutes: 15,
-      blockHeightPx: 96,
     });
-    expect(exact).toEqual([34, 34, 34]);
-    const padded = buildGroupSegmentHeightsPx({
-      groupStartMin: 16 * 60,
-      groupEndMin: 16 * 60 + 45,
-      orderedChildren,
+    expect(equal).toEqual([34, 34, 34]);
+    expect(equal.reduce((a, b) => a + b, 0)).toBe(102);
+
+    const collidingStarts = [
+      { id: 1, start_time: '16:15', end_time: '16:45' },
+      { id: 2, start_time: '16:15', end_time: '17:15' },
+    ] as ScheduledSlot[];
+    const distributed = buildGroupSegmentHeightsPx({
+      groupStartMin: 16 * 60 + 15,
+      groupEndMin: 17 * 60 + 15,
+      orderedChildren: collidingStarts,
       slotDurationMinutes: 15,
-      blockHeightPx: 106,
     });
-    expect(padded.reduce((a, b) => a + b, 0)).toBe(106);
-    expect(padded[2]).toBe(38);
+    expect(distributed).toEqual([34, 34, 68]);
+    expect(distributed.reduce((a, b) => a + b, 0)).toBe(136);
   });
 
   it('resolveScheduleRootSlotId walks parent task chain to the root slot', () => {

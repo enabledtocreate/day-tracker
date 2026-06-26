@@ -1,8 +1,12 @@
+/** Master user id — scopes cache entries per account. */
+export type ScheduleUserScope = number;
+
 export const scheduleKeys = {
-  all: ['schedule'] as const,
-  core: () => [...scheduleKeys.all, 'core'] as const,
-  day: (date: string) => [...scheduleKeys.all, 'day', date] as const,
-  week: (anchorSunday: string, scope: string) =>
-    [...scheduleKeys.all, 'week', anchorSunday, scope] as const,
-  month: (from: string, to: string) => [...scheduleKeys.all, 'month', from, to] as const,
+  all: (userId: ScheduleUserScope) => ['schedule', userId] as const,
+  core: (userId: ScheduleUserScope) => [...scheduleKeys.all(userId), 'core'] as const,
+  day: (userId: ScheduleUserScope, date: string) => [...scheduleKeys.all(userId), 'day', date] as const,
+  week: (userId: ScheduleUserScope, anchorSunday: string, scope: string) =>
+    [...scheduleKeys.all(userId), 'week', anchorSunday, scope] as const,
+  month: (userId: ScheduleUserScope, from: string, to: string) =>
+    [...scheduleKeys.all(userId), 'month', from, to] as const,
 };

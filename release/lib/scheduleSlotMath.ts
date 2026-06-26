@@ -118,6 +118,64 @@ export function distributeGroupMemberTimes(params: {
   return out;
 }
 
+/** Interval count for a timed range on the schedule grid (minimum 1). */
+export function slotRangeIntervalCount(
+  startMin: number,
+  endMin: number,
+  slotDurationMinutes: number,
+  minIntervals = 1
+): number {
+  const step = Math.max(1, slotDurationMinutes);
+  return Math.max(minIntervals, Math.round((endMin - startMin) / step));
+}
+
+/**
+ * Per-member times for a schedule group. Uses explicit child start boundaries when
+ * valid; otherwise distributes evenly in interval multiples.
+ */
+export function resolveGroupMemberTimes(params: {
+  groupStartMin: number;
+  groupEndMin: number;
+  orderedChildren: ScheduledSlot[];
+  slotDurationMinutes: number;
+}): Array<{ startMin: number; endMin: number }> {
+  const step = Math.max(1, params.slotDurationMinutes);
+  const memberCount = 1 + params.orderedChildren.length;
+  const distributed = distributeGroupMemberTimes({
+    groupStartMin: params.groupStartMin,
+    groupEndMin: params.groupEndMin,
+    slotDurationMinutes: step,
+    memberCount,
+  });
+  if (params.orderedChildren.length === 0) {
+    return distributed;
+  }
+
+  const rawStarts = params.orderedChildren.map((c) => timeToMinutes(c.start_time));
+  let prev = params.groupStartMin;
+  let valid = true;
+  for (const s of rawStarts) {
+    if (s <= prev || s >= params.groupEndMin || s - prev < step) {
+      valid = false;
+      break;
+    }
+    prev = s;
+  }
+  if (!valid) {
+    return distributed;
+  }
+
+  const bounds = [params.groupStartMin, ...rawStarts, params.groupEndMin];
+  return Array.from({ length: memberCount }, (_, i) => {
+    const startMin = bounds[i]!;
+    let endMin = bounds[i + 1]!;
+    if (endMin - startMin < step) {
+      endMin = startMin + step;
+    }
+    return { startMin, endMin };
+  });
+}
+
 export function calcMovedSlotTimes(params: {
   scheduleDropStartMin: number;
   viewEndMin: number;
@@ -139,21 +197,69 @@ export function buildGroupSegmentHeightsPx(params: {
   groupEndMin: number;
   orderedChildren: ScheduledSlot[];
   slotDurationMinutes: number;
-  blockHeightPx: number;
   rowHeightPx: number;
 }): number[] {
   const step = Math.max(1, params.slotDurationMinutes);
-  const childStarts = params.orderedChildren.map((c) => timeToMinutes(c.start_time));
-  const bounds = [params.groupStartMin, ...childStarts, params.groupEndMin];
-  const heights: number[] = [];
-  for (let i = 0; i < bounds.length - 1; i++) {
-    const rawMin = bounds[i + 1]! - bounds[i]!;
-    const durMin = Math.max(step, rawMin);
-    heights.push((durMin / step) * params.rowHeightPx);
-  }
-  const sum = heights.reduce((a, b) => a + b, 0);
-  if (heights.length > 0 && sum + 0.5 < params.blockHeightPx) {
-    heights[heights.length - 1]! += params.blockHeightPx - sum;
-  }
-  return heights;
+  const memberTimes = resolveGroupMemberTimes({
+    groupStartMin: params.groupStartMin,
+    groupEndMin: params.groupEndMin,
+    orderedChildren: params.orderedChildren,
+    slotDurationMinutes: step,
+  });
+  return memberTimes.map(({ startMin, endMin }) => {
+    const intervals = Math.max(1, Math.round((endMin - startMin) / step));
+    return intervals * params.rowHeightPx;
+  });
+}
+
+/** Internal split minutes between stacked group members (length = child count). */
+export function groupInternalBoundaries(params: {
+  groupStartMin: number;
+  groupEndMin: number;
+  orderedChildren: ScheduledSlot[];
+  slotDurationMinutes: number;
+}): number[] {
+  const memberTimes = resolveGroupMemberTimes(params);
+  const childCount = params.orderedChildren.length;
+  return Array.from({ length: childCount }, (_, i) => memberTimes[i + 1]!.startMin);
+}
+
+export function clampGroupBoundaryAtIndex(params: {
+  boundaryIndex: number;
+  candidateMin: number;
+  boundaries: number[];
+  groupStartMin: number;
+  groupEndMin: number;
+  slotDurationMinutes: number;
+  startHour: number;
+  endHour: number;
+}): number {
+  const step = Math.max(1, params.slotDurationMinutes);
+  const { boundaryIndex: b, boundaries, groupStartMin, groupEndMin } = params;
+  const prevEdge = b === 0 ? groupStartMin : boundaries[b - 1]!;
+  const nextEdge = b < boundaries.length - 1 ? boundaries[b + 1]! : groupEndMin;
+  const lo = prevEdge + step;
+  const hi = nextEdge - step;
+  let snapped = snapToSlot(params.candidateMin, params.startHour, params.endHour, step);
+  snapped = Math.max(lo, Math.min(hi, snapped));
+  return snapped;
+}
+
+/** Slot times for root + children from internal boundary splits (matches resize/move persistence). */
+export function groupSlotTimesFromBoundaries(
+  groupStartMin: number,
+  groupEndMin: number,
+  boundaries: number[]
+): {
+  root: { startMin: number; endMin: number };
+  children: Array<{ startMin: number; endMin: number }>;
+} {
+  const splits = [groupStartMin, ...boundaries, groupEndMin];
+  return {
+    root: { startMin: groupStartMin, endMin: groupEndMin },
+    children: boundaries.map((_, idx) => ({
+      startMin: splits[idx + 1]!,
+      endMin: splits[idx + 2]!,
+    })),
+  };
 }

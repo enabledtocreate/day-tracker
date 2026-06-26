@@ -61,6 +61,19 @@ function resetDemoUser(PDO $master, string $dataDir): void {
     } catch (Throwable $e) {
         logMessage('NOTICE', 'demo_seed: DELETE ical_subscriptions skipped', ['message' => $e->getMessage()]);
     }
+    $hasScheduleBlocks = $pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schedule_blocks'")->fetchColumn();
+    if ($hasScheduleBlocks) {
+        $pdo->exec('DELETE FROM schedule_blocks');
+    }
+    $hasTaskBlocks = $pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_blocks'")->fetchColumn();
+    if ($hasTaskBlocks) {
+        $pdo->exec('DELETE FROM task_blocks');
+    }
+    try {
+        $pdo->exec('DELETE FROM recurring_occurrence_state');
+    } catch (Throwable $e) {
+        logMessage('NOTICE', 'demo_seed: DELETE recurring_occurrence_state skipped', ['message' => $e->getMessage()]);
+    }
     // Clear organization tables (migration 016); skip if tables don't exist
     $hasOrg = $pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_categories'")->fetchColumn();
     if ($hasOrg) {
@@ -70,6 +83,10 @@ function resetDemoUser(PDO $master, string $dataDir): void {
         $pdo->exec('DELETE FROM task_tags');
         $pdo->exec('DELETE FROM task_subcategories');
         $pdo->exec('DELETE FROM task_categories');
+    }
+    $hasFavoriteFolder = $pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='favorite_folder'")->fetchColumn();
+    if ($hasFavoriteFolder) {
+        $pdo->exec('DELETE FROM favorite_folder');
     }
 
     // Day records: two weeks around today (7 past, today, 6 future)
@@ -88,10 +105,16 @@ function resetDemoUser(PDO $master, string $dataDir): void {
     $yesterdayId = $dayIds[$yesterday];
     $tomorrowId = $dayIds[$tomorrow] ?? null;
 
+    $taskColNames = array_column($pdo->query('PRAGMA table_info(tasks)')->fetchAll(PDO::FETCH_ASSOC), 'name');
+    $hasIsCommon = in_array('is_common', $taskColNames, true);
+    $hasGroupOrder = in_array('group_order', $taskColNames, true);
+    $hasDefaultBlock = in_array('default_block_id', $taskColNames, true);
+    $hasCommitment = (bool) $pdo->query("SELECT 1 FROM schema_migrations WHERE filename = '008_priority_commitment.sql'")->fetchColumn();
+    $topPriority = $hasCommitment ? 'commitment' : 'high';
+
     $taskIns = $pdo->prepare('INSERT INTO tasks (title, priority, recurring, parent_id, list_state, list_style) VALUES (?, ?, ?, ?, ?, ?)');
-    // Use only high/medium/low so seed works even if migration 008 (commitment) not yet applied
     $tasks = [
-        ['Review priorities', 'high', 0, null, 'pending', 'bullet'],
+        ['Review priorities', $topPriority, 0, null, 'pending', 'bullet'],
         ['Check email', 'medium', 1, null, 'unassigned', 'bullet'],
         ['Exercise', 'high', 1, null, 'unassigned', 'bullet'],
         ['Project Alpha – design', 'high', 0, null, 'pending', 'checklist'],
@@ -99,7 +122,9 @@ function resetDemoUser(PDO $master, string $dataDir): void {
         ['Call with team', 'medium', 0, null, 'unassigned', 'bullet'],
         ['Read docs', 'low', 0, null, 'unassigned', 'bullet'],
         ['Fix bug #42', 'high', 0, null, 'unassigned', 'bullet'],
-        ['Design follow-up (group example)', 'medium', 0, null, 'unassigned', 'bullet'],
+        ['Client launch', $topPriority, 0, null, 'pending', 'bullet'],
+        ['Final QA', 'high', 0, null, 'unassigned', 'bullet'],
+        ['Send announcement', 'medium', 0, null, 'unassigned', 'bullet'],
         ['Backup files', 'low', 1, null, 'unassigned', 'bullet'],
         ['Optional: learn new API', 'low', 0, null, 'pending', 'bullet'],
         // Evening and spread-across-calendar tasks
@@ -116,33 +141,60 @@ function resetDemoUser(PDO $master, string $dataDir): void {
         ['Prep for meeting', 'medium', 0, null, 'unassigned', 'bullet'],
         ['Follow-up emails', 'low', 0, null, 'pending', 'bullet'],
     ];
-    $projectAlphaId = null;
     $weeklyPlanningId = null;
+    $clientLaunchId = null;
     foreach ($tasks as $row) {
         $taskIns->execute($row);
-        if ($row[0] === 'Project Alpha – design') {
-            $projectAlphaId = (int) $pdo->lastInsertId();
-        }
         if ($row[0] === 'Weekly planning') {
             $weeklyPlanningId = (int) $pdo->lastInsertId();
         }
+        if ($row[0] === 'Client launch') {
+            $clientLaunchId = (int) $pdo->lastInsertId();
+        }
     }
     if ($weeklyPlanningId) {
+        $groupOrder = 0;
         foreach (['Weekly planning – review goals', 'Weekly planning – block focus time'] as $sub) {
             $sid = $pdo->query("SELECT id FROM tasks WHERE title = " . $pdo->quote($sub))->fetchColumn();
             if ($sid) {
-                $pdo->prepare('UPDATE tasks SET parent_id = ? WHERE id = ?')->execute([$weeklyPlanningId, $sid]);
+                if ($hasGroupOrder) {
+                    $pdo->prepare('UPDATE tasks SET parent_id = ?, group_order = ? WHERE id = ?')->execute([$weeklyPlanningId, $groupOrder, $sid]);
+                } else {
+                    $pdo->prepare('UPDATE tasks SET parent_id = ? WHERE id = ?')->execute([$weeklyPlanningId, $sid]);
+                }
+                $groupOrder++;
             }
+        }
+    }
+    if ($clientLaunchId) {
+        $groupOrder = 0;
+        foreach (['Final QA', 'Send announcement'] as $member) {
+            $mid = $pdo->query("SELECT id FROM tasks WHERE title = " . $pdo->quote($member))->fetchColumn();
+            if ($mid) {
+                if ($hasGroupOrder) {
+                    $pdo->prepare('UPDATE tasks SET parent_id = ?, group_order = ? WHERE id = ?')->execute([$clientLaunchId, $groupOrder, $mid]);
+                } else {
+                    $pdo->prepare('UPDATE tasks SET parent_id = ? WHERE id = ?')->execute([$clientLaunchId, $mid]);
+                }
+                $groupOrder++;
+            }
+        }
+    }
+    if ($hasIsCommon) {
+        $commonTemplates = [
+            ['Daily standup prep', 'medium', 1, 'bullet'],
+            ['Client kickoff checklist', 'high', 0, 'checklist'],
+            ['Quick expense log', 'low', 0, 'bullet'],
+        ];
+        $commonIns = $pdo->prepare('INSERT INTO tasks (title, priority, recurring, parent_id, list_state, list_style, is_common) VALUES (?, ?, ?, NULL, ?, ?, 1)');
+        foreach ($commonTemplates as [$title, $priority, $recurring, $listStyle]) {
+            $commonIns->execute([$title, $priority, $recurring, 'unassigned', $listStyle]);
         }
     }
     $taskIds = $pdo->query('SELECT id, title FROM tasks ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
     $idByTitle = [];
     foreach ($taskIds as $t) {
         $idByTitle[$t['title']] = (int) $t['id'];
-    }
-    $groupExampleId = $idByTitle['Design follow-up (group example)'] ?? null;
-    if ($groupExampleId && $projectAlphaId) {
-        $pdo->prepare('UPDATE tasks SET parent_id = ? WHERE id = ?')->execute([$projectAlphaId, $groupExampleId]);
     }
 
     // Links: multiple tasks with links
@@ -179,6 +231,13 @@ function resetDemoUser(PDO $master, string $dataDir): void {
         $pdo->prepare('INSERT INTO task_list_items (task_id, content, order_index, completed) VALUES (?, ?, ?, ?)')
             ->execute([$weeklyPlanTaskId, 'Schedule 1:1s', 2, 0]);
     }
+    $kickoffTemplateId = $idByTitle['Client kickoff checklist'] ?? null;
+    if ($kickoffTemplateId) {
+        $pdo->prepare('INSERT INTO task_list_items (task_id, content, order_index, completed) VALUES (?, ?, ?, ?)')
+            ->execute([$kickoffTemplateId, 'Send agenda', 0, 0]);
+        $pdo->prepare('INSERT INTO task_list_items (task_id, content, order_index, completed) VALUES (?, ?, ?, ?)')
+            ->execute([$kickoffTemplateId, 'Confirm attendees', 1, 0]);
+    }
 
     $slotIns = $pdo->prepare('INSERT INTO scheduled_slots (day_record_id, task_id, start_time, end_time, completed, order_index) VALUES (?, ?, ?, ?, ?, ?)');
     $startTimeNullable = false;
@@ -209,9 +268,13 @@ function resetDemoUser(PDO $master, string $dataDir): void {
         [$todayId, $rid('Read docs'), $untimedStart, $untimedEnd, 0, 6],
         [$todayId, $rid('Fix bug #42'), '14:00', '15:00', 0, 7],
         [$todayId, $rid('Sync with design'), '15:30', '16:00', 0, 8],
-        [$todayId, $rid('Evening review'), '18:00', '18:30', 0, 9],
-        [$todayId, $rid('Dinner prep'), '18:30', '19:00', 0, 10],
-        [$todayId, $rid('Wind down / no screens'), '21:00', '21:30', 0, 11],
+        // Task group on schedule (Client launch + members; child starts = internal boundaries)
+        [$todayId, $rid('Client launch'), '16:15', '17:15', 0, 9],
+        [$todayId, $rid('Final QA'), '16:30', '16:45', 0, 10],
+        [$todayId, $rid('Send announcement'), '16:45', '17:15', 0, 11],
+        [$todayId, $rid('Evening review'), '18:00', '18:30', 0, 12],
+        [$todayId, $rid('Dinner prep'), '18:30', '19:00', 0, 13],
+        [$todayId, $rid('Wind down / no screens'), '21:00', '21:30', 0, 14],
     ];
     if ($tomorrowId) {
         $slots[] = [$tomorrowId, $rid('Weekly planning'), '09:00', '10:00', 0, 0];
@@ -227,19 +290,57 @@ function resetDemoUser(PDO $master, string $dataDir): void {
         $idx = min(3, count($otherDateIds) - 1);
         $slots[] = [$otherDateIds[$idx], $rid('Follow-up emails'), '17:00', '17:30', 0, 0];
     }
+    // Current calendar week (Sun–Sat): at least one slot per day for Week view
+    $weekDow = (int) date('w', strtotime($today));
+    $weekSunday = date('Y-m-d', strtotime($today . " -$weekDow days"));
+    $weekSlotTasks = [
+        $rid('Review priorities'),
+        $rid('Exercise'),
+        $rid('Call with team'),
+        $rid('Project Alpha – implement'),
+        $rid('Fix bug #42'),
+        $rid('Deploy staging'),
+        $rid('Evening review'),
+    ];
+    for ($i = 0; $i < 7; $i++) {
+        $weekDate = date('Y-m-d', strtotime($weekSunday . " +$i days"));
+        if (!isset($dayIds[$weekDate]) || $weekDate === $today || $weekDate === $yesterday || $weekDate === $tomorrow) {
+            continue;
+        }
+        $taskId = $weekSlotTasks[$i] ?? 0;
+        if ($taskId > 0) {
+            $startHour = 9 + ($i % 3);
+            $slots[] = [$dayIds[$weekDate], $taskId, sprintf('%02d:00', $startHour), sprintf('%02d:30', $startHour), $weekDate < $today ? 1 : 0, 0];
+        }
+    }
     foreach ($slots as $s) {
         if ($s[1] > 0) {
             $slotIns->execute($s);
         }
     }
 
-    // Organization: categories, subcategories, tags, and task assignments (demo showcases schedule/task category colors and tags)
+    // Organization: categories, subcategories, tags, blocks, and task assignments
+    $blockDeep = null;
+    $blockMeetings = null;
+    $blockPersonal = null;
     if ($hasOrg) {
-        $pdo->prepare('INSERT INTO task_categories (name, color) VALUES (?, ?)')->execute(['Work', '#00c853']);
+        $catCols = array_column($pdo->query('PRAGMA table_info(task_categories)')->fetchAll(PDO::FETCH_ASSOC), 'name');
+        $hasCatIcon = in_array('icon', $catCols, true);
+        if ($hasCatIcon) {
+            $pdo->prepare('INSERT INTO task_categories (name, color, icon) VALUES (?, ?, ?)')->execute(['Work', '#00c853', 'briefcase']);
+        } else {
+            $pdo->prepare('INSERT INTO task_categories (name, color) VALUES (?, ?)')->execute(['Work', '#00c853']);
+        }
         $catWork = (int) $pdo->lastInsertId();
-        $pdo->prepare('INSERT INTO task_categories (name, color) VALUES (?, ?)')->execute(['Personal', '#18b4e8']);
-        $catPersonal = (int) $pdo->lastInsertId();
-        $pdo->prepare('INSERT INTO task_categories (name, color) VALUES (?, ?)')->execute(['Health', '#ff6b6b']);
+        if ($hasCatIcon) {
+            $pdo->prepare('INSERT INTO task_categories (name, color, icon) VALUES (?, ?, ?)')->execute(['Personal', '#18b4e8', 'home']);
+            $catPersonal = (int) $pdo->lastInsertId();
+            $pdo->prepare('INSERT INTO task_categories (name, color, icon) VALUES (?, ?, ?)')->execute(['Health', '#ff6b6b', 'heart']);
+        } else {
+            $pdo->prepare('INSERT INTO task_categories (name, color) VALUES (?, ?)')->execute(['Personal', '#18b4e8']);
+            $catPersonal = (int) $pdo->lastInsertId();
+            $pdo->prepare('INSERT INTO task_categories (name, color) VALUES (?, ?)')->execute(['Health', '#ff6b6b']);
+        }
         $catHealth = (int) $pdo->lastInsertId();
 
         $pdo->prepare('INSERT INTO task_subcategories (category_id, name) VALUES (?, ?)')->execute([$catWork, 'Meetings']);
@@ -278,9 +379,76 @@ function resetDemoUser(PDO $master, string $dataDir): void {
         $assign('Dinner prep', $catPersonal, $subChores, []);
         $assign('Deploy staging', $catWork, null, [$tagUrgent]);
         $assign('Weekly planning', $catWork, $subDeepWork, [$tagThisWeek]);
+        $assign('Client launch', $catWork, null, [$tagUrgent]);
+    }
+
+    if ($hasTaskBlocks) {
+        $blockCols = array_column($pdo->query('PRAGMA table_info(task_blocks)')->fetchAll(PDO::FETCH_ASSOC), 'name');
+        $hasBlockIcon = in_array('icon', $blockCols, true);
+        if ($hasBlockIcon) {
+            $pdo->prepare('INSERT INTO task_blocks (name, color, icon) VALUES (?, ?, ?)')->execute(['Deep work', '#2962ff', 'brain']);
+            $blockDeep = (int) $pdo->lastInsertId();
+            $pdo->prepare('INSERT INTO task_blocks (name, color, icon) VALUES (?, ?, ?)')->execute(['Meetings', '#ff9100', 'users']);
+            $blockMeetings = (int) $pdo->lastInsertId();
+            $pdo->prepare('INSERT INTO task_blocks (name, color, icon) VALUES (?, ?, ?)')->execute(['Personal', '#7c4dff', 'home']);
+        } else {
+            $pdo->prepare('INSERT INTO task_blocks (name, color) VALUES (?, ?)')->execute(['Deep work', '#2962ff']);
+            $blockDeep = (int) $pdo->lastInsertId();
+            $pdo->prepare('INSERT INTO task_blocks (name, color) VALUES (?, ?)')->execute(['Meetings', '#ff9100']);
+            $blockMeetings = (int) $pdo->lastInsertId();
+            $pdo->prepare('INSERT INTO task_blocks (name, color) VALUES (?, ?)')->execute(['Personal', '#7c4dff']);
+        }
+        $blockPersonal = (int) $pdo->lastInsertId();
+
+        if ($hasDefaultBlock && $blockDeep) {
+            foreach (['Project Alpha – design', 'Project Alpha – implement', 'Weekly planning'] as $title) {
+                $tid = $idByTitle[$title] ?? null;
+                if ($tid) {
+                    $pdo->prepare('UPDATE tasks SET default_block_id = ? WHERE id = ?')->execute([$blockDeep, $tid]);
+                }
+            }
+            $meetTid = $idByTitle['Call with team'] ?? null;
+            if ($meetTid && $blockMeetings) {
+                $pdo->prepare('UPDATE tasks SET default_block_id = ? WHERE id = ?')->execute([$blockMeetings, $meetTid]);
+            }
+        }
+
+        if ($hasScheduleBlocks) {
+            $schedBlockIns = $pdo->prepare('INSERT INTO schedule_blocks (day_record_id, block_id, start_time, end_time) VALUES (?, ?, ?, ?)');
+            $schedBlockIns->execute([$todayId, $blockDeep, '09:00', '12:00']);
+            $schedBlockIns->execute([$todayId, $blockMeetings, '13:00', '17:00']);
+            $schedBlockIns->execute([$yesterdayId, $blockDeep, '10:00', '12:00']);
+            if ($tomorrowId && $blockPersonal) {
+                $schedBlockIns->execute([$tomorrowId, $blockPersonal, '18:00', '20:00']);
+            }
+            for ($i = 0; $i < 7; $i++) {
+                $weekDate = date('Y-m-d', strtotime($weekSunday . " +$i days"));
+                if (!isset($dayIds[$weekDate]) || $weekDate === $today) {
+                    continue;
+                }
+                $blockId = ($i % 2 === 0) ? $blockDeep : $blockMeetings;
+                if ($blockId) {
+                    $schedBlockIns->execute([$dayIds[$weekDate], $blockId, '09:00', '12:00']);
+                }
+            }
+        }
+    }
+
+    if ($hasFavoriteFolder && $hasIsCommon) {
+        $pdo->prepare('INSERT INTO favorite_folder (name, sort_order) VALUES (?, ?)')->execute(['Templates', 0]);
+        $folderId = (int) $pdo->lastInsertId();
+        $kickoffId = $idByTitle['Client kickoff checklist'] ?? null;
+        if ($kickoffId) {
+            $pdo->prepare('UPDATE tasks SET favorite_folder_id = ? WHERE id = ?')->execute([$folderId, $kickoffId]);
+        }
     }
 
     // iCal subscriptions left unseeded; a dedicated demo feed URL could be added here later if desired.
+
+    $demoAiPath = $dataDir . '/daytracker_demo_ai.sqlite';
+    if (is_file($demoAiPath)) {
+        @unlink($demoAiPath);
+    }
 
     $master->exec("CREATE TABLE IF NOT EXISTS ical_feed_tokens (user_id INTEGER PRIMARY KEY, token TEXT NOT NULL)");
     $newToken = bin2hex(random_bytes(24));

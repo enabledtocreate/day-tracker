@@ -41,6 +41,10 @@ import {
   clampBottomResizeEndForMinGroupDuration,
   distributeGroupMemberTimes,
   buildGroupSegmentHeightsPx as buildGroupSegmentHeightsPxCore,
+  groupInternalBoundaries,
+  groupSlotTimesFromBoundaries,
+  clampGroupBoundaryAtIndex,
+  slotRangeIntervalCount,
   timeToMinutes,
   minutesToTime,
 } from '@/lib/scheduleSlotMath';
@@ -205,13 +209,12 @@ export {
   distributeGroupMemberTimes,
 };
 
-/** Pixel height per stacked row in a grouped block from actual slot boundaries (+ min-duration padding, block min-height remainder). */
+/** Pixel height per stacked row in a grouped block from interval-multiple member times. */
 export function buildGroupSegmentHeightsPx(params: {
   groupStartMin: number;
   groupEndMin: number;
   orderedChildren: ScheduledSlot[];
   slotDurationMinutes: number;
-  blockHeightPx: number;
 }): number[] {
   return buildGroupSegmentHeightsPxCore({ ...params, rowHeightPx: ROW_HEIGHT });
 }
@@ -966,6 +969,7 @@ export function TaskListAndSchedule({
     invalidateMonth,
     invalidateFromSync,
   } = useScheduleDataQueries({
+    userId: user.id,
     viewDate,
     scheduleTab,
     calendarMonth,
@@ -3364,9 +3368,9 @@ export function TaskListAndSchedule({
   const hideScheduleTags = !!settings.schedule_hide_tags;
   const { surface: scheduleContrastSurface } = useScheduleContrastSurface();
 
-  /** Drag horizontal boundary between grouped child N and N+1; redistributes adjacent slice lengths. */
+  /** Drag horizontal boundary between grouped members; redistributes adjacent slice lengths on the grid. */
   const onGroupBoundaryPointerDown = useCallback(
-    (e: React.PointerEvent, slot: ScheduledSlot, orderedChildren: ScheduledSlot[], boundaryChildIndex: number) => {
+    (e: React.PointerEvent, slot: ScheduledSlot, orderedChildren: ScheduledSlot[], boundaryIndex: number) => {
       if (!desktopPointer) return;
       e.preventDefault();
       e.stopPropagation();
@@ -3375,38 +3379,66 @@ export function TaskListAndSchedule({
       const slotDur = Math.max(1, slotDurationMinutes);
       const { startMin: groupStartMin, endMin: groupEndMin } = timedSlotLayoutBounds(slot, orderedChildren);
       const C = orderedChildren.length;
-      if (boundaryChildIndex < 0 || boundaryChildIndex >= C) return;
-      const handleEl = e.currentTarget as HTMLElement;
-      handleEl.setPointerCapture(e.pointerId);
-      const startY = e.clientY;
-      let starts = orderedChildren.map((c) => timeToMinutes(c.start_time));
-      const initialB = starts[boundaryChildIndex]!;
+      if (boundaryIndex < 0 || boundaryIndex >= C) return;
+
+      const layoutParams = {
+        groupStartMin,
+        groupEndMin,
+        orderedChildren,
+        slotDurationMinutes: slotDur,
+      };
+      let boundaries = groupInternalBoundaries(layoutParams);
+      const initialB = boundaries[boundaryIndex]!;
       let lastB = initialB;
-      const move = (ev: PointerEvent) => {
-        const dy = ev.clientY - startY;
-        const delta = Math.round(dy / ROW_HEIGHT) * slotDur;
-        let newB = snapToSlot(initialB + delta, settings.start_hour, settings.end_hour, slotDur);
-        const prevStart = boundaryChildIndex === 0 ? groupStartMin : starts[boundaryChildIndex - 1]!;
-        const nextEdge = boundaryChildIndex < C - 1 ? starts[boundaryChildIndex + 1]! : groupEndMin;
-        const lo = prevStart + slotDur;
-        const hi = nextEdge - slotDur;
-        newB = Math.max(lo, Math.min(hi, newB));
-        newB = snapToSlot(newB, settings.start_hour, settings.end_hour, slotDur);
-        newB = Math.max(lo, Math.min(hi, newB));
-        const next = starts.slice();
-        next[boundaryChildIndex] = newB;
-        starts = next;
-        lastB = newB;
+
+      const applyBoundaries = (nextBoundaries: number[]) => {
+        const { root, children } = groupSlotTimesFromBoundaries(groupStartMin, groupEndMin, nextBoundaries);
         setSlots((prev) =>
           prev.map((s) => {
+            if (s.id === slot.id) {
+              return {
+                ...s,
+                start_time: minutesToTime(root.startMin),
+                end_time: minutesToTime(root.endMin),
+              };
+            }
             const idx = orderedChildren.findIndex((c) => c.id === s.id);
             if (idx < 0) return s;
-            const st = starts[idx]!;
-            const en = idx < C - 1 ? starts[idx + 1]! : groupEndMin;
-            return { ...s, start_time: minutesToTime(st), end_time: minutesToTime(en) };
+            const childTimes = children[idx]!;
+            return {
+              ...s,
+              start_time: minutesToTime(childTimes.startMin),
+              end_time: minutesToTime(childTimes.endMin),
+            };
           })
         );
       };
+
+      const handleEl = e.currentTarget as HTMLElement;
+      handleEl.setPointerCapture(e.pointerId);
+      const startY = e.clientY;
+
+      const move = (ev: PointerEvent) => {
+        const dy = ev.clientY - startY;
+        const delta = Math.round(dy / ROW_HEIGHT) * slotDur;
+        const newB = clampGroupBoundaryAtIndex({
+          boundaryIndex,
+          candidateMin: initialB + delta,
+          boundaries,
+          groupStartMin,
+          groupEndMin,
+          slotDurationMinutes: slotDur,
+          startHour: settings.start_hour,
+          endHour: settings.end_hour,
+        });
+        if (newB === boundaries[boundaryIndex]) return;
+        const next = boundaries.slice();
+        next[boundaryIndex] = newB;
+        boundaries = next;
+        lastB = newB;
+        applyBoundaries(next);
+      };
+
       const cleanup = () => {
         try {
           handleEl.releasePointerCapture(e.pointerId);
@@ -3418,22 +3450,28 @@ export function TaskListAndSchedule({
         window.removeEventListener('pointercancel', up);
         handleEl.removeEventListener('lostpointercapture', up);
       };
+
       const up = () => {
         cleanup();
         if (lastB === initialB) return;
         void (async () => {
           try {
-            await Promise.all(
-              orderedChildren.map((c, idx) => {
-                const st = starts[idx]!;
-                const en = idx < C - 1 ? starts[idx + 1]! : groupEndMin;
+            const { root, children } = groupSlotTimesFromBoundaries(groupStartMin, groupEndMin, boundaries);
+            await Promise.all([
+              api.slots.update({
+                id: slot.id,
+                start_time: minutesToTime(root.startMin),
+                end_time: minutesToTime(root.endMin),
+              }),
+              ...orderedChildren.map((c, idx) => {
+                const childTimes = children[idx]!;
                 return api.slots.update({
                   id: c.id,
-                  start_time: minutesToTime(st),
-                  end_time: minutesToTime(en),
+                  start_time: minutesToTime(childTimes.startMin),
+                  end_time: minutesToTime(childTimes.endMin),
                 });
-              })
-            );
+              }),
+            ]);
             await refetchSlotsForViewDay();
           } catch (err) {
             setError(err instanceof Error ? err.message : String(err));
@@ -3441,6 +3479,7 @@ export function TaskListAndSchedule({
           }
         })();
       };
+
       window.addEventListener('pointermove', move);
       window.addEventListener('pointerup', up, { once: true });
       window.addEventListener('pointercancel', up, { once: true });
@@ -6399,10 +6438,15 @@ export function TaskListAndSchedule({
                           const childSlots = childSlotsByParent.get(slot.task_id) ?? [];
                           const { startMin, endMin } = timedSlotLayoutBounds(slot, childSlots);
                           const top = ((startMin - viewStartMinutes) / slotDurationMinutes) * ROW_HEIGHT;
-                          const height = Math.max(
-                            ROW_HEIGHT,
-                            ((endMin - startMin) / slotDurationMinutes) * ROW_HEIGHT
+                          const slotDurForGroup = Math.max(1, slotDurationMinutes);
+                          const groupMemberCount = 1 + childSlots.length;
+                          const heightIntervals = slotRangeIntervalCount(
+                            startMin,
+                            endMin,
+                            slotDurForGroup,
+                            childSlots.length > 0 ? groupMemberCount : 1
                           );
+                          const height = heightIntervals * ROW_HEIGHT;
                           const overlap = slotOverlapInfo.get(slot.id) ?? { col: 0, total: 1 };
                           const widthPctSlot = overlap.total > 0 ? 100 / overlap.total : 100;
                           const leftPct = overlap.col * widthPctSlot;
@@ -6422,10 +6466,7 @@ export function TaskListAndSchedule({
                             (!hideScheduleCategory && (slotCategory != null || slotSubcategory != null)) ||
                             (!hideScheduleTags && slotTagList.length > 0);
                           const slotBgColor = scheduleBlockBgColor(slotCategory?.color);
-                          const groupMemberCount = 1 + childSlots.length;
-                          const blockHeightPx =
-                            childSlots.length > 0 ? Math.max(height, groupMemberCount * ROW_HEIGHT) : height;
-                          const slotDurForGroup = Math.max(1, slotDurationMinutes);
+                          const blockHeightPx = height;
                           const groupSegHeightsPx =
                             childSlots.length > 0
                               ? buildGroupSegmentHeightsPx({
@@ -6433,7 +6474,6 @@ export function TaskListAndSchedule({
                                   groupEndMin: endMin,
                                   orderedChildren: orderedGroupChildren,
                                   slotDurationMinutes: slotDurForGroup,
-                                  blockHeightPx,
                                 })
                               : [];
                           const outerScheduleDensityClasses =
