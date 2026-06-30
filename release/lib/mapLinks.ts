@@ -97,6 +97,18 @@ export function openMapsUrl(rawUrl: string): void {
   window.open(url, '_blank', 'noopener,noreferrer');
 }
 
+/**
+ * Turn an iCal LOCATION value (plain address or maps URL) into a URL suitable for {@link openMapsUrl}.
+ */
+export function icalLocationToMapsUrl(raw: string | null | undefined): string {
+  const t = (raw ?? '').trim();
+  if (t === '') return '';
+  if (/^https?:\/\//i.test(t) || /^geo:/i.test(t) || /^(comgooglemaps|maps|waze):/i.test(t)) {
+    return t;
+  }
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(t)}`;
+}
+
 /** Glyph to show for a link: map glyph for map links, chain glyph otherwise. */
 export function linkGlyph(rawUrl: string | null | undefined): string {
   return isMapsUrl(rawUrl) ? MAP_LINK_GLYPH : '🔗';

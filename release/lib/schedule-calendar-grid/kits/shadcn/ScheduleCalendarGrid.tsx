@@ -49,7 +49,9 @@ export function ScheduleCalendarGrid({ days, onDayClick, onDayDoubleClick, class
                       <span className="calendar-task-time" title={s.timeLabel}>
                         {s.timeLabel}
                       </span>
-                    ) : null}
+                    ) : (
+                      <span className="calendar-task-time calendar-task-time--empty" aria-hidden />
+                    )}
                     <span className="calendar-task-desc">{s.title}</span>
                   </li>
                 ))}
@@ -62,7 +64,9 @@ export function ScheduleCalendarGrid({ days, onDayClick, onDayDoubleClick, class
                       <span className="calendar-task-time" title={e.timeLabel}>
                         {e.timeLabel}
                       </span>
-                    ) : null}
+                    ) : (
+                      <span className="calendar-task-time calendar-task-time--empty" aria-hidden />
+                    )}
                     <span className="calendar-task-desc">{e.title}</span>
                   </li>
                 ))}

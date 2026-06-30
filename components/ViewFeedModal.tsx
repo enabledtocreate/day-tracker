@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { api } from '@/lib/api';
 import { parseIcalToDateTitles } from '@/lib/icalParseClient';
+import { icalEventLocalStartDate } from '@/lib/icalTimezone';
+import { formatLocalYmd, todayLocalYmd } from '@/lib/scheduleDateUtils';
 import { Modal } from '@/components/Modal';
 import { Button } from '@/components/Button';
 
@@ -13,6 +15,15 @@ type Props = {
 };
 
 type Phase = 'streaming' | 'stream_done' | 'dates';
+
+const VIEW_FEED_PARSE_DAYS_AHEAD = 365;
+
+function viewFeedParseRange(): { from: string; to: string } {
+  const from = todayLocalYmd();
+  const end = new Date(from + 'T12:00:00');
+  end.setDate(end.getDate() + VIEW_FEED_PARSE_DAYS_AHEAD);
+  return { from, to: formatLocalYmd(end) };
+}
 
 export function ViewFeedModal({ subscriptionId, open, onClose }: Props) {
   const [phase, setPhase] = useState<Phase>('streaming');
@@ -72,14 +83,43 @@ export function ViewFeedModal({ subscriptionId, open, onClose }: Props) {
   }, [open, subscriptionId]);
 
   const handleOk = () => {
-    const raw = rawRef.current || content;
-    const events = parseIcalToDateTitles(raw);
-    if (events.length === 0) {
-      setContent('No events found in feed.');
-    } else {
-      setContent(events.map((ev) => `${ev.date}  ${ev.title}`).join('\n'));
-    }
-    setPhase('dates');
+    setContent('Parsing…');
+    const range = viewFeedParseRange();
+    api.icalSubscriptions
+      .preview(subscriptionId, true, range)
+      .then((data) => {
+        if ('error' in data) throw new Error(data.error);
+        const parsed = data.parsed_events ?? [];
+        if (parsed.length > 0) {
+          const lines = parsed
+            .map((ev) => {
+              const date = icalEventLocalStartDate(ev.start, ev.allDay);
+              return { date, title: ev.title || '(no title)' };
+            })
+            .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+            .map((ev) => `${ev.date}  ${ev.title}`);
+          setContent(lines.join('\n'));
+        } else {
+          const raw = rawRef.current || content;
+          const fallback = parseIcalToDateTitles(raw);
+          setContent(
+            fallback.length === 0
+              ? 'No events found in feed.'
+              : fallback.map((ev) => `${ev.date}  ${ev.title}`).join('\n')
+          );
+        }
+        setPhase('dates');
+      })
+      .catch((err) => {
+        const raw = rawRef.current || content;
+        const fallback = parseIcalToDateTitles(raw);
+        if (fallback.length === 0) {
+          setError(err instanceof Error ? err.message : String(err));
+          return;
+        }
+        setContent(fallback.map((ev) => `${ev.date}  ${ev.title}`).join('\n'));
+        setPhase('dates');
+      });
   };
 
   const actions =

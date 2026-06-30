@@ -1,0 +1,1 @@
+"use strict";exports.id=93043,exports.ids=[93043],exports.modules={93043:(e,d,s)=>{s.r(d),s.d(d,{__iconNode:()=>r,default:()=>h});var t=s(15709);let r=[["path",{d:"M10 21V3h8",key:"br2l0g"}],["path",{d:"M6 16h9",key:"2py0wn"}],["path",{d:"M10 9.5h7",key:"13dmhz"}]],h=(0,t.Z)("swiss-franc",r)}};

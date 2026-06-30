@@ -7,6 +7,7 @@ require_once dirname(__DIR__) . '/lib/db.php';
 require_once dirname(__DIR__) . '/lib/logger.php';
 require_once dirname(__DIR__) . '/lib/api_error_bootstrap.php';
 require_once dirname(__DIR__) . '/lib/demo_seed.php';
+require_once dirname(__DIR__) . '/lib/sso_transfer.php';
 
 daytracker_register_fatal_shutdown_logger();
 
@@ -37,7 +38,7 @@ if ($method === 'GET' && $action === 'me') {
         exit;
     }
     $master = getMasterPdo();
-    $stmt = $master->prepare('SELECT id, username, db_name, is_admin, force_password_reset FROM users WHERE id = ?');
+    $stmt = $master->prepare('SELECT id, username, db_name, is_admin, force_password_reset, session_lifetime_days FROM users WHERE id = ?');
     $stmt->execute([$user['id']]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$row) {
@@ -55,6 +56,9 @@ if ($method === 'GET' && $action === 'me') {
     $aiEnabled = true;
     $st = $master->query("SELECT value FROM app_settings WHERE key = 'ai_enabled'");
     if ($st && ($r = $st->fetch(PDO::FETCH_ASSOC))) $aiEnabled = $r['value'] !== '0';
+    $lifetimeDays = normalizeSessionLifetimeDays(
+        $row['session_lifetime_days'] !== null ? (int) $row['session_lifetime_days'] : null
+    );
     echo json_encode([
         'user' => [
             'id' => (int) $row['id'],
@@ -62,6 +66,8 @@ if ($method === 'GET' && $action === 'me') {
             'db_name' => $row['db_name'],
             'is_admin' => (bool) $row['is_admin'],
             'force_password_reset' => (bool) $row['force_password_reset'],
+            'session_lifetime_days' => $lifetimeDays,
+            'session_expires_at' => sessionExpiresAtIso(),
             'sso' => $sso,
         ],
         'ai_enabled' => $aiEnabled,
@@ -92,7 +98,17 @@ if ($method === 'GET' && $action === 'sso') {
         exit;
     }
     require_once dirname(__DIR__) . '/lib/sso.php';
-    $url = ssoRedirectUrl($provider);
+    $linkUserId = null;
+    if (isset($_GET['link']) && (string) $_GET['link'] === '1') {
+        $current = getCurrentUser();
+        if (!$current) {
+            http_response_code(401);
+            echo json_encode(['error' => 'Login required to link SSO', 'code' => 'login_required']);
+            exit;
+        }
+        $linkUserId = (int) $current['id'];
+    }
+    $url = ssoRedirectUrl($provider, $linkUserId);
     if (!$url) {
         logMessage('WARNING', 'auth sso not configured', ['provider' => $provider]);
         http_response_code(503);
@@ -100,6 +116,86 @@ if ($method === 'GET' && $action === 'sso') {
         exit;
     }
     header('Location: ' . $url);
+    exit;
+}
+
+if ($method === 'GET' && $action === 'sso_transfer_pending') {
+    $user = getCurrentUser();
+    if (!$user) {
+        http_response_code(401);
+        echo json_encode(['error' => 'Unauthorized', 'code' => 'login_required']);
+        exit;
+    }
+    $pending = ssoTransferPendingGet();
+    if (!$pending || (int) ($pending['target_user_id'] ?? 0) !== (int) $user['id']) {
+        echo json_encode(['pending' => null]);
+        exit;
+    }
+    echo json_encode([
+        'pending' => [
+            'provider' => (string) $pending['provider'],
+            'email' => (string) $pending['email'],
+            'other_username' => (string) ($pending['other_username'] ?? ''),
+        ],
+    ]);
+    exit;
+}
+
+if ($method === 'POST' && $action === 'confirm_sso_transfer') {
+    logMessage('INFO', 'auth action confirm_sso_transfer');
+    $user = getCurrentUser();
+    if (!$user) {
+        http_response_code(401);
+        echo json_encode(['error' => 'Unauthorized', 'code' => 'login_required']);
+        exit;
+    }
+    $pending = ssoTransferPendingGet();
+    if (!$pending || (int) ($pending['target_user_id'] ?? 0) !== (int) $user['id']) {
+        http_response_code(400);
+        echo json_encode(['error' => 'No pending sign-in transfer']);
+        exit;
+    }
+    $otherUserId = (int) ($pending['other_user_id'] ?? 0);
+    $master = getMasterPdo();
+    if ($otherUserId > 0 && !ssoUserHasPassword($master, $otherUserId)) {
+        ssoTransferPendingClear();
+        http_response_code(400);
+        echo json_encode(['error' => 'The other account has no password. Sign in with that provider first and set a password.', 'code' => 'sso_other_sso_only']);
+        exit;
+    }
+    try {
+        ssoTransferExecute($master, (int) $user['id'], $pending);
+    } catch (Throwable $e) {
+        logMessage('WARNING', 'auth confirm_sso_transfer failed', ['message' => $e->getMessage()]);
+        http_response_code(500);
+        echo json_encode(['error' => 'Transfer failed']);
+        exit;
+    }
+    ssoTransferPendingClear();
+    $stmt = $master->prepare('SELECT id, username, db_name, is_admin, force_password_reset FROM users WHERE id = ?');
+    $stmt->execute([(int) $user['id']]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if ($row) {
+        setSessionUser($row);
+    }
+    logMessage('INFO', 'auth confirm_sso_transfer ok', ['user_id' => (int) $user['id'], 'provider' => $pending['provider'] ?? '']);
+    echo json_encode(['ok' => true]);
+    exit;
+}
+
+if ($method === 'POST' && $action === 'cancel_sso_transfer') {
+    logMessage('INFO', 'auth action cancel_sso_transfer');
+    $user = getCurrentUser();
+    if (!$user) {
+        http_response_code(401);
+        echo json_encode(['error' => 'Unauthorized', 'code' => 'login_required']);
+        exit;
+    }
+    $pending = ssoTransferPendingGet();
+    if ($pending && (int) ($pending['target_user_id'] ?? 0) === (int) $user['id']) {
+        ssoTransferPendingClear();
+    }
+    echo json_encode(['ok' => true]);
     exit;
 }
 

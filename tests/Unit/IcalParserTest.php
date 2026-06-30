@@ -62,10 +62,56 @@ final class IcalParserTest extends TestCase
         $this->assertSame([], $events);
     }
 
+    public function testVeventLocationParsed(): void
+    {
+        $raw = "BEGIN:VEVENT\nUID:loc@test\nSUMMARY:Offsite\nLOCATION:123 Main St\\, Springfield\n"
+            . "DTSTART:20250615T100000\nDTEND:20250615T110000\nEND:VEVENT";
+        $events = parseIcalEvents($raw, '2025-06-14', '2025-06-16');
+        $this->assertCount(1, $events);
+        $this->assertSame('123 Main St, Springfield', $events[0]['location'] ?? null);
+    }
+
     public function testPartialVeventNoEndIgnored(): void
     {
         $raw = "BEGIN:VEVENT\nUID:x@test\nDTSTART:20250601T120000\n";
         $events = parseIcalEvents($raw, '2025-05-01', '2025-06-30');
         $this->assertSame([], $events);
+    }
+
+    /** Covenant-style: FREQ=MONTHLY;BYDAY=1TU (first Tuesday), not same day-of-month each month. */
+    public function testMonthlyBydayFirstTuesday(): void
+    {
+        $raw = "BEGIN:VEVENT\nUID:cov@test\nSUMMARY:Covenant\n"
+            . "DTSTART:20231003T190000\nDTEND:20231003T210000\n"
+            . "RRULE:FREQ=MONTHLY;BYDAY=1TU\n"
+            . "EXDATE:20250902T190000\nEND:VEVENT";
+        $july2026 = parseIcalEvents($raw, '2026-07-01', '2026-07-31');
+        $this->assertCount(1, $july2026);
+        $this->assertStringStartsWith('2026-07-07', $july2026[0]['start'], 'July 2026 first Tuesday is the 7th');
+        $this->assertSame('Covenant', $july2026[0]['title']);
+
+        $june2026 = parseIcalEvents($raw, '2026-06-01', '2026-06-30');
+        $this->assertCount(1, $june2026);
+        $this->assertStringStartsWith('2026-06-02', $june2026[0]['start']);
+
+        $noneOnThird = parseIcalEvents($raw, '2026-07-03', '2026-07-03');
+        $this->assertSame([], $noneOnThird);
+
+        $seed = parseIcalEvents($raw, '2023-10-01', '2023-10-31');
+        $this->assertCount(1, $seed);
+        $this->assertStringStartsWith('2023-10-03', $seed[0]['start']);
+
+        $sept2025 = parseIcalEvents($raw, '2025-09-01', '2025-09-30');
+        $this->assertSame([], $sept2025, 'EXDATE removes first Tuesday of Sept 2025');
+    }
+
+    public function testMonthlyBydayLastFriday(): void
+    {
+        $raw = "BEGIN:VEVENT\nUID:last@test\nSUMMARY:Last Fri\n"
+            . "DTSTART:20250131T120000\nDTEND:20250131T130000\n"
+            . "RRULE:FREQ=MONTHLY;BYDAY=-1FR\nEND:VEVENT";
+        $events = parseIcalEvents($raw, '2025-06-01', '2025-06-30');
+        $this->assertCount(1, $events);
+        $this->assertStringStartsWith('2025-06-27', $events[0]['start']);
     }
 }

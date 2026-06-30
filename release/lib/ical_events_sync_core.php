@@ -156,7 +156,7 @@ function icalEventsReadFromDb(PDO $pdo, string $fromDate, string $toDate): array
     $seen = [];
     try {
         $stmt = $pdo->prepare("
-            SELECT e.id, e.subscription_id, e.uid, e.title, e.start_iso, e.end_iso, e.all_day, e.user_completed, e.event_type
+            SELECT e.id, e.subscription_id, e.uid, e.title, e.start_iso, e.end_iso, e.all_day, e.user_completed, e.event_type, e.location
             FROM ical_feed_events e
             WHERE e.subscription_id IN (SELECT id FROM ical_subscriptions WHERE COALESCE(enabled, 1) = 1)
             AND date(e.start_iso) >= ?
@@ -180,6 +180,7 @@ function icalEventsReadFromDb(PDO $pdo, string $fromDate, string $toDate): array
                 'subscription_id' => (int) $row['subscription_id'],
                 'user_completed' => (int) ($row['user_completed'] ?? 0) === 1,
                 'event_type' => $row['event_type'] ?? 'event',
+                'location' => isset($row['location']) && $row['location'] !== '' ? (string) $row['location'] : null,
             ];
         }
     } catch (Throwable $e) {
@@ -199,13 +200,19 @@ function ensureIcalFeedEventsTable(PDO $pdo): void {
         end_iso TEXT NOT NULL,
         all_day INTEGER NOT NULL DEFAULT 0,
         user_completed INTEGER NOT NULL DEFAULT 0,
-        event_type TEXT NOT NULL DEFAULT 'event'
+        event_type TEXT NOT NULL DEFAULT 'event',
+        location TEXT
     )");
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_ical_feed_events_sub_start ON ical_feed_events (subscription_id, start_iso)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_ical_feed_events_sub_uid_start ON ical_feed_events (subscription_id, uid, start_iso)');
 }
 
 /**
+ * Download one subscription feed and refresh stored occurrences from $today through $toDate.
+ *
+ * Past rows (date(start_iso) < $today) are never deleted or updated — even if the
+ * upstream calendar changes history. Only today-and-future rows are replaced each sync.
+ *
  * @return array{errors: array<int, array{feed_url: string, message: string}>}
  */
 function icalEventsSyncSubscription(PDO $pdo, array $sub, string $today, string $toDate, int $timeout, int $staleThresholdSeconds = 0): array {
@@ -350,11 +357,12 @@ function icalEventsSyncSubscription(PDO $pdo, array $sub, string $today, string 
     }
 
     try {
-        $insert = $pdo->prepare('INSERT INTO ical_feed_events (subscription_id, uid, title, start_iso, end_iso, all_day, user_completed, event_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+        $insert = $pdo->prepare('INSERT INTO ical_feed_events (subscription_id, uid, title, start_iso, end_iso, all_day, user_completed, event_type, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
         foreach ($parsed as $ev) {
             $uid = (string) ($ev['uid'] ?? '');
             $start = (string) ($ev['start'] ?? '');
             $uc = icalGetUserCompletedFromMap($existingCompletedByKey ?? [], $uid, $start);
+            $loc = isset($ev['location']) && $ev['location'] !== '' ? (string) $ev['location'] : null;
             $insert->execute([
                 $subId,
                 $uid,
@@ -364,6 +372,7 @@ function icalEventsSyncSubscription(PDO $pdo, array $sub, string $today, string 
                 isset($ev['allDay']) && $ev['allDay'] ? 1 : 0,
                 $uc,
                 $ev['event_type'] ?? 'event',
+                $loc,
             ]);
             if ($uc === 1) {
                 icalUpsertCompletionMark($pdo, $subId, $uid, $start, 1);

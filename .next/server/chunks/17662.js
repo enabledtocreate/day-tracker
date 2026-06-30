@@ -1,0 +1,1 @@
+"use strict";exports.id=17662,exports.ids=[17662],exports.modules={17662:(e,t,r)=>{r.r(t),r.d(t,{__iconNode:()=>i,default:()=>o});var d=r(15709);let i=[["path",{d:"M5 16v2",key:"g5qcv5"}],["path",{d:"M19 16v2",key:"1gbaio"}],["rect",{width:"20",height:"8",x:"2",y:"8",rx:"2",key:"vjsjur"}],["path",{d:"M18 12h.01",key:"yjnet6"}]],o=(0,d.Z)("radio-receiver",i)}};

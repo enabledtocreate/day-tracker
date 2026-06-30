@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[83190],{83190:function(e,t,n){n.r(t),n.d(t,{__iconNode:function(){return u},default:function(){return a}});var r=n(47411);let u=[["path",{d:"M22 14v-4",key:"14q9d5"}],["path",{d:"M6 14v-4",key:"14a6bd"}],["rect",{x:"2",y:"6",width:"16",height:"12",rx:"2",key:"13zb55"}]],a=(0,r.Z)("battery-low",u)}}]);

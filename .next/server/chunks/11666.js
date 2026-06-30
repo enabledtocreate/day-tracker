@@ -1,0 +1,1 @@
+"use strict";exports.id=11666,exports.ids=[11666],exports.modules={11666:(t,e,r)=>{r.r(e),r.d(e,{__iconNode:()=>d,default:()=>h});var i=r(15709);let d=[["rect",{width:"6",height:"14",x:"2",y:"5",rx:"2",key:"dy24zr"}],["rect",{width:"6",height:"10",x:"16",y:"7",rx:"2",key:"13zkjt"}],["path",{d:"M12 2v20",key:"t6zp3m"}]],h=(0,i.Z)("align-horizontal-justify-center",d)}};

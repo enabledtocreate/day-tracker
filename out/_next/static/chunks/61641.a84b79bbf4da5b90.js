@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[61641],{61641:function(e,c,t){t.r(c),t.d(c,{__iconNode:function(){return n},default:function(){return u}});var r=t(47411);let n=[["circle",{cx:"12",cy:"12",r:"10",key:"1mglay"}],["rect",{x:"9",y:"9",width:"6",height:"6",rx:"1",key:"1ssd4o"}]],u=(0,r.Z)("circle-stop",n)}}]);

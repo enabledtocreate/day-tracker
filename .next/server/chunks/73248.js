@@ -1,0 +1,1 @@
+"use strict";exports.id=73248,exports.ids=[73248],exports.modules={73248:(e,t,d)=>{d.r(t),d.d(t,{__iconNode:()=>h,default:()=>i});var r=d(15709);let h=[["path",{d:"m9 10 2 2 4-4",key:"1gnqz4"}],["rect",{width:"20",height:"14",x:"2",y:"3",rx:"2",key:"48i651"}],["path",{d:"M12 17v4",key:"1riwvh"}],["path",{d:"M8 21h8",key:"1ev6f3"}]],i=(0,r.Z)("monitor-check",h)}};

@@ -1,0 +1,1 @@
+"use strict";exports.id=28916,exports.ids=[28916],exports.modules={28916:(e,t,r)=>{r.r(t),r.d(t,{__iconNode:()=>i,default:()=>o});var d=r(15709);let i=[["rect",{width:"20",height:"14",x:"2",y:"5",rx:"2",key:"ynyp8z"}],["line",{x1:"2",x2:"22",y1:"10",y2:"10",key:"1b3vmo"}]],o=(0,d.Z)("credit-card",i)}};

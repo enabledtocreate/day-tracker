@@ -37,17 +37,23 @@ function getBaseUrl(): string {
     return $scheme . '://' . $host . ($base === '/' ? '' : $base);
 }
 
-/** Encode provider for OAuth `state` (IdPs do not append `provider` to the callback query). */
-function ssoEncodeState(string $provider): string {
-    $raw = json_encode(['p' => $provider]);
+/** Encode provider (and optional link user id) for OAuth `state`. */
+function ssoEncodeState(string $provider, ?int $linkUserId = null): string {
+    $payload = ['p' => $provider];
+    if ($linkUserId !== null && $linkUserId > 0) {
+        $payload['l'] = $linkUserId;
+    }
+    $raw = json_encode($payload);
     if ($raw === false) {
         return '';
     }
     return rtrim(strtr(base64_encode($raw), '+/', '-_'), '=');
 }
 
-/** @return 'google'|'outlook'|null */
-function ssoDecodeState(?string $state): ?string {
+/**
+ * @return array{provider: 'google'|'outlook', link_user_id: int|null}|null
+ */
+function ssoDecodeState(?string $state): ?array {
     if ($state === null || $state === '') {
         return null;
     }
@@ -65,7 +71,14 @@ function ssoDecodeState(?string $state): ?string {
         return null;
     }
     $p = strtolower((string) $data['p']);
-    return ($p === 'google' || $p === 'outlook') ? $p : null;
+    if ($p !== 'google' && $p !== 'outlook') {
+        return null;
+    }
+    $linkUserId = isset($data['l']) ? (int) $data['l'] : null;
+    if ($linkUserId !== null && $linkUserId <= 0) {
+        $linkUserId = null;
+    }
+    return ['provider' => $p, 'link_user_id' => $linkUserId];
 }
 
 function httpPostJson(string $url, array $data, array $headers = []): array {
@@ -83,7 +96,7 @@ function httpPostJson(string $url, array $data, array $headers = []): array {
     return is_array($decoded) ? $decoded : [];
 }
 
-function ssoRedirectUrl(string $provider): ?string {
+function ssoRedirectUrl(string $provider, ?int $linkUserId = null): ?string {
     $config = getConfig();
     $base = getBaseUrl();
     $callback = $base . '/api/auth_callback.php';
@@ -98,7 +111,7 @@ function ssoRedirectUrl(string $provider): ?string {
             'scope' => 'openid email profile',
             'access_type' => 'offline',
             'prompt' => 'consent',
-            'state' => ssoEncodeState('google'),
+            'state' => ssoEncodeState('google', $linkUserId),
         ];
         return 'https://accounts.google.com/o/oauth2/v2/auth?' . http_build_query($params);
     }
@@ -111,7 +124,7 @@ function ssoRedirectUrl(string $provider): ?string {
             'redirect_uri' => $callback,
             'response_type' => 'code',
             'scope' => 'openid email profile',
-            'state' => ssoEncodeState('outlook'),
+            'state' => ssoEncodeState('outlook', $linkUserId),
         ];
         return 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?' . http_build_query($params);
     }

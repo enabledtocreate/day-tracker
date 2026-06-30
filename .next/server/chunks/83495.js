@@ -1,0 +1,1 @@
+"use strict";exports.id=83495,exports.ids=[83495],exports.modules={83495:(e,t,r)=>{r.r(t),r.d(t,{__iconNode:()=>o,default:()=>s});var d=r(15709);let o=[["rect",{width:"14",height:"20",x:"5",y:"2",rx:"2",ry:"2",key:"1yt0o3"}],["path",{d:"M12 18h.01",key:"mhygvu"}]],s=(0,d.Z)("smartphone",o)}};

@@ -5,9 +5,10 @@ import { icalEventLocalStartDate, icalEventToLocal } from '@/lib/icalTimezone';
 import { getDefaultPriorityDisplay, type PriorityDisplay } from '@/lib/priorityTheme';
 import { SCHEDULE_SLOT_ROW_HEIGHT_PX } from '@/lib/scheduleSlotMetrics';
 import { timedSlotLayoutBounds } from '@/lib/timedSlotLayout';
-import { computeOverlapMaps } from '@/lib/scheduleOccupiedRects';
-import { ICAL_FEED_BLOCK_BG, scheduleBlockBgColor } from '@/lib/scheduleBlockColors';
+import { computeOverlapLayouts, type OverlapLayoutInfo } from '@/lib/scheduleOccupiedRects';
+import { icalFeedBlockBgColor, scheduleBlockBgColor } from '@/lib/scheduleBlockColors';
 import { ScheduleSlotCompleteCheckbox } from '@/components/ScheduleSlotCompleteCheckbox';
+import { ScheduleIcalLocationLink } from '@/components/ScheduleIcalLocationLink';
 import { scheduleBlockDensityClasses } from '@/lib/scheduleBlockDensity';
 import { scheduleCategoryMetaStyle, scheduleTagPillStyle } from '@/lib/scheduleMetaContrast';
 import { OrgLucideIcon } from '@/components/OrgLucideIcon';
@@ -49,6 +50,7 @@ export type WeekColumnBlocksProps = {
   onCompleteSlot?: (slot: ScheduledSlot, childSlots: ScheduledSlot[]) => void;
   onIcalComplete?: (eventId: number, completed: boolean) => void;
   onIcalExclude?: (uid: string, title: string) => void;
+  icalSubById?: Record<number, { schedule_color?: string | null }>;
   hideScheduleTags?: boolean;
   hideScheduleCategory?: boolean;
   /** Desktop week view: drag top/bottom edges to resize timed blocks. */
@@ -99,6 +101,7 @@ export function WeekColumnBlocks({
   onCompleteSlot,
   onIcalComplete,
   onIcalExclude,
+  icalSubById = {},
   hideScheduleTags = false,
   hideScheduleCategory = false,
   resizeEnabled = false,
@@ -139,12 +142,19 @@ export function WeekColumnBlocks({
       }),
   ].sort((a, b) => a.startMin - b.startMin);
 
-  const overlapMap = computeOverlapMaps(
+  const overlapMap = computeOverlapLayouts(
     blocks.map((b) => ({ key: b.key, startMin: b.startMin, endMin: b.endMin }))
   );
-  const overlaps = new Map<string, { col: number; total: number }>();
+  const overlaps = new Map<string, OverlapLayoutInfo>();
   for (const b of blocks) {
-    overlaps.set(b.key, overlapMap.get(b.key) ?? { col: 0, total: 1 });
+    overlaps.set(b.key, overlapMap.get(b.key) ?? {
+      col: 0,
+      total: 1,
+      leftPct: 0,
+      widthPct: 99.5,
+      zIndex: 1,
+      stacked: false,
+    });
   }
 
   return (
@@ -157,9 +167,16 @@ export function WeekColumnBlocks({
           SCHEDULE_SLOT_ROW_HEIGHT_PX,
           ((endMin - startMin) / slotDurationMinutes) * SCHEDULE_SLOT_ROW_HEIGHT_PX
         );
-        const ov = overlaps.get(`t-${slot.id}`) ?? { col: 0, total: 1 };
-        const wPct = 100 / ov.total;
-        const leftPct = ov.col * wPct;
+        const ov = overlaps.get(`t-${slot.id}`) ?? {
+          col: 0,
+          total: 1,
+          leftPct: 0,
+          widthPct: 99.5,
+          zIndex: 1,
+          stacked: false,
+        };
+        const wPct = ov.widthPct;
+        const leftPct = ov.leftPct;
         const task = tasks.find((x) => x.id === slot.task_id);
         const slotCategory = task?.category_id != null ? organizationCategories.find((c) => c.id === task.category_id) : null;
         const slotSubcategory =
@@ -194,6 +211,7 @@ export function WeekColumnBlocks({
             key={slot.id}
             className={
               'time-block time-block-week' +
+              (ov.stacked ? ' time-block--stacked-overlap' : '') +
               (children.length ? ' time-block-has-group' : '') +
               (showTaskList ? ' time-block-week-group-expanded' : '') +
               (overlayDone ? ' completed' : '') +
@@ -208,7 +226,8 @@ export function WeekColumnBlocks({
               top: top + 'px',
               height: height + 'px',
               left: leftPct + '%',
-              width: (wPct > 0 ? wPct - 0.5 : 99.5) + '%',
+              width: wPct + '%',
+              zIndex: ov.zIndex,
               backgroundColor: slotBgColor,
               ['--tb-h' as string]: `${Math.round(height)}px`,
             } as React.CSSProperties}
@@ -389,28 +408,42 @@ export function WeekColumnBlocks({
           const top = ((startMin - viewStartMinutes) / slotDurationMinutes) * SCHEDULE_SLOT_ROW_HEIGHT_PX;
           const h = ((endMin - startMin) / slotDurationMinutes) * SCHEDULE_SLOT_ROW_HEIGHT_PX;
           const fk = `f-${e.id ?? e.uid + e.start}`;
-          const ov = overlaps.get(fk) ?? { col: 0, total: 1 };
-          const wPct = 100 / ov.total;
-          const leftPct = ov.col * wPct;
+          const ov = overlaps.get(fk) ?? {
+            col: 0,
+            total: 1,
+            leftPct: 0,
+            widthPct: 99.5,
+            zIndex: 1,
+            stacked: false,
+          };
+          const wPct = ov.widthPct;
+          const leftPct = ov.leftPct;
           const canMark = allowTaskComplete && columnDate === t && e.id != null;
+          const feedBg = icalFeedBlockBgColor(
+            e.subscription_id != null ? icalSubById[e.subscription_id]?.schedule_color : null
+          );
           return (
             <div
               key={fk}
               className={
-                'time-block time-block-feed time-block-week' + (canMark && onIcalComplete ? ' time-block-has-complete-rail' : '')
+                'time-block time-block-feed time-block-week' +
+                (ov.stacked ? ' time-block--stacked-overlap' : '') +
+                (canMark && onIcalComplete ? ' time-block-has-complete-rail' : '')
               }
               style={{
                 top: top + 'px',
                 height: Math.max(h, 20) + 'px',
                 left: leftPct + '%',
-                width: (wPct > 0 ? wPct - 0.5 : 99.5) + '%',
+                width: wPct + '%',
+                zIndex: ov.zIndex,
+                background: feedBg,
               }}
             >
               {canMark && onIcalComplete && (
                 <div className="time-block-complete-rail">
                   <ScheduleSlotCompleteCheckbox
                     completed={!!e.user_completed}
-                    backgroundColor={ICAL_FEED_BLOCK_BG}
+                    backgroundColor={feedBg}
                     onToggle={() => onIcalComplete(e.id!, !e.user_completed)}
                   />
                 </div>
@@ -418,8 +451,9 @@ export function WeekColumnBlocks({
               <div className="time-block-header">
                 <div className="time-block-title-wrap">
                   <div className="time-block-title" style={e.user_completed ? { color: 'var(--text-muted)', textDecoration: 'line-through' } : undefined}>
-                    {local.localStartTime} – {local.localEndTime} {e.title}
+                    {e.title}
                   </div>
+                  <ScheduleIcalLocationLink location={e.location} />
                 </div>
                 {e.uid && onIcalExclude && (
                   <button

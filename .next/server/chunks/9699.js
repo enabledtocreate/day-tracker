@@ -1,0 +1,1 @@
+"use strict";exports.id=9699,exports.ids=[9699],exports.modules={9699:(e,t,d)=>{d.r(t),d.d(t,{__iconNode:()=>h,default:()=>o});var r=d(15709);let h=[["rect",{width:"20",height:"16",x:"2",y:"4",rx:"2",key:"18n3k1"}],["path",{d:"M2 14h20",key:"myj16y"}],["path",{d:"M12 20v-6",key:"1rm09r"}]],o=(0,r.Z)("touchpad",h)}};

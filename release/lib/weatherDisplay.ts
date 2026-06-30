@@ -6,6 +6,19 @@ export function weatherTempUnitFromSettings(unit: string | undefined): WeatherTe
   return unit === 'F' ? 'F' : 'C';
 }
 
+/** Whether a schedule slot (minutes from local midnight) falls outside sunrise–sunset. */
+export function isNightAtMinutes(
+  minutes: number,
+  sunriseMinutes?: number | null,
+  sunsetMinutes?: number | null
+): boolean {
+  if (sunriseMinutes != null && sunsetMinutes != null) {
+    return minutes < sunriseMinutes || minutes >= sunsetMinutes;
+  }
+  const hour = Math.floor(minutes / 60) % 24;
+  return hour < 6 || hour >= 20;
+}
+
 /** Format temperature already in the user's unit (from Open-Meteo with matching temperature_unit). */
 export function formatWeatherTemp(value: number | null | undefined, _unit: WeatherTempUnit): string {
   if (value == null || !Number.isFinite(value)) return '';

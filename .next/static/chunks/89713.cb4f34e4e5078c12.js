@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[89713],{89713:function(t,e,n){n.r(e),n.d(e,{__iconNode:function(){return u},default:function(){return h}});var r=n(47411);let u=[["path",{d:"M2 3v18",key:"pzttux"}],["rect",{width:"12",height:"18",x:"6",y:"3",rx:"2",key:"btr8bg"}],["path",{d:"M22 3v18",key:"6jf3v"}]],h=(0,r.Z)("gallery-horizontal",u)}}]);

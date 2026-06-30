@@ -1,0 +1,1 @@
+"use strict";exports.id=83643,exports.ids=[83643],exports.modules={83643:(t,e,d)=>{d.r(e),d.d(e,{__iconNode:()=>h,default:()=>p});var s=d(15709);let h=[["path",{d:"M12 15V9",key:"8c7uyn"}],["path",{d:"M3 15h18",key:"5xshup"}],["path",{d:"M3 9h18",key:"1pudct"}],["rect",{width:"18",height:"18",x:"3",y:"3",rx:"2",key:"afitv7"}]],p=(0,s.Z)("table-cells-split",h)}};

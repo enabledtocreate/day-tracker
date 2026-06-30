@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[96996],{96996:function(t,e,n){n.r(e),n.d(e,{__iconNode:function(){return r},default:function(){return a}});var u=n(47411);let r=[["path",{d:"M15 4 5 9",key:"14bkc9"}],["path",{d:"m15 8.5-10 5",key:"1grtsx"}],["path",{d:"M18 12a9 9 0 0 1-9 9V3",key:"1sst7f"}]],a=(0,u.Z)("turkish-lira",r)}}]);

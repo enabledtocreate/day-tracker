@@ -1,0 +1,1 @@
+"use strict";exports.id=25276,exports.ids=[25276],exports.modules={25276:(e,r,c)=>{c.r(r),c.d(r,{__iconNode:()=>x,default:()=>d});var t=c(15709);let x=[["line",{x1:"19",x2:"5",y1:"5",y2:"19",key:"1x9vlm"}],["circle",{cx:"6.5",cy:"6.5",r:"2.5",key:"4mh3h7"}],["circle",{cx:"17.5",cy:"17.5",r:"2.5",key:"1mdrzq"}]],d=(0,t.Z)("percent",x)}};

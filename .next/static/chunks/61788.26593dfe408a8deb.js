@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[61788],{61788:function(e,c,r){r.r(c),r.d(c,{__iconNode:function(){return n},default:function(){return u}});var t=r(47411);let n=[["circle",{cx:"18",cy:"18",r:"3",key:"1xkwt0"}],["circle",{cx:"6",cy:"6",r:"3",key:"1lh9wr"}],["path",{d:"M6 21V9a9 9 0 0 0 9 9",key:"7kw0sc"}]],u=(0,t.Z)("git-merge",n)}}]);

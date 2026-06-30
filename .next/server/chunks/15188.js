@@ -1,0 +1,1 @@
+"use strict";exports.id=15188,exports.ids=[15188],exports.modules={15188:(e,t,r)=>{r.r(t),r.d(t,{__iconNode:()=>d,default:()=>i});var c=r(15709);let d=[["rect",{width:"20",height:"12",x:"2",y:"6",rx:"2",key:"9lu3g6"}],["circle",{cx:"12",cy:"12",r:"2",key:"1c9p78"}],["path",{d:"M6 12h.01M18 12h.01",key:"113zkx"}]],i=(0,c.Z)("banknote",d)}};

@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[20464],{20464:function(e,n,t){t.r(n),t.d(n,{__iconNode:function(){return c},default:function(){return a}});var u=t(47411);let c=[["path",{d:"M5 21v-6",key:"1hz6c0"}],["path",{d:"M12 21V9",key:"uvy0l4"}],["path",{d:"M19 21V3",key:"11j9sm"}]],a=(0,u.Z)("chart-no-axes-column-increasing",c)}}]);

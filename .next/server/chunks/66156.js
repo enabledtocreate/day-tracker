@@ -1,0 +1,1 @@
+"use strict";exports.id=66156,exports.ids=[66156],exports.modules={66156:(e,o,s)=>{s.r(o),s.d(o,{__iconNode:()=>d,default:()=>r});var t=s(15709);let d=[["path",{d:"M13.433 2a1 1 0 0 1 .824.448 18 18 0 0 1 0 19.104 1 1 0 0 1-.824.448h-2.866a1 1 0 0 1-.824-.448 18 18 0 0 1 0-19.104A1 1 0 0 1 10.567 2z",key:"cq67go"}]],r=(0,t.Z)("lens-convex",d)}};

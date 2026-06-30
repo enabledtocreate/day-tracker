@@ -1,0 +1,1 @@
+"use strict";exports.id=24266,exports.ids=[24266],exports.modules={24266:(e,d,t)=>{t.r(d),t.d(d,{__iconNode:()=>o,default:()=>r});var s=t(15709);let o=[["path",{d:"M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z",key:"3c2336"}]],r=(0,s.Z)("badge",o)}};

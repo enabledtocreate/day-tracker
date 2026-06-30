@@ -104,4 +104,43 @@ final class IcalCompletionPersistenceApiTest extends ApiTestCase
         $this->assertSame(1, (int) $after['user_completed'], 'user_completed must persist via marks merge');
         $this->assertSame('After sync', $after['title'], 'new title from feed should be stored');
     }
+
+    public function testPastFeedRowsAreNotTouchedOnResync(): void
+    {
+        $pdo = $this->openUserPdo();
+        $pdo->exec("INSERT INTO ical_subscriptions (feed_url, last_synced_at) VALUES ('https://example.invalid/calendar.ics', datetime('now'))");
+        $subId = (int) $pdo->lastInsertId();
+
+        $todayUtc = gmdate('Y-m-d');
+        $pastStart = gmdate('Y-m-d', strtotime($todayUtc . ' -7 days')) . 'T10:00:00Z';
+        $futureStart = gmdate('Y-m-d', strtotime($todayUtc . ' +7 days')) . 'T10:00:00Z';
+
+        $ins = $pdo->prepare(
+            'INSERT INTO ical_feed_events (subscription_id, uid, title, start_iso, end_iso, all_day, user_completed, event_type)
+             VALUES (?, ?, ?, ?, ?, 0, 0, ?)'
+        );
+        $ins->execute([$subId, 'past-uid@ical', 'Past unchanged', $pastStart, $pastStart, 'event']);
+        $pastId = (int) $pdo->lastInsertId();
+        $ins->execute([$subId, 'future-uid@ical', 'Future old title', $futureStart, $futureStart, 'event']);
+
+        $this->simulateFeedResync($pdo, $subId, $todayUtc, [
+            [
+                'uid' => 'future-uid@ical',
+                'start' => $futureStart,
+                'title' => 'Future new title',
+                'end' => $futureStart,
+                'event_type' => 'event',
+            ],
+        ]);
+
+        $past = $pdo->prepare('SELECT id, title FROM ical_feed_events WHERE id = ?');
+        $past->execute([$pastId]);
+        $pastRow = $past->fetch(PDO::FETCH_ASSOC);
+        $this->assertNotFalse($pastRow);
+        $this->assertSame('Past unchanged', $pastRow['title'], 'past rows must not be deleted or updated on sync');
+
+        $future = $pdo->prepare('SELECT title FROM ical_feed_events WHERE subscription_id = ? AND uid = ?');
+        $future->execute([$subId, 'future-uid@ical']);
+        $this->assertSame('Future new title', $future->fetchColumn());
+    }
 }

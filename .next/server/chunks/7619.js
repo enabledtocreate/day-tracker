@@ -1,0 +1,1 @@
+"use strict";exports.id=7619,exports.ids=[7619],exports.modules={7619:(e,d,t)=>{t.r(d),t.d(d,{__iconNode:()=>s,default:()=>i});var o=t(15709);let s=[["path",{d:"M3 10A6.06 6.06 0 0 1 12 10 A6.06 6.06 0 0 0 21 10",key:"13lfmc"}],["path",{d:"M6 3v12a6 6 0 0 0 12 0V3",key:"1jnivp"}]],i=(0,o.Z)("zodiac-ophiuchus",s)}};

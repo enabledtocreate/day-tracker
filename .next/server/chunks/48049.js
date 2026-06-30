@@ -1,0 +1,1 @@
+"use strict";exports.id=48049,exports.ids=[48049],exports.modules={48049:(e,a,t)=>{t.r(a),t.d(a,{__iconNode:()=>o,default:()=>r});var d=t(15709);let o=[["path",{d:"M17 14h.01",key:"7oqj8z"}],["path",{d:"M7 7h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14",key:"u1rqew"}]],r=(0,d.Z)("wallet-minimal",o)}};

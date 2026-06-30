@@ -55,6 +55,11 @@ function getMasterPdo(): PDO {
         throw new RuntimeException('Data directory does not exist: ' . $dir);
     }
     $pdo = new PDO('sqlite:' . $path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    static $masterMigrationsDone = false;
+    if (!$masterMigrationsDone) {
+        $masterMigrationsDone = true;
+        runMigrationsIn($pdo, dirname(__DIR__) . '/migrations_master');
+    }
     return $pdo;
 }
 

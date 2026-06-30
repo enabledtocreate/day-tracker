@@ -1,0 +1,1 @@
+"use strict";exports.id=7669,exports.ids=[7669],exports.modules={7669:(e,t,r)=>{r.r(t),r.d(t,{__iconNode:()=>s,default:()=>a});var d=r(15709);let s=[["rect",{width:"18",height:"18",x:"3",y:"3",rx:"2",key:"afitv7"}],["path",{d:"M7 7v10",key:"d5nglc"}],["path",{d:"M11 7v10",key:"pptsnr"}],["path",{d:"m15 7 2 10",key:"1m7qm5"}]],a=(0,d.Z)("square-library",s)}};

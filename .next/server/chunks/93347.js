@@ -1,0 +1,1 @@
+"use strict";exports.id=93347,exports.ids=[93347],exports.modules={74773:(e,t,r)=>{r.r(t),r.d(t,{__iconNode:()=>o,default:()=>s});var d=r(15709);let o=[["path",{d:"M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z",key:"17jzev"}]],s=(0,d.Z)("thermometer",o)}};

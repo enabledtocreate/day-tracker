@@ -14,6 +14,27 @@ import type {
 
 type ApiRequestInit = Omit<RequestInit, 'body'> & { method?: string; body?: unknown };
 
+export type AuthErrorCode = 'login_required' | 'session_expired';
+
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+let authRequiredHandler: ((code: AuthErrorCode) => void) | null = null;
+
+/** Register a handler invoked when an API call returns 401 with login_required or session_expired. */
+export function setAuthRequiredHandler(handler: ((code: AuthErrorCode) => void) | null): void {
+  authRequiredHandler = handler;
+}
+
 async function request<T>(path: string, options: ApiRequestInit = {}): Promise<T> {
   const { method = 'GET', body, ...rest } = options;
   const headers: Record<string, string> = {
@@ -33,13 +54,18 @@ async function request<T>(path: string, options: ApiRequestInit = {}): Promise<T
   const text = await res.text();
   if (!res.ok) {
     let msg = res.statusText;
+    let code: string | undefined;
     try {
-      const j = JSON.parse(text);
+      const j = JSON.parse(text) as { error?: string; code?: string };
       if (j && typeof j.error === 'string') msg = j.error;
+      if (j && typeof j.code === 'string') code = j.code;
     } catch {
       if (text) msg = text.slice(0, 200);
     }
-    throw new Error(msg);
+    if (res.status === 401 && (code === 'login_required' || code === 'session_expired')) {
+      authRequiredHandler?.(code);
+    }
+    throw new ApiError(msg, res.status, code);
   }
   if (!text) return undefined as T;
   try {
@@ -76,6 +102,8 @@ export interface Task {
    * `.apm/_WORKSPACE/TODO-mobile.md §0.7 / §0.9 Step 8`.
    */
   auto_complete_eod?: boolean;
+  /** When true, timed slots for this task are omitted from planned-hours summaries. */
+  exclude_from_planned_hours?: boolean;
   /** Favorites subfolder (common root tasks only); null = unfiled. */
   favorite_folder_id?: number | null;
   category_id?: number | null;
@@ -237,6 +265,8 @@ export interface IcalSubscriptionRow {
   enabled: boolean;
   /** User-defined label shown on the schedule (optional). */
   display_name?: string | null;
+  /** Muted gray tint for this feed's blocks on the schedule (optional). */
+  schedule_color?: string | null;
 }
 
 export interface IcalFeedEvent {
@@ -249,6 +279,8 @@ export interface IcalFeedEvent {
   subscription_id?: number;
   user_completed?: boolean;
   event_type?: 'event' | 'todo';
+  /** VEVENT/VTODO LOCATION (address or maps URL). */
+  location?: string | null;
 }
 
 /** Per-subscription outcome from ical_events.php (multi-calendar sync visibility). */
@@ -284,6 +316,7 @@ export const api = {
       list_state?: string;
       due_date?: string | null;
       auto_complete_eod?: boolean;
+      exclude_from_planned_hours?: boolean;
       default_block_id?: number | null;
       default_duration_intervals?: number;
     }) => request<Task & { id: number }>('api/tasks.php', { method: 'POST', body: data }),
@@ -305,6 +338,7 @@ export const api = {
       tag_ids?: number[];
       auto_priority_enabled?: boolean;
       auto_complete_eod?: boolean;
+      exclude_from_planned_hours?: boolean;
       default_block_id?: number | null;
       default_duration_intervals?: number;
     }) =>
@@ -596,19 +630,27 @@ export const api = {
       request<{ ok: boolean }>('api/ical_subscriptions.php', { method: 'PATCH', body: { id, enabled } }),
     setDisplayName: (id: number, displayName: string) =>
       request<{ ok: boolean }>('api/ical_subscriptions.php', { method: 'PATCH', body: { id, display_name: displayName } }),
+    setScheduleColor: (id: number, schedule_color: string | null) =>
+      request<{ ok: boolean }>('api/ical_subscriptions.php', {
+        method: 'PATCH',
+        body: { id, schedule_color: schedule_color ?? '' },
+      }),
     setFeedUrl: (id: number, feedUrl: string) =>
       request<{ ok: boolean }>('api/ical_subscriptions.php', { method: 'PATCH', body: { id, feed_url: feedUrl } }),
     delete: (id: number) => request<{ ok: boolean }>(`api/ical_subscriptions.php?id=${id}`, { method: 'DELETE' }),
-    preview: (id: number, parse = true) =>
-      request<{
+    preview: (id: number, parse = true, range?: { from: string; to: string }) => {
+      const params = new URLSearchParams({ preview: '1', id: String(id) });
+      if (parse) params.set('parse', '1');
+      if (range?.from) params.set('from', range.from);
+      if (range?.to) params.set('to', range.to);
+      return request<{
         content: string;
         truncated?: boolean;
         parse_range?: { from: string; to: string };
         parsed_events?: Array<{ uid: string; title: string; start: string; end: string; allDay: boolean }>;
         raw?: string;
-      } | { error: string }>(
-        `api/ical_subscriptions.php?preview=1&id=${id}${parse ? '&parse=1' : ''}`
-      ),
+      } | { error: string }>(`api/ical_subscriptions.php?${params.toString()}`);
+    },
     getDownloadUrl: (id: number) => getBaseUrl() + `api/ical_subscriptions.php?preview=1&id=${id}&download=1`,
     getStreamUrl: (id: number) => getBaseUrl() + `api/ical_subscriptions.php?stream=1&id=${id}`,
   },
@@ -642,8 +684,24 @@ export const api = {
       request<{ ok: boolean }>('api/ical_excluded.php', { method: 'PATCH', body: { remove_uid: uid } }),
   },
   user: {
-    get: () => request<{ user: { id: number; username: string; db_name: string; is_admin: boolean; sso: Array<{ id?: number; provider: string; email: string }> } }>('api/user.php'),
+    get: () =>
+      request<{
+        user: {
+          id: number;
+          username: string;
+          db_name: string;
+          is_admin: boolean;
+          session_lifetime_days: number;
+          session_expires_at: string | null;
+          sso: Array<{ id?: number; provider: string; email: string }>;
+        };
+      }>('api/user.php'),
     changePassword: (password: string) => request<{ ok: boolean }>('api/user.php', { method: 'PATCH', body: { password } }),
+    updateSessionLifetime: (session_lifetime_days: number) =>
+      request<{ ok: boolean; session_lifetime_days: number; session_expires_at: string | null }>('api/user.php', {
+        method: 'PATCH',
+        body: { session_lifetime_days },
+      }),
     disconnectSso: (ssoId: number, newPassword: string) =>
       request<{ ok: boolean }>('api/user.php', { method: 'PATCH', body: { disconnect_sso: ssoId, new_password: newPassword } }),
   },

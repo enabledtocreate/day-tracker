@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[85491],{85491:function(n,e,t){t.r(e),t.d(e,{__iconNode:function(){return u},default:function(){return a}});var c=t(47411);let u=[["path",{d:"M3 16h6.857c.162-.012.19-.323.038-.38a6 6 0 1 1 4.212 0c-.153.057-.125.368.038.38H21",key:"1novf0"}],["path",{d:"M3 20h18",key:"1l19wn"}]],a=(0,c.Z)("zodiac-libra",u)}}]);

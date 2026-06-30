@@ -1,0 +1,1 @@
+"use strict";exports.id=56625,exports.ids=[56625],exports.modules={56625:(c,e,r)=>{r.r(e),r.d(e,{__iconNode:()=>t,default:()=>d});var i=r(15709);let t=[["path",{d:"M15 6a9 9 0 0 0-9 9V3",key:"1cii5b"}],["circle",{cx:"18",cy:"6",r:"3",key:"1h7g24"}],["circle",{cx:"6",cy:"18",r:"3",key:"fqmcym"}]],d=(0,i.Z)("git-branch",t)}};

@@ -1,0 +1,1 @@
+"use strict";exports.id=21599,exports.ids=[21599],exports.modules={21599:(e,r,t)=>{t.r(r),t.d(r,{__iconNode:()=>d,default:()=>s});var c=t(15709);let d=[["circle",{cx:"12",cy:"15",r:"6",key:"lhqcmb"}],["path",{d:"M18 3A6 6 0 0 1 6 3",key:"1p399e"}]],s=(0,c.Z)("zodiac-taurus",d)}};

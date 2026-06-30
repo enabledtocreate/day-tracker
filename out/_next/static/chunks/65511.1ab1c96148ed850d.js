@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[65511],{65511:function(e,n,t){t.r(n),t.d(n,{__iconNode:function(){return c},default:function(){return a}});var u=t(47411);let c=[["path",{d:"M7 2a1 1 0 0 0-.8 1.6 14 14 0 0 1 0 16.8A1 1 0 0 0 7 22h10a1 1 0 0 0 .8-1.6 14 14 0 0 1 0-16.8A1 1 0 0 0 17 2z",key:"109j23"}]],a=(0,u.Z)("lens-concave",c)}}]);

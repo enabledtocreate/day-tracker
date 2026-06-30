@@ -7,7 +7,7 @@ import { ScheduleQueryProvider } from '@/lib/scheduleData';
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
-    <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false} storageKey="day-tracker-theme">
+    <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false} storageKey="day-tracker-theme">
       <ScheduleQueryProvider>
         <TooltipProvider delay={200}>
           {children}

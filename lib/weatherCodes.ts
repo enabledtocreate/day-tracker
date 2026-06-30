@@ -1,8 +1,12 @@
 /** WMO weather interpretation codes (Open-Meteo). Returns Lucide-style icon key + short label. */
-export function weatherCodeToIcon(code: number): { icon: string; label: string } {
-  if (code === 0) return { icon: 'sun', label: 'Clear' };
-  if (code === 1) return { icon: 'sun', label: 'Mainly clear' };
-  if (code === 2) return { icon: 'cloud-sun', label: 'Partly cloudy' };
+export function weatherCodeToIcon(
+  code: number,
+  opts?: { isNight?: boolean }
+): { icon: string; label: string } {
+  const night = opts?.isNight ?? false;
+  if (code === 0) return { icon: night ? 'moon' : 'sun', label: 'Clear' };
+  if (code === 1) return { icon: night ? 'moon' : 'sun', label: 'Mainly clear' };
+  if (code === 2) return { icon: night ? 'cloud-moon' : 'cloud-sun', label: 'Partly cloudy' };
   if (code === 3) return { icon: 'cloud', label: 'Overcast' };
   if (code === 45 || code === 48) return { icon: 'cloud-fog', label: 'Fog' };
   if (code >= 51 && code <= 57) return { icon: 'cloud-drizzle', label: 'Drizzle' };

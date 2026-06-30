@@ -125,7 +125,7 @@ if ($method === 'GET') {
         exit;
     }
     try {
-        $stmt = $pdo->query('SELECT id, feed_url, created_at, COALESCE(enabled, 1) AS enabled, display_name FROM ical_subscriptions ORDER BY id');
+        $stmt = $pdo->query('SELECT id, feed_url, created_at, COALESCE(enabled, 1) AS enabled, display_name, schedule_color FROM ical_subscriptions ORDER BY id');
     } catch (Throwable $e) {
         logMessage('NOTICE', 'ical_subscriptions list: using fallback query', ['message' => $e->getMessage()]);
         try {
@@ -159,8 +159,9 @@ if ($method === 'PATCH') {
     $hasEnabled = array_key_exists('enabled', $in);
     $hasDisplay = array_key_exists('display_name', $in);
     $hasFeedUrl = array_key_exists('feed_url', $in);
-    if (!$hasEnabled && !$hasDisplay && !$hasFeedUrl) {
-        jsonError('enabled, display_name and/or feed_url required');
+    $hasScheduleColor = array_key_exists('schedule_color', $in);
+    if (!$hasEnabled && !$hasDisplay && !$hasFeedUrl && !$hasScheduleColor) {
+        jsonError('enabled, display_name, schedule_color and/or feed_url required');
         exit;
     }
     $nextFeedUrl = null;
@@ -201,6 +202,11 @@ if ($method === 'PATCH') {
             $updates[] = 'feed_url = ?';
             $params[] = $nextFeedUrl;
         }
+        if ($hasScheduleColor) {
+            $sc = trim((string) $in['schedule_color']);
+            $updates[] = 'schedule_color = ?';
+            $params[] = $sc === '' ? null : substr($sc, 0, 64);
+        }
         if (count($updates) > 0) {
             $params[] = $id;
             $pdo->prepare('UPDATE ical_subscriptions SET ' . implode(', ', $updates) . ' WHERE id = ?')->execute($params);
@@ -209,6 +215,11 @@ if ($method === 'PATCH') {
         if (strpos($e->getMessage(), 'display_name') !== false) {
             logMessage('WARNING', 'ical_subscriptions PATCH: display_name column missing', ['id' => $id, 'message' => $e->getMessage()]);
             jsonError('Nickname not available. Run migrations.');
+            exit;
+        }
+        if (strpos($e->getMessage(), 'schedule_color') !== false) {
+            logMessage('WARNING', 'ical_subscriptions PATCH: schedule_color column missing', ['id' => $id, 'message' => $e->getMessage()]);
+            jsonError('Schedule color not available. Run migrations.');
             exit;
         }
         if (strpos($e->getMessage(), 'enabled') !== false) {

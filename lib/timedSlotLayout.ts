@@ -1,5 +1,6 @@
 import type { ScheduledSlot } from '@/lib/api';
 import { resolveGroupMemberTimes } from '@/lib/scheduleSlotMath';
+import { MINUTES_PER_DAY, slotDurationMinutes, slotSpansNextDay } from '@/lib/overnightSlotTimes';
 
 function timeToMinutes(time: string | null | undefined): number {
   if (time == null || time === '') return 0;
@@ -10,16 +11,31 @@ function timeToMinutes(time: string | null | undefined): number {
 /**
  * Root row end_time can lag grouped child rows in DB. Layout and overlap should use
  * max(root end, child ends) so the block is not drawn one-interval tall.
+ * When end <= start, the slot continues into the next calendar day.
  */
 export function timedSlotLayoutBounds(slot: ScheduledSlot, childSlots: ScheduledSlot[]): { startMin: number; endMin: number } {
   const startMin = timeToMinutes(slot.start_time);
+  if (childSlots.length === 0) {
+    if (slotSpansNextDay(slot.start_time, slot.end_time)) {
+      return { startMin, endMin: MINUTES_PER_DAY };
+    }
+    return { startMin, endMin: timeToMinutes(slot.end_time) };
+  }
   let endMin = timeToMinutes(slot.end_time);
-  if (childSlots.length === 0) return { startMin, endMin };
   for (const c of childSlots) {
-    endMin = Math.max(endMin, timeToMinutes(c.end_time));
+    if (slotSpansNextDay(c.start_time, c.end_time)) {
+      endMin = Math.max(endMin, MINUTES_PER_DAY);
+    } else {
+      endMin = Math.max(endMin, timeToMinutes(c.end_time));
+    }
+  }
+  if (slotSpansNextDay(slot.start_time, slot.end_time)) {
+    endMin = Math.max(endMin, MINUTES_PER_DAY);
   }
   return { startMin, endMin };
 }
+
+export { slotDurationMinutes };
 
 /**
  * Per-member slot times for a schedule group, matching on-screen segment

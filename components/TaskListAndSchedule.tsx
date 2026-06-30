@@ -16,6 +16,7 @@ import type {
   FavoriteFolder,
 } from '@/lib/api';
 import { icalEventToLocal, icalEventLocalStartDate } from '@/lib/icalTimezone';
+import { replaceIcalFeedByDateInRange } from '@/lib/icalFeedByDate';
 import { Modal } from '@/components/Modal';
 import { Button } from '@/components/Button';
 import { CompletedPanel } from '@/components/CompletedPanel';
@@ -70,10 +71,11 @@ import { useMobileMode } from '@/lib/mobileMode';
 import { useTaskListMobileGestures } from '@/lib/useTaskListMobileGestures';
 import { useMobileGestures } from '@/lib/mobileGestures';
 import {
-  ICAL_FEED_BLOCK_BG,
   SCHEDULE_UNTIMED_CHIP_BG,
+  icalFeedBlockBgColor,
   scheduleBlockBgColor,
 } from '@/lib/scheduleBlockColors';
+import { ScheduleIcalLocationLink } from '@/components/ScheduleIcalLocationLink';
 import {
   blockColorWithAlpha,
   scheduleBlockLabelStyle,
@@ -117,8 +119,20 @@ import { bucketLayoutFromSettings, canDropTaskOnBucketZone } from '@/lib/taskBuc
 import { SCHEDULE_SLOT_ROW_HEIGHT_PX } from '@/lib/scheduleSlotMetrics';
 import { scheduleBlockDensityClasses } from '@/lib/scheduleBlockDensity';
 import { timedSlotLayoutBounds, computeGroupMemberSlotTimes } from '@/lib/timedSlotLayout';
+import {
+  collectScheduleDaySegments,
+  durationFromStoredTimes,
+  eveningSegmentOverlaps,
+  latestStartMinForDuration,
+  MINUTES_PER_DAY,
+  segmentIntervalCount,
+  slotDurationMinutes as overnightSlotDurationMinutes,
+  storedEndTimeFromDuration,
+} from '@/lib/overnightSlotTimes';
+import { ScheduleViewSplitButton } from '@/components/ScheduleViewSplitButton';
+import { PlannedHoursSummaryModal } from '@/components/PlannedHoursSummaryModal';
 import { computeAddTaskGhostPlacement, type AddTaskGhostPlacement } from '@/lib/scheduleAddTaskGhost';
-import { buildDayScheduleOccupiedRects, computeOverlapMaps } from '@/lib/scheduleOccupiedRects';
+import { buildDayScheduleOccupiedRects, computeOverlapLayouts, type OverlapLayoutInfo } from '@/lib/scheduleOccupiedRects';
 import { useScheduleWeather } from '@/lib/useScheduleWeather';
 import { weatherTempUnitFromSettings } from '@/lib/weatherDisplay';
 import { useFloatingMenuPosition } from '@/lib/useFloatingMenuPosition';
@@ -373,13 +387,14 @@ export function TaskListAndSchedule({
   const [initialDataReady, setInitialDataReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scheduleTab, setScheduleTab] = useState<'today' | 'week' | 'calendar'>('today');
+  const [plannedSummaryScope, setPlannedSummaryScope] = useState<'today' | 'week' | 'calendar' | null>(null);
   const [weekAnchorSunday, setWeekAnchorSunday] = useState(() => sundayOfWeekContaining(today()));
   const [weekScope, setWeekScope] = useState<'7-day' | 'weekday'>('7-day');
   /** When true: one shared time column and one vertical scroll for all days (“Lock time”). When false: each day column scrolls independently. */
   const [weekTimeScrollLocked, setWeekTimeScrollLocked] = useState(true);
   const [weekFeedByDate, setWeekFeedByDate] = useState<Record<string, IcalFeedEvent[]>>({});
   const [slotDayByRecordId, setSlotDayByRecordId] = useState<Record<number, string>>({});
-  const [icalSubById, setIcalSubById] = useState<Record<number, { display_name?: string | null }>>({});
+  const [icalSubById, setIcalSubById] = useState<Record<number, { display_name?: string | null; schedule_color?: string | null }>>({});
   const [calendarMonth, setCalendarMonth] = useState(today());
   const [calendarSlotsByDate, setCalendarSlotsByDate] = useState<Record<string, ScheduledSlot[]>>({});
   const [calendarFeedEventsByDate, setCalendarFeedEventsByDate] = useState<Record<string, IcalFeedEvent[]>>({});
@@ -833,18 +848,28 @@ export function TaskListAndSchedule({
     }
   }, []);
 
-  useEffect(() => {
+  const loadIcalSubscriptions = useCallback(() => {
     api.icalSubscriptions
       .list()
       .then(({ subscriptions }) => {
-        const m: Record<number, { display_name?: string | null }> = {};
+        const m: Record<number, { display_name?: string | null; schedule_color?: string | null }> = {};
         subscriptions.forEach((s) => {
-          m[s.id] = { display_name: s.display_name };
+          m[s.id] = { display_name: s.display_name, schedule_color: s.schedule_color };
         });
         setIcalSubById(m);
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    loadIcalSubscriptions();
+  }, [loadIcalSubscriptions]);
+
+  useEffect(() => {
+    const onSubsChanged = () => loadIcalSubscriptions();
+    window.addEventListener('daytracker:ical-subscriptions-changed', onSubsChanged);
+    return () => window.removeEventListener('daytracker:ical-subscriptions-changed', onSubsChanged);
+  }, [loadIcalSubscriptions]);
 
   useEffect(() => {
     if (!priorityDisplay.levels.includes(addOptionsPriority)) {
@@ -1265,7 +1290,9 @@ export function TaskListAndSchedule({
           if (!byDate[d]) byDate[d] = [];
           byDate[d].push(e);
         }
-        setFeedEventsByDateForSchedule((prev) => ({ ...prev, ...byDate }));
+        setFeedEventsByDateForSchedule((prev) =>
+          replaceIcalFeedByDateInRange(prev, byDate, monthFrom, monthTo)
+        );
         setFeedErrors(r.errors ?? []);
         lastIcalMonthRef.current = monthFrom;
       })
@@ -1305,7 +1332,9 @@ export function TaskListAndSchedule({
             if (!byDate[d]) byDate[d] = [];
             byDate[d].push(e);
           }
-          setFeedEventsByDateForSchedule((prev) => ({ ...prev, ...byDate }));
+          setFeedEventsByDateForSchedule((prev) =>
+            replaceIcalFeedByDateInRange(prev, byDate, monthFrom, monthTo)
+          );
           setFeedErrors(r.errors ?? []);
         })
         .catch(() => {});
@@ -1314,13 +1343,14 @@ export function TaskListAndSchedule({
   }, [scheduleTab, viewDate, icalIntervalFetch, icalClientTriggersSync, icalSyncIntervalMinutes, settings.timezone]);
 
   const refetchIcalForScheduleView = useCallback(() => {
+    loadIcalSubscriptions();
     const tz = settings.timezone ?? '';
     if (scheduleTab === 'week' && !isMobile) {
       const dates = buildWeekDates(weekAnchorSunday, weekScope);
       const from = dates[0]!;
       const to = dates[dates.length - 1]!;
       api.icalEvents
-        .get(from, to)
+        .get(from, to, { sync_if_stale: true })
         .then((r) => {
           const by: Record<string, IcalFeedEvent[]> = {};
           for (const ev of r.events ?? []) {
@@ -1335,7 +1365,7 @@ export function TaskListAndSchedule({
       return;
     }
     const { from, to } = getMonthRange(viewDate);
-    api.icalEvents.get(from, to).then((r) => {
+    api.icalEvents.get(from, to, { sync_if_stale: true }).then((r) => {
       setIcalSubscriptionSyncReport(r.subscription_sync ?? []);
       const byDate: Record<string, IcalFeedEvent[]> = {};
       for (const e of r.events ?? []) {
@@ -1343,9 +1373,9 @@ export function TaskListAndSchedule({
         if (!byDate[d]) byDate[d] = [];
         byDate[d].push(e);
       }
-      setFeedEventsByDateForSchedule((prev) => ({ ...prev, ...byDate }));
+      setFeedEventsByDateForSchedule((prev) => replaceIcalFeedByDateInRange(prev, byDate, from, to));
     }).catch(() => {});
-  }, [scheduleTab, isMobile, weekAnchorSunday, weekScope, viewDate, settings.timezone]);
+  }, [scheduleTab, isMobile, weekAnchorSunday, weekScope, viewDate, settings.timezone, loadIcalSubscriptions]);
 
   useEffect(() => {
     if (isMobile && user?.is_admin) {
@@ -1625,7 +1655,12 @@ export function TaskListAndSchedule({
     const step = slotDurationMinutes;
     const span = Math.max(step, durationMinutes);
     const ranges: Array<[number, number]> = daySlots
-      .map((s): [number, number] => [timeToMinutes(s.start_time), timeToMinutes(s.end_time)])
+      .map((s): [number, number] => {
+        const start = timeToMinutes(s.start_time);
+        const dur = durationFromStoredTimes(s.start_time, s.end_time);
+        const end = start + dur > MINUTES_PER_DAY ? MINUTES_PER_DAY : start + dur;
+        return [start, end];
+      })
       .sort((a, b) => a[0] - b[0]);
     let slotStart = startMin;
     while (slotStart <= endMin - span) {
@@ -1633,6 +1668,15 @@ export function TaskListAndSchedule({
       const overlaps = ranges.some(([s, e]) => slotStart < e && slotEnd > s);
       if (!overlaps) return { start_time: minutesToTime(slotStart), end_time: minutesToTime(slotEnd) };
       slotStart += step;
+    }
+    for (let eveningStart = Math.min(endMin - step, MINUTES_PER_DAY - step); eveningStart >= startMin; eveningStart -= step) {
+      if (eveningStart + span <= endMin) continue;
+      if (!eveningSegmentOverlaps(eveningStart, span, ranges)) {
+        return {
+          start_time: minutesToTime(eveningStart),
+          end_time: storedEndTimeFromDuration(eveningStart, span),
+        };
+      }
     }
     return { start_time: minutesToTime(startMin), end_time: minutesToTime(startMin + span) };
   };
@@ -2023,15 +2067,26 @@ export function TaskListAndSchedule({
       const orderedChildren = childSlots.slice().sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0) || a.id - b.id);
       const memberSlots = [rootSlot, ...orderedChildren];
       const memberCount = memberSlots.length;
-      const origStart = timeToMinutes(rootSlot.start_time);
-      const origEnd = timeToMinutes(rootSlot.end_time);
-      const originalDurationMin = Math.max(0, origEnd - origStart);
-      const preservedDurationMin = Math.max(originalDurationMin, memberCount * slotDurationMinutes);
-      const viewEndMin = settings.end_hour * 60;
-      const latestStartMin = viewEndMin - preservedDurationMin;
+      const originalDurationMin = Math.max(
+        durationFromStoredTimes(rootSlot.start_time, rootSlot.end_time),
+        memberCount * slotDurationMinutes
+      );
+      const latestStartMin = latestStartMinForDuration(
+        originalDurationMin,
+        settings.start_hour,
+        settings.end_hour,
+        slotDurationMinutes,
+        memberCount === 1
+      );
       const snappedStartMin = snapToSlot(newStartMin, settings.start_hour, settings.end_hour, slotDurationMinutes);
       const newStart = Math.min(snappedStartMin, latestStartMin);
-      const newEnd = newStart + preservedDurationMin;
+      const rootEndTime =
+        memberCount === 1
+          ? storedEndTimeFromDuration(newStart, originalDurationMin)
+          : minutesToTime(newStart + originalDurationMin);
+      const newEnd = memberCount === 1 && newStart + originalDurationMin > MINUTES_PER_DAY
+        ? MINUTES_PER_DAY
+        : newStart + originalDurationMin;
       const memberTimes = distributeGroupMemberTimes({
         groupStartMin: newStart,
         groupEndMin: newEnd,
@@ -2045,8 +2100,13 @@ export function TaskListAndSchedule({
           api.slots.create({
             day_record_id: targetDay.id,
             task_id: s.task_id,
-            start_time: minutesToTime(idx === 0 ? newStart : memberTimes[idx].startMin),
-            end_time: minutesToTime(idx === 0 ? newEnd : memberTimes[idx].endMin),
+            start_time: minutesToTime(idx === 0 ? newStart : memberTimes[idx]!.startMin),
+            end_time:
+              idx === 0
+                ? memberCount === 1
+                  ? rootEndTime
+                  : minutesToTime(newEnd)
+                : minutesToTime(memberTimes[idx]!.endMin),
             order_index: idx,
             completed: !!s.completed,
           })
@@ -2479,7 +2539,6 @@ export function TaskListAndSchedule({
           (async () => {
             try {
               const day = await api.day.getOrCreate(dropTargetDate);
-              const viewEndMin = settings.end_hour * 60;
               let nextStartMin =
                 scheduleDropStartMin != null ? scheduleDropStartMin : null;
               const effectiveTaskIds = (() => {
@@ -2518,26 +2577,53 @@ export function TaskListAndSchedule({
                   slotDurationMinutes,
                 });
 
-                const groupStartMinCandidate = nextStartMin != null
-                  ? Math.min(nextStartMin, viewEndMin - placementSpanMin)
-                  : null;
+                const allowOvernight = memberCount === 1;
+                const groupStartMinCandidate =
+                  nextStartMin != null
+                    ? Math.min(
+                        nextStartMin,
+                        latestStartMinForDuration(
+                          placementSpanMin,
+                          settings.start_hour,
+                          settings.end_hour,
+                          slotDurationMinutes,
+                          allowOvernight
+                        )
+                      )
+                    : null;
                 let rootStartMin: number;
-                let rootEndMin: number;
+                let rootEndTime: string;
                 let memberTimes: Array<{ startMin: number; endMin: number }>;
 
                 if (groupStartMinCandidate != null) {
-                  rootStartMin = groupStartMinCandidate;
-                  rootEndMin = groupStartMinCandidate + placementSpanMin;
-                  memberTimes = distributeGroupMemberTimes({ groupStartMin: rootStartMin, groupEndMin: rootEndMin, slotDurationMinutes, memberCount });
+                  rootStartMin = snapToSlot(
+                    groupStartMinCandidate,
+                    settings.start_hour,
+                    settings.end_hour,
+                    slotDurationMinutes
+                  );
+                  rootEndTime = storedEndTimeFromDuration(rootStartMin, placementSpanMin);
+                  const layoutEndMin =
+                    rootStartMin + placementSpanMin > MINUTES_PER_DAY
+                      ? MINUTES_PER_DAY
+                      : rootStartMin + placementSpanMin;
+                  memberTimes = distributeGroupMemberTimes({
+                    groupStartMin: rootStartMin,
+                    groupEndMin: layoutEndMin,
+                    slotDurationMinutes,
+                    memberCount,
+                  });
                 } else {
                   const gt = await getNextAvailableGroupTimeForDay(day.id, memberCount, placementSpanMin);
                   const gtStartMin = timeToMinutes(gt.start_time);
                   const gtEndMin = timeToMinutes(gt.end_time);
                   rootStartMin = gtStartMin;
-                  rootEndMin = gtEndMin;
+                  rootEndTime = allowOvernight
+                    ? storedEndTimeFromDuration(rootStartMin, placementSpanMin)
+                    : minutesToTime(gtEndMin);
                   memberTimes = distributeGroupMemberTimes({
                     groupStartMin: rootStartMin,
-                    groupEndMin: rootEndMin,
+                    groupEndMin: gtEndMin,
                     slotDurationMinutes,
                     memberCount,
                   });
@@ -2550,8 +2636,13 @@ export function TaskListAndSchedule({
                     api.slots.create({
                       day_record_id: day.id,
                       task_id: id,
-                      start_time: minutesToTime(idx === 0 ? rootStartMin : memberTimes[idx].startMin),
-                      end_time: minutesToTime(idx === 0 ? rootEndMin : memberTimes[idx].endMin),
+                      start_time: minutesToTime(idx === 0 ? rootStartMin : memberTimes[idx]!.startMin),
+                      end_time:
+                        idx === 0
+                          ? allowOvernight
+                            ? rootEndTime
+                            : minutesToTime(memberTimes[idx]!.endMin)
+                          : minutesToTime(memberTimes[idx]!.endMin),
                       order_index: idx,
                     })
                   )
@@ -2574,17 +2665,23 @@ export function TaskListAndSchedule({
           const slot = slots.find((s) => s.task_id === taskIds[0] && (s.parent_id == null || !slots.some((o) => o.task_id === s.parent_id)));
           if (!slot) return;
           const viewEndMin = settings.end_hour * 60;
-          const originalStartMin = timeToMinutes(slot.start_time);
-          const originalEndMin = timeToMinutes(slot.end_time);
-          const originalDurationMin = Math.max(0, originalEndMin - originalStartMin);
           const childSlots = slots.filter((s) => s.parent_id === slot.task_id);
           const memberCount = 1 + childSlots.length;
-          const preservedDurationMin = Math.max(originalDurationMin, memberCount * slotDurationMinutes);
-          const latestStartMin = viewEndMin - preservedDurationMin;
-          const candidateStartMin = Math.min(scheduleDropStartMin, latestStartMin);
-          const snappedStartMin = snapToSlot(candidateStartMin, settings.start_hour, settings.end_hour, slotDurationMinutes);
-          const newStartMin = Math.min(snappedStartMin, latestStartMin);
-          const newEndMin = newStartMin + preservedDurationMin;
+          const originalDurationMin = Math.max(
+            durationFromStoredTimes(slot.start_time, slot.end_time),
+            memberCount * slotDurationMinutes
+          );
+          const moved = calcMovedSlotTimes({
+            scheduleDropStartMin,
+            viewEndMin,
+            slotDurationMinutes,
+            originalDurationMin,
+            startHour: settings.start_hour,
+            endHour: settings.end_hour,
+            allowOvernight: memberCount === 1,
+          });
+          const newStartMin = moved.newStartMin;
+          const newEndMin = moved.newEndMin;
           const orderedChildren = childSlots.slice().sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0) || a.id - b.id);
           const memberSlots = [slot, ...orderedChildren];
           const memberTimes = distributeGroupMemberTimes({
@@ -2593,11 +2690,12 @@ export function TaskListAndSchedule({
             slotDurationMinutes,
             memberCount,
           });
-          const memberTimesById = new Map<number, { startMin: number; endMin: number }>();
+          const memberTimesById = new Map<number, { startMin: number; endMin: number; end_time?: string }>();
           memberSlots.forEach((ms, i) =>
             memberTimesById.set(ms.id, {
-              startMin: i === 0 ? newStartMin : memberTimes[i].startMin,
-              endMin: i === 0 ? newEndMin : memberTimes[i].endMin,
+              startMin: i === 0 ? newStartMin : memberTimes[i]!.startMin,
+              endMin: i === 0 ? newEndMin : memberTimes[i]!.endMin,
+              end_time: i === 0 && memberCount === 1 ? moved.end_time : undefined,
             })
           );
           const sourceDate = slotDayByRecordId[Number(slot.day_record_id)] ?? viewDate;
@@ -2624,13 +2722,14 @@ export function TaskListAndSchedule({
             try {
               await api.day.getOrCreate(dropTargetDate);
               await Promise.all(
-                memberSlots.map((ms) =>
-                  api.slots.update({
+                memberSlots.map((ms) => {
+                  const mt = memberTimesById.get(ms.id)!;
+                  return api.slots.update({
                     id: ms.id,
-                    start_time: minutesToTime(memberTimesById.get(ms.id)!.startMin),
-                    end_time: minutesToTime(memberTimesById.get(ms.id)!.endMin),
-                  })
-                )
+                    start_time: minutesToTime(mt.startMin),
+                    end_time: mt.end_time ?? minutesToTime(mt.endMin),
+                  });
+                })
               );
               loadData();
             } catch (err) {
@@ -2799,10 +2898,8 @@ export function TaskListAndSchedule({
               const slotIndex = Math.max(0, Math.floor(relativeY / ROW_HEIGHT));
               const startMin = viewStartMinutes + slotIndex * slotDurationMinutes;
               const snapped = snapToSlot(startMin, settings.start_hour, settings.end_hour, slotDurationMinutes);
-              const viewEndMin = settings.end_hour * 60;
-              const ghostMin = Math.min(snapped, viewEndMin - slotDurationMinutes);
-              scheduleDropStartMinRef.current = ghostMin;
-              setScheduleDropGhostMin(ghostMin);
+              scheduleDropStartMinRef.current = snapped;
+              setScheduleDropGhostMin(snapped);
             } else {
               scheduleDropStartMinRef.current = null;
               setScheduleDropGhostMin(null);
@@ -3098,8 +3195,6 @@ export function TaskListAndSchedule({
   const createScheduleTaskAt = useCallback(
     async (columnDate: string, startMin: number) => {
       if (columnDate < today()) return;
-      const viewEndMin = settings.end_hour * 60;
-      if (startMin >= viewEndMin - slotDurationMinutes) return;
       if (scheduleDraftRef.current) {
         cancelScheduleDraft();
       }
@@ -3242,6 +3337,11 @@ export function TaskListAndSchedule({
     (colDate: string) =>
       slots.filter((s) => slotDayByRecordId[Number(s.day_record_id)] === colDate),
     [slots, slotDayByRecordId]
+  );
+
+  const plannedTodaySlots = useMemo(
+    () => slots.filter((s) => slotDayByRecordId[Number(s.day_record_id)] === viewDate),
+    [slots, slotDayByRecordId, viewDate]
   );
 
   const endRecurringSeriesFromDate = useCallback(
@@ -3548,6 +3648,21 @@ export function TaskListAndSchedule({
     const children = slotsForViewDay.filter((c) => c.parent_id === s.task_id);
     if (children.length) childSlotsByParent.set(s.task_id, children);
   });
+  const viewEndMinutes = settings.end_hour * 60;
+  const scheduleDaySegments = useMemo(
+    () =>
+      collectScheduleDaySegments({
+        allSlots: slots,
+        slotDayByRecordId,
+        viewDate,
+        viewStartMinutes,
+        viewEndMinutes,
+      }),
+    [slots, slotDayByRecordId, viewDate, viewStartMinutes, viewEndMinutes]
+  );
+  const timedGroupRootSlots = timedRootSlots.filter(
+    (s) => (childSlotsByParent.get(s.task_id) ?? []).length > 0
+  );
   const timedFeedForOverlap = feedEvents
     .filter((e) => !e.allDay && icalEventLocalStartDate(e.start, false, settings.timezone) === viewDate)
     .map((e) => {
@@ -3555,20 +3670,35 @@ export function TaskListAndSchedule({
       return { key: 'feed-' + (e.id ?? e.uid + e.start), startMin: local.localStartMinutes, endMin: local.localEndMinutes };
     });
   const allBlocks = [
-    ...timedRootSlots.map((slot) => {
+    ...scheduleDaySegments.map((seg) => ({
+      key: seg.overlapKey,
+      startMin: seg.startMin,
+      endMin: seg.endMin,
+    })),
+    ...timedGroupRootSlots.map((slot) => {
       const ch = childSlotsByParent.get(slot.task_id) ?? [];
       const { startMin, endMin } = timedSlotLayoutBounds(slot, ch);
       return { key: slot.id as number, startMin, endMin };
     }),
     ...timedFeedForOverlap,
   ];
-  const overlapMap = computeOverlapMaps(allBlocks);
-  const slotOverlapInfo = new Map<number, { col: number; total: number }>();
-  const feedOverlapInfo = new Map<string, { col: number; total: number }>();
+  const overlapMap = computeOverlapLayouts(allBlocks);
+  const slotOverlapInfo = new Map<number | string, OverlapLayoutInfo>();
+  const feedOverlapInfo = new Map<string, OverlapLayoutInfo>();
   for (const block of allBlocks) {
-    const info = overlapMap.get(block.key) ?? { col: 0, total: 1 };
-    if (typeof block.key === 'number') slotOverlapInfo.set(block.key, info);
-    else feedOverlapInfo.set(block.key, info);
+    const info = overlapMap.get(block.key) ?? {
+      col: 0,
+      total: 1,
+      leftPct: 0,
+      widthPct: 99.5,
+      zIndex: 1,
+      stacked: false,
+    };
+    if (typeof block.key === 'number' || (typeof block.key === 'string' && block.key.endsWith('-overnight'))) {
+      slotOverlapInfo.set(block.key, info);
+    } else {
+      feedOverlapInfo.set(String(block.key), info);
+    }
   }
 
   const untimedFeedEvents = feedEvents.filter(
@@ -3580,7 +3710,6 @@ export function TaskListAndSchedule({
   const weatherDateTo =
     scheduleTab === 'week' && !isMobile ? weekDates[weekDates.length - 1]! : viewDate;
   const weatherTempUnit = weatherTempUnitFromSettings(settings.weather_temp_unit);
-  const viewEndMinutes = settings.end_hour * 60;
   const { hourlyByDate, dailyByDate, hasCoords: weatherHasCoords } = useScheduleWeather(
     settings,
     weatherDateFrom,
@@ -3591,14 +3720,17 @@ export function TaskListAndSchedule({
     () =>
       buildDayScheduleOccupiedRects({
         slots: slotsForViewDay,
+        allSlots: slots,
+        slotDayByRecordId,
         feedEvents,
         columnDate: viewDate,
         timezone: settings.timezone ?? '',
         viewStartMinutes,
+        viewEndMinutes,
         slotDurationMinutes,
         rowHeightPx: ROW_HEIGHT,
       }),
-    [slotsForViewDay, feedEvents, viewDate, settings.timezone, viewStartMinutes, slotDurationMinutes]
+    [slotsForViewDay, slots, slotDayByRecordId, feedEvents, viewDate, settings.timezone, viewStartMinutes, viewEndMinutes, slotDurationMinutes]
   );
 
   const toggleScheduleRootInSelection = useCallback(
@@ -3963,6 +4095,73 @@ export function TaskListAndSchedule({
         ? `${dragState.taskIds.length} tasks`
         : (tasks.find((t) => t.id === dragState.taskId)?.title ?? slots.find((s) => s.task_id === dragState.taskId)?.title ?? 'Task'))
     : '';
+
+  const scheduleViewTabs = (
+    <div className="schedule-header-tabs-row schedule-tabs schedule-tabs--split">
+      <ScheduleViewSplitButton
+        label="Today"
+        active={scheduleTab === 'today'}
+        onSelectView={() => setScheduleTab('today')}
+        onOpenSummary={() => setPlannedSummaryScope('today')}
+        summaryTitle="Hours planned for this day"
+      />
+      {!isMobile && (
+        <ScheduleViewSplitButton
+          label="Week"
+          active={scheduleTab === 'week'}
+          onSelectView={() => {
+            setWeekAnchorSunday(sundayOfWeekContaining(viewDate));
+            setScheduleTab('week');
+          }}
+          onOpenSummary={() => setPlannedSummaryScope('week')}
+          summaryTitle="Hours planned for this week"
+        />
+      )}
+      <ScheduleViewSplitButton
+        label="Calendar"
+        active={scheduleTab === 'calendar'}
+        onSelectView={() => setScheduleTab('calendar')}
+        onOpenSummary={() => setPlannedSummaryScope('calendar')}
+        summaryTitle="Hours planned for this month"
+      />
+    </div>
+  );
+
+  const plannedSummaryMonthRange = getMonthRange(calendarMonth);
+
+  const timedSlotsToRender = useMemo(() => {
+    const items: Array<{
+      slot: ScheduledSlot;
+      childSlots: ScheduledSlot[];
+      startMin: number;
+      endMin: number;
+      overlapKey: number | string;
+      continuation: boolean;
+    }> = [];
+    for (const seg of scheduleDaySegments) {
+      items.push({
+        slot: seg.slot,
+        childSlots: seg.childSlots,
+        startMin: seg.startMin,
+        endMin: seg.endMin,
+        overlapKey: seg.overlapKey,
+        continuation: seg.continuation,
+      });
+    }
+    for (const slot of timedGroupRootSlots) {
+      const childSlots = childSlotsByParent.get(slot.task_id) ?? [];
+      const bounds = timedSlotLayoutBounds(slot, childSlots);
+      items.push({
+        slot,
+        childSlots,
+        startMin: bounds.startMin,
+        endMin: bounds.endMin,
+        overlapKey: slot.id,
+        continuation: false,
+      });
+    }
+    return items;
+  }, [scheduleDaySegments, timedGroupRootSlots, childSlotsByParent]);
 
   return (
     <>
@@ -4889,14 +5088,7 @@ export function TaskListAndSchedule({
               {isMobile && scheduleTab === 'today' ? (
                 <>
                   <div className="schedule-header-compact-row">
-                    <div className="schedule-header-tabs-row schedule-tabs">
-                      <button type="button" className="schedule-tab active" onClick={() => setScheduleTab('today')}>
-                        Today
-                      </button>
-                      <button type="button" className="schedule-tab" onClick={() => setScheduleTab('calendar')}>
-                        Calendar
-                      </button>
-                    </div>
+                    {scheduleViewTabs}
                     <div className="schedule-header-day-row day-nav">
                       <button type="button" className="day-nav-btn day-nav-btn--icon" onClick={goPrev} title="Previous day" aria-label="Previous day">
                         <ChevronLeft size={16} aria-hidden strokeWidth={2} />
@@ -5040,14 +5232,7 @@ export function TaskListAndSchedule({
                 </>
               ) : isMobile && scheduleTab === 'calendar' ? (
                 <div className="schedule-header-compact-row">
-                  <div className="schedule-header-tabs-row schedule-tabs">
-                    <button type="button" className="schedule-tab" onClick={() => setScheduleTab('today')}>
-                      Today
-                    </button>
-                    <button type="button" className="schedule-tab active" onClick={() => setScheduleTab('calendar')}>
-                      Calendar
-                    </button>
-                  </div>
+                  {scheduleViewTabs}
                   <ScheduleCalendarNav
                     monthLabel={new Date(calendarMonth + 'T00:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
                     onPrevMonth={() => {
@@ -5064,26 +5249,7 @@ export function TaskListAndSchedule({
                 </div>
               ) : (
                 <>
-                  <div className="schedule-header-tabs-row schedule-tabs">
-                    <button type="button" className={'schedule-tab' + (scheduleTab === 'today' ? ' active' : '')} onClick={() => setScheduleTab('today')}>
-                      Today
-                    </button>
-                    {!isMobile && (
-                      <button
-                        type="button"
-                        className={'schedule-tab' + (scheduleTab === 'week' ? ' active' : '')}
-                        onClick={() => {
-                          setWeekAnchorSunday(sundayOfWeekContaining(viewDate));
-                          setScheduleTab('week');
-                        }}
-                      >
-                        Week
-                      </button>
-                    )}
-                    <button type="button" className={'schedule-tab' + (scheduleTab === 'calendar' ? ' active' : '')} onClick={() => setScheduleTab('calendar')}>
-                      Calendar
-                    </button>
-                  </div>
+                  {scheduleViewTabs}
                   {scheduleTab === 'today' && (
                     <div className="schedule-header-day-row day-nav" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
                       <button type="button" className="day-nav-btn day-nav-btn--icon" onClick={goPrev} title="Previous day" aria-label="Previous day">
@@ -5747,6 +5913,9 @@ export function TaskListAndSchedule({
                       {untimedFeedEvents.map((e) => {
                         const isToday = viewDate === today();
                         const canMarkCompleted = isToday && e.id != null;
+                        const feedChipBg = icalFeedBlockBgColor(
+                          e.subscription_id != null ? icalSubById[e.subscription_id]?.schedule_color : null
+                        );
                         return (
                           <div
                             key={e.id ?? e.uid + e.start}
@@ -5754,12 +5923,16 @@ export function TaskListAndSchedule({
                               'schedule-untimed-feed-chip schedule-untimed-feed-chip-with-check' +
                               (e.user_completed ? ' ical-feed-event-completed' : '')
                             }
+                            style={{ backgroundColor: feedChipBg }}
                           >
-                            <span style={e.user_completed ? { color: 'var(--text-muted)', textDecoration: 'line-through' } : undefined}>{e.title || 'Event'}</span>
+                            <span style={e.user_completed ? { color: 'var(--text-muted)', textDecoration: 'line-through' } : undefined}>
+                              {e.title || 'Event'}
+                            </span>
+                            <ScheduleIcalLocationLink location={e.location} />
                             {canMarkCompleted && (
                               <ScheduleSlotCompleteCheckbox
                                 completed={!!e.user_completed}
-                                backgroundColor={SCHEDULE_UNTIMED_CHIP_BG}
+                                backgroundColor={feedChipBg}
                                 onToggle={() =>
                                   api.icalEvents
                                     .setCompleted(e.id!, !e.user_completed)
@@ -5835,7 +6008,12 @@ export function TaskListAndSchedule({
                         // Skip un-timed slots — Glance only shows timed entries.
                         const startMin = toMin(s.start_time);
                         const endMin = toMin(s.end_time);
-                        if (startMin == null || endMin == null || endMin <= startMin) continue;
+                        if (startMin == null || endMin == null) continue;
+                        const durationMin = overnightSlotDurationMinutes(s.start_time, s.end_time);
+                        if (durationMin <= 0) continue;
+                        const overnight = endMin <= startMin;
+                        const displayEnd = overnight ? Math.min(MINUTES_PER_DAY, settings.end_hour * 60) : endMin;
+                        if (displayEnd <= startMin) continue;
                         const task = tasks.find((t) => t.id === s.task_id);
                         const cat = task?.category_id != null
                           ? organizationCategories.find((c) => c.id === task.category_id)
@@ -5843,7 +6021,7 @@ export function TaskListAndSchedule({
                         items.push({
                           key: 'slot-' + s.id,
                           startMin,
-                          durationMin: endMin - startMin,
+                          durationMin: overnight ? displayEnd - startMin : endMin - startMin,
                           title: s.title ?? 'Task',
                           completed: Number(s.completed) === 1,
                           categoryColor: cat?.color ?? null,
@@ -5862,7 +6040,8 @@ export function TaskListAndSchedule({
                           durationMin: local.localEndMinutes - local.localStartMinutes,
                           title: e.title ?? 'Event',
                           completed: !!e.user_completed,
-                          categoryColor: null,
+                          categoryColor:
+                            e.subscription_id != null ? (icalSubById[e.subscription_id]?.schedule_color ?? null) : null,
                           kind: 'feed',
                           feedId: e.id ?? null,
                         });
@@ -6371,8 +6550,6 @@ export function TaskListAndSchedule({
                             settings.end_hour,
                             slotDurationMinutes
                           );
-                          const viewEndMin = settings.end_hour * 60;
-                          if (startMin >= viewEndMin - slotDurationMinutes) return;
                           void createScheduleTaskAt(viewDate, startMin);
                             }
                             : undefined
@@ -6434,22 +6611,30 @@ export function TaskListAndSchedule({
                               <span className="schedule-add-task-ghost-plus">+</span>
                             </div>
                           )}
-                        {timedRootSlots.map((slot) => {
-                          const childSlots = childSlotsByParent.get(slot.task_id) ?? [];
-                          const { startMin, endMin } = timedSlotLayoutBounds(slot, childSlots);
+                        {timedSlotsToRender.map(({ slot, childSlots, startMin, endMin, overlapKey, continuation }) => {
                           const top = ((startMin - viewStartMinutes) / slotDurationMinutes) * ROW_HEIGHT;
                           const slotDurForGroup = Math.max(1, slotDurationMinutes);
                           const groupMemberCount = 1 + childSlots.length;
-                          const heightIntervals = slotRangeIntervalCount(
-                            startMin,
-                            endMin,
-                            slotDurForGroup,
-                            childSlots.length > 0 ? groupMemberCount : 1
-                          );
+                          const heightIntervals =
+                            childSlots.length > 0
+                              ? slotRangeIntervalCount(
+                                  startMin,
+                                  endMin,
+                                  slotDurForGroup,
+                                  groupMemberCount
+                                )
+                              : segmentIntervalCount(startMin, endMin, slotDurForGroup, 1);
                           const height = heightIntervals * ROW_HEIGHT;
-                          const overlap = slotOverlapInfo.get(slot.id) ?? { col: 0, total: 1 };
-                          const widthPctSlot = overlap.total > 0 ? 100 / overlap.total : 100;
-                          const leftPct = overlap.col * widthPctSlot;
+                          const overlap = slotOverlapInfo.get(overlapKey) ?? {
+                            col: 0,
+                            total: 1,
+                            leftPct: 0,
+                            widthPct: 99.5,
+                            zIndex: 1,
+                            stacked: false,
+                          };
+                          const widthPctSlot = overlap.widthPct;
+                          const leftPct = overlap.leftPct;
                           const orderedGroupChildren = childSlots
                             .slice()
                             .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0) || a.id - b.id);
@@ -6482,10 +6667,12 @@ export function TaskListAndSchedule({
                               : scheduleBlockDensityClasses(blockHeightPx, widthPctSlot)) + ' time-block-density-actions-drawer';
                           return (
                             <div
-                              key={slot.id}
+                              key={String(overlapKey)}
                               className={
                                 'time-block' +
+                                (continuation ? ' time-block--overnight-continuation' : '') +
                                 (childSlots.length > 0 ? ' time-block-has-group' : '') +
+                                (overlap.stacked ? ' time-block--stacked-overlap' : '') +
                                 (showBlockCompletedOverlay ? ' completed' : '') +
                                 (slot.is_recurring_occurrence ? ' time-block-recurring-occurrence' : '') +
                                 (dragState?.source === 'schedule' && dragState?.taskIds?.includes(slot.task_id) ? ' time-block-dragging' : '') +
@@ -6502,7 +6689,8 @@ export function TaskListAndSchedule({
                                 top: top + 'px',
                                 height: blockHeightPx + 'px',
                                 left: leftPct + '%',
-                                width: (widthPctSlot > 0 ? widthPctSlot - 0.5 : 99.5) + '%',
+                                width: widthPctSlot + '%',
+                                zIndex: overlap.zIndex,
                                 backgroundColor: slotBgColor,
                                 ['--tb-h' as string]: `${Math.round(blockHeightPx)}px`,
                               } as React.CSSProperties}
@@ -7941,20 +8129,34 @@ export function TaskListAndSchedule({
                             const isToday = viewDate === today();
                             const canMarkCompleted = isToday && e.id != null;
                             const feedKey = 'feed-' + (e.id ?? e.uid + e.start);
-                            const overlap = feedOverlapInfo.get(feedKey) ?? { col: 0, total: 1 };
-                            const widthPct = overlap.total > 0 ? 100 / overlap.total : 100;
-                            const leftPct = overlap.col * widthPct;
+                            const overlap = feedOverlapInfo.get(feedKey) ?? {
+                              col: 0,
+                              total: 1,
+                              leftPct: 0,
+                              widthPct: 99.5,
+                              zIndex: 1,
+                              stacked: false,
+                            };
+                            const widthPct = overlap.widthPct;
+                            const leftPct = overlap.leftPct;
+                            const feedBg = icalFeedBlockBgColor(
+                              e.subscription_id != null ? icalSubById[e.subscription_id]?.schedule_color : null
+                            );
                             return (
                               <div
                                 key={e.id ?? e.uid + e.start}
                                 className={
-                                  'time-block time-block-feed' + (canMarkCompleted ? ' time-block-has-complete-rail' : '')
+                                  'time-block time-block-feed' +
+                                  (overlap.stacked ? ' time-block--stacked-overlap' : '') +
+                                  (canMarkCompleted ? ' time-block-has-complete-rail' : '')
                                 }
                                 style={{
                                   top: top + 'px',
                                   height: Math.max(height, 20) + 'px',
                                   left: leftPct + '%',
-                                  width: (widthPct > 0 ? widthPct - 0.5 : 99.5) + '%',
+                                  width: widthPct + '%',
+                                  zIndex: overlap.zIndex,
+                                  background: feedBg,
                                 }}
                                 data-slot-hours={(() => {
                                   const h = (endMin - startMin) / 60;
@@ -7965,7 +8167,7 @@ export function TaskListAndSchedule({
                                   <div className="time-block-complete-rail">
                                     <ScheduleSlotCompleteCheckbox
                                       completed={!!e.user_completed}
-                                      backgroundColor={ICAL_FEED_BLOCK_BG}
+                                      backgroundColor={feedBg}
                                       onToggle={() =>
                                         api.icalEvents
                                           .setCompleted(e.id!, !e.user_completed)
@@ -7985,6 +8187,7 @@ export function TaskListAndSchedule({
                                     <div className="time-block-title" style={e.user_completed ? { color: 'var(--text-muted)', textDecoration: 'line-through' } : undefined}>
                                       {e.title}
                                     </div>
+                                    <ScheduleIcalLocationLink location={e.location} />
                                   </div>
                                   {e.uid && (
                                     <button
@@ -8067,8 +8270,6 @@ export function TaskListAndSchedule({
                                       settings.end_hour,
                                       slotDurationMinutes
                                     );
-                                    const viewEndMin = settings.end_hour * 60;
-                                    if (startMin >= viewEndMin - slotDurationMinutes) return;
                                     const start_time = minutesToTime(startMin);
                                     const end_time = minutesToTime(startMin + slotDurationMinutes);
                                     api.tasks
@@ -8185,6 +8386,7 @@ export function TaskListAndSchedule({
                                         .then(() => refetchIcalForScheduleView())
                                         .catch((err) => setError(err instanceof Error ? err.message : String(err)))
                                     }
+                                    icalSubById={icalSubById}
                                   />
                                 </div>
                               </div>
@@ -8407,6 +8609,7 @@ export function TaskListAndSchedule({
                                       .then(() => refetchIcalForScheduleView())
                                       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
                                   }
+                                  icalSubById={icalSubById}
                                 />
                               </div>
                             </div>
@@ -8676,6 +8879,9 @@ export function TaskListAndSchedule({
                       patch.auto_priority_enabled = payload.auto_priority_enabled;
                       patch.auto_complete_eod = payload.auto_complete_eod;
                     }
+                    if (payload.changeExcludePlannedHours) {
+                      patch.exclude_from_planned_hours = payload.exclude_from_planned_hours;
+                    }
                     if (payload.changeCategory) {
                       patch.category_id = payload.category_id;
                       patch.subcategory_id = payload.subcategory_id;
@@ -8707,6 +8913,7 @@ export function TaskListAndSchedule({
                       due_date: payload.due_date,
                       auto_priority_enabled: payload.auto_priority_enabled,
                       auto_complete_eod: payload.auto_complete_eod,
+                      exclude_from_planned_hours: payload.exclude_from_planned_hours,
                       list_state: payload.list_state,
                       default_block_id: payload.default_block_id,
                       default_duration_intervals: payload.default_duration_intervals,
@@ -9178,6 +9385,43 @@ export function TaskListAndSchedule({
         />
       )}
 
+      {plannedSummaryScope != null && (
+        <PlannedHoursSummaryModal
+          open
+          onClose={() => setPlannedSummaryScope(null)}
+          scope={plannedSummaryScope}
+          scopeLabel={
+            plannedSummaryScope === 'today'
+              ? viewDate
+              : plannedSummaryScope === 'week'
+                ? `${weekDates[0]} – ${weekDates[weekDates.length - 1]}`
+                : new Date(calendarMonth + 'T00:00:00').toLocaleDateString('en-US', {
+                    month: 'long',
+                    year: 'numeric',
+                  })
+          }
+          fromDate={
+            plannedSummaryScope === 'today'
+              ? viewDate
+              : plannedSummaryScope === 'week'
+                ? weekDates[0]!
+                : plannedSummaryMonthRange.from
+          }
+          toDate={
+            plannedSummaryScope === 'today'
+              ? viewDate
+              : plannedSummaryScope === 'week'
+                ? weekDates[weekDates.length - 1]!
+                : plannedSummaryMonthRange.to
+          }
+          slots={plannedTodaySlots}
+          tasks={tasks}
+          categories={organizationCategories}
+          subcategories={organizationSubcategories}
+          todayScheduleBlocks={plannedSummaryScope === 'today' ? scheduleBlocks : undefined}
+        />
+      )}
+
       <BulkAddModal
         open={bulkAddOpen}
         onClose={() => setBulkAddOpen(false)}
@@ -9388,6 +9632,7 @@ type OrganizationTaskSavePayload = {
   due_date: string | null;
   auto_priority_enabled: boolean;
   auto_complete_eod: boolean;
+  exclude_from_planned_hours: boolean;
   list_state: string;
   default_block_id: number | null;
   default_duration_intervals: number;
@@ -9400,6 +9645,8 @@ type OrganizationBulkSavePayload = {
   changeAuto: boolean;
   auto_priority_enabled: boolean;
   auto_complete_eod: boolean;
+  changeExcludePlannedHours: boolean;
+  exclude_from_planned_hours: boolean;
   changeCategory: boolean;
   category_id: number | null;
   subcategory_id: number | null;
@@ -9457,6 +9704,9 @@ function OrganizationTaskModal({
   );
   const [autoEnabled, setAutoEnabled] = useState(() => Number(task.auto_priority_enabled) === 1);
   const [autoCompleteEod, setAutoCompleteEod] = useState(() => Number(task.auto_complete_eod) === 1);
+  const [excludeFromPlannedHours, setExcludeFromPlannedHours] = useState(
+    () => Number(task.exclude_from_planned_hours) === 1
+  );
   const [listState, setListState] = useState(() => task.list_state ?? defaultBucketId);
   const [defaultBlockId, setDefaultBlockId] = useState<number | null>(task.default_block_id ?? null);
   const [durationMinutes, setDurationMinutes] = useState(() =>
@@ -9467,6 +9717,7 @@ function OrganizationTaskModal({
 
   const [changeDueDate, setChangeDueDate] = useState(false);
   const [changeAuto, setChangeAuto] = useState(false);
+  const [changeExcludePlannedHours, setChangeExcludePlannedHours] = useState(false);
   const [changeCategory, setChangeCategory] = useState(false);
   const [changeBucket, setChangeBucket] = useState(false);
   const [changeDefaultBlock, setChangeDefaultBlock] = useState(false);
@@ -9500,6 +9751,7 @@ function OrganizationTaskModal({
     setDueDate(task.due_date && /^\d{4}-\d{2}-\d{2}$/.test(task.due_date) ? task.due_date : '');
     setAutoEnabled(Number(task.auto_priority_enabled) === 1);
     setAutoCompleteEod(Number(task.auto_complete_eod) === 1);
+    setExcludeFromPlannedHours(Number(task.exclude_from_planned_hours) === 1);
     setListState(task.list_state ?? defaultBucketId);
     setDefaultBlockId(task.default_block_id ?? null);
     setDurationMinutes(
@@ -9507,11 +9759,12 @@ function OrganizationTaskModal({
     );
     setChangeDueDate(false);
     setChangeAuto(false);
+    setChangeExcludePlannedHours(false);
     setChangeCategory(false);
     setChangeBucket(false);
     setChangeDefaultBlock(false);
     setTagBulkIntent({});
-  }, [task.id, task.category_id, task.subcategory_id, task.tag_ids, task.due_date, task.auto_priority_enabled, task.auto_complete_eod, task.list_state, task.default_block_id, task.default_duration_intervals, defaultBucketId, slotDurationMinutes]);
+  }, [task.id, task.category_id, task.subcategory_id, task.tag_ids, task.due_date, task.auto_priority_enabled, task.auto_complete_eod, task.exclude_from_planned_hours, task.list_state, task.default_block_id, task.default_duration_intervals, defaultBucketId, slotDurationMinutes]);
 
   useEffect(() => {
     if (categoryId == null) setSubcategoryId(null);
@@ -9574,7 +9827,7 @@ function OrganizationTaskModal({
     if (isBulk) {
       const tagsAdd = Object.entries(tagBulkIntent).filter(([, v]) => v === 'add').map(([k]) => Number(k));
       const tagsRemove = Object.entries(tagBulkIntent).filter(([, v]) => v === 'remove').map(([k]) => Number(k));
-      const hasChanges = changeDueDate || changeAuto || changeCategory || changeBucket || changeDefaultBlock || tagsAdd.length > 0 || tagsRemove.length > 0;
+      const hasChanges = changeDueDate || changeAuto || changeExcludePlannedHours || changeCategory || changeBucket || changeDefaultBlock || tagsAdd.length > 0 || tagsRemove.length > 0;
       if (!hasChanges) {
         window.alert('No changes selected. Check the fields you want to apply before saving.');
         return;
@@ -9596,6 +9849,8 @@ function OrganizationTaskModal({
         changeAuto,
         auto_priority_enabled: autoEnabled,
         auto_complete_eod: autoCompleteEod,
+        changeExcludePlannedHours,
+        exclude_from_planned_hours: excludeFromPlannedHours,
         changeCategory,
         category_id: categoryId,
         subcategory_id: subcategoryId,
@@ -9626,6 +9881,7 @@ function OrganizationTaskModal({
       due_date: due,
       auto_priority_enabled: autoEnabled,
       auto_complete_eod: autoCompleteEod,
+      exclude_from_planned_hours: excludeFromPlannedHours,
       list_state: listState,
       default_block_id: defaultBlockId,
       default_duration_intervals: durationMinutesToIntervals(durationMinutes, slotDurationMinutes),
@@ -9710,6 +9966,31 @@ function OrganizationTaskModal({
           </label>
           <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: '0.25rem 0 0' }}>
             When the local date rolls over, any uncompleted slots for this task on the day that just ended are marked complete by the client. Useful for tasks you may forget to check off.
+          </p>
+        </div>
+
+        <div className={isBulk ? bulkFieldClass(changeExcludePlannedHours) : undefined}>
+          {isBulk && (
+            <label className="org-task-details-checkbox-row" style={{ marginBottom: '0.35rem' }}>
+              <input
+                type="checkbox"
+                checked={changeExcludePlannedHours}
+                onChange={(e) => setChangeExcludePlannedHours(e.target.checked)}
+              />
+              <span>Change planned hours exclusion</span>
+            </label>
+          )}
+          <label className="org-task-details-checkbox-row">
+            <input
+              type="checkbox"
+              checked={excludeFromPlannedHours}
+              disabled={isBulk && !changeExcludePlannedHours}
+              onChange={(e) => setExcludeFromPlannedHours(e.target.checked)}
+            />
+            <span>Exclude from planned hours summary</span>
+          </label>
+          <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: '0.25rem 0 0' }}>
+            This task stays on the schedule, but its timed hours are omitted from Today, Week, and Calendar planned-hours totals (for example sleep or other time you track but do not want in your day plan).
           </p>
         </div>
 

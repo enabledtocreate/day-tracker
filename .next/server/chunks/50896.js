@@ -1,0 +1,1 @@
+"use strict";exports.id=50896,exports.ids=[50896],exports.modules={50896:(t,e,r)=>{r.r(e),r.d(e,{__iconNode:()=>i,default:()=>o});var d=r(15709);let i=[["path",{d:"M11 6 8 9",key:"7zt14w"}],["path",{d:"m16 7-8 8",key:"tkgtvu"}],["rect",{x:"4",y:"2",width:"16",height:"20",rx:"2",key:"1uxh74"}]],o=(0,d.Z)("mirror-rectangular",i)}};

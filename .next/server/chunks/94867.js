@@ -1,0 +1,1 @@
+"use strict";exports.id=94867,exports.ids=[94867],exports.modules={94867:(e,t,r)=>{r.r(t),r.d(t,{__iconNode:()=>s,default:()=>d});var i=r(15709);let s=[["rect",{x:"3",y:"3",width:"18",height:"18",rx:"2",key:"h1oib"}],["rect",{x:"8",y:"8",width:"8",height:"8",rx:"1",key:"z9xiuo"}]],d=(0,i.Z)("square-square",s)}};

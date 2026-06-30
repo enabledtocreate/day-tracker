@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTheme } from 'next-themes';
 import type { AuthUser } from '@/lib/auth';
+import { getSSOUrl } from '@/lib/auth';
 import { api } from '@/lib/api';
 import { resolveAppUrl } from '@/lib/getBaseUrl';
 import { SubscriptionRow } from '@/components/SubscriptionRow';
@@ -85,6 +86,27 @@ export function UserSettingsView({ user, onClose, onUserUpdated, onOrganizationC
   const [contactLinkPrefs, setContactLinkPrefs] = useState<ContactLinkPrefs>(
     parseContactLinkPrefsJson(null)
   );
+  const [sessionLifetimeDays, setSessionLifetimeDays] = useState(30);
+  const [sessionExpiresAt, setSessionExpiresAt] = useState<string | null>(null);
+  const [ssoLinkMessage, setSsoLinkMessage] = useState('');
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('sso_linked') === '1') {
+      setSsoLinkMessage('Sign-in provider linked successfully.');
+      params.delete('sso_linked');
+      const next = params.toString();
+      const url = window.location.pathname + (next ? `?${next}` : '') + window.location.hash;
+      window.history.replaceState(null, '', url);
+      onUserUpdated();
+    }
+  }, [onUserUpdated]);
+
+  useEffect(() => {
+    setSessionLifetimeDays(user.session_lifetime_days ?? 30);
+    setSessionExpiresAt(user.session_expires_at ?? null);
+  }, [user.session_lifetime_days, user.session_expires_at]);
 
   useEffect(() => {
     api.icalFeed.getUrl().then(({ token }) => {
@@ -207,7 +229,7 @@ export function UserSettingsView({ user, onClose, onUserUpdated, onOrganizationC
                 <input
                   type="radio"
                   name="ui-theme"
-                  checked={(settings.ui_theme ?? 'dark') === 'dark'}
+                  checked={(settings.ui_theme ?? 'light') === 'dark'}
                   onChange={() => {
                     api.settings
                       .update({ ui_theme: 'dark' })
@@ -224,7 +246,7 @@ export function UserSettingsView({ user, onClose, onUserUpdated, onOrganizationC
                 <input
                   type="radio"
                   name="ui-theme"
-                  checked={(settings.ui_theme ?? 'dark') === 'light'}
+                  checked={(settings.ui_theme ?? 'light') === 'light'}
                   onChange={() => {
                     api.settings
                       .update({ ui_theme: 'light' })
@@ -241,13 +263,60 @@ export function UserSettingsView({ user, onClose, onUserUpdated, onOrganizationC
           ) : (
             <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Loading appearance…</p>
           )}
-          {user.sso.length > 0 && (
+          {user.username !== 'demo' && (
             <>
-              <h4 style={{ marginTop: '1rem' }}>Linked accounts</h4>
+              <h4 style={{ marginTop: '1rem' }}>Session</h4>
+              <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginTop: 0 }}>
+                Choose how long you stay signed in on this device. When the session ends, you are signed out automatically.
+              </p>
+              <label style={{ display: 'block', maxWidth: '20rem', marginBottom: '0.35rem' }}>
+                Stay signed in for
+                <select
+                  value={sessionLifetimeDays}
+                  onChange={(e) => {
+                    const days = Number(e.target.value);
+                    setSessionLifetimeDays(days);
+                    api.user
+                      .updateSessionLifetime(days)
+                      .then((res) => {
+                        setSessionExpiresAt(res.session_expires_at);
+                        onUserUpdated();
+                      })
+                      .catch(alert);
+                  }}
+                  style={{ display: 'block', width: '100%', marginTop: '0.25rem', padding: '0.35rem' }}
+                >
+                  <option value={1}>1 day</option>
+                  <option value={7}>7 days</option>
+                  <option value={14}>14 days</option>
+                  <option value={30}>30 days</option>
+                  <option value={90}>90 days</option>
+                  <option value={365}>1 year</option>
+                  <option value={0}>Indefinitely (until I log out)</option>
+                </select>
+              </label>
+              {sessionLifetimeDays !== 0 && sessionExpiresAt && (
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: 0 }}>
+                  Current session expires {new Date(sessionExpiresAt).toLocaleString()}.
+                </p>
+              )}
+            </>
+          )}
+          {ssoLinkMessage && (
+            <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginTop: '1rem' }}>{ssoLinkMessage}</p>
+          )}
+          {(user.sso.length > 0 || user.username !== 'demo') && (
+            <>
+              <h4 style={{ marginTop: '1rem' }}>Sign-in providers</h4>
+              {user.sso.length === 0 && (
+                <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginTop: 0 }}>
+                  Link Google or Outlook so you can sign in without a password.
+                </p>
+              )}
               {user.sso.map((s) => (
                 <div key={s.id ?? s.provider} style={{ marginBottom: '0.5rem' }}>
                   {s.provider}: {s.email}
-                  {s.id != null && (
+                  {s.id != null && user.username !== 'demo' && (
                     <button type="button" style={{ marginLeft: '0.5rem' }} onClick={() => {
                       const newPass = prompt('Set a new password (min 6 characters).');
                       if (newPass && newPass.length >= 6) {
@@ -259,6 +328,16 @@ export function UserSettingsView({ user, onClose, onUserUpdated, onOrganizationC
                   )}
                 </div>
               ))}
+              {user.username !== 'demo' && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.5rem' }}>
+                  {!user.sso.some((s) => s.provider === 'google') && (
+                    <a href={getSSOUrl('google', { link: true })} className="login-sso-btn">Connect Google</a>
+                  )}
+                  {!user.sso.some((s) => s.provider === 'outlook') && (
+                    <a href={getSSOUrl('outlook', { link: true })} className="login-sso-btn">Connect Outlook</a>
+                  )}
+                </div>
+              )}
             </>
           )}
           <h4 style={{ marginTop: '1rem' }}>Change password</h4>

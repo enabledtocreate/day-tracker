@@ -1,0 +1,1 @@
+"use strict";exports.id=50933,exports.ids=[50933],exports.modules={50933:(e,d,r)=>{r.r(d),r.d(d,{__iconNode:()=>o,default:()=>s});var t=r(15709);let o=[["circle",{cx:"12.1",cy:"12.1",r:"1",key:"18d7e5"}]],s=(0,t.Z)("dot",o)}};

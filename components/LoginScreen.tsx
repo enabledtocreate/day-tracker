@@ -1,17 +1,45 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { login, register, getSSOUrl } from '@/lib/auth';
 import { DT } from '@/lib/uiIdentifiers';
 
-type Props = { onSuccess: () => void };
+const LOGIN_ERROR_MESSAGES: Record<string, string> = {
+  invalid_callback: 'Sign-in was interrupted. Please try again.',
+  sso_failed: 'Sign-in with your provider failed. Please try again.',
+  user_not_found: 'Account not found.',
+  sso_link_session: 'Link your account while signed in. Open User settings and try Connect again.',
+  sso_already_linked: 'That sign-in is already linked to another account.',
+  sso_other_sso_only:
+    'That sign-in is on an account with no password. Sign in with that provider first and set a password, then connect it from the account you want to use.',
+  sso_provider_taken: 'You already have that provider linked to this account.',
+};
 
-export function LoginScreen({ onSuccess }: Props) {
+type Props = { onSuccess: () => void; initialMessage?: string };
+
+export function LoginScreen({ onSuccess, initialMessage = '' }: Props) {
   const [isRegister, setIsRegister] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [message, setMessage] = useState('');
+  const [message, setMessage] = useState(initialMessage);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setMessage(initialMessage);
+  }, [initialMessage]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const loginError = params.get('login_error');
+    if (loginError) {
+      setMessage(LOGIN_ERROR_MESSAGES[loginError] ?? 'Sign-in failed. Please try again.');
+      params.delete('login_error');
+      const next = params.toString();
+      const url = window.location.pathname + (next ? `?${next}` : '') + window.location.hash;
+      window.history.replaceState(null, '', url);
+    }
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

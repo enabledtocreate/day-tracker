@@ -1,0 +1,1 @@
+"use strict";exports.id=55627,exports.ids=[55627],exports.modules={55627:(t,e,o)=>{o.r(e),o.d(e,{__iconNode:()=>s,default:()=>p});var d=o(15709);let s=[["path",{d:"m8 3 4 8 5-5 5 15H2L8 3z",key:"otkl63"}],["path",{d:"M4.14 15.08c2.62-1.57 5.24-1.43 7.86.42 2.74 1.94 5.49 2 8.23.19",key:"1pvmmp"}]],p=(0,d.Z)("mountain-snow",s)}};

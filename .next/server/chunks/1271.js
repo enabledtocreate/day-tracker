@@ -1,0 +1,1 @@
+"use strict";exports.id=1271,exports.ids=[1271],exports.modules={1271:(e,t,d)=>{d.r(t),d.d(t,{__iconNode:()=>h,default:()=>o});var p=d(15709);let h=[["path",{d:"M3 5h8",key:"18g2rq"}],["path",{d:"M3 12h8",key:"1xfjp6"}],["path",{d:"M3 19h8",key:"fpbke4"}],["path",{d:"m15 8 3-3 3 3",key:"bc4io6"}],["path",{d:"m15 16 3 3 3-3",key:"9wmg1l"}]],o=(0,p.Z)("list-chevrons-up-down",h)}};

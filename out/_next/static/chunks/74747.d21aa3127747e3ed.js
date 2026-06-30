@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[74747],{74747:function(e,t,n){n.r(t),n.d(t,{__iconNode:function(){return h},default:function(){return u}});var r=n(47411);let h=[["rect",{width:"14",height:"20",x:"5",y:"2",rx:"2",ry:"2",key:"1yt0o3"}],["path",{d:"M12.667 8 10 12h4l-2.667 4",key:"h9lk2d"}]],u=(0,r.Z)("smartphone-charging",h)}}]);

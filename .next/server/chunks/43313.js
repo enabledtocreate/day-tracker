@@ -1,0 +1,1 @@
+"use strict";exports.id=43313,exports.ids=[43313],exports.modules={43313:(s,e,o)=>{o.r(e),o.d(e,{__iconNode:()=>d,default:()=>r});var t=o(15709);let d=[["path",{d:"M2 16s9-15 20-4C11 23 2 8 2 8",key:"h4oh4o"}]],r=(0,t.Z)("fish-symbol",d)}};

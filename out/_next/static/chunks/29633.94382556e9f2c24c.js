@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[29633],{29633:function(e,n,t){t.r(n),t.d(n,{__iconNode:function(){return a},default:function(){return r}});var u=t(47411);let a=[["path",{d:"M6 11h8a4 4 0 0 0 0-8H9v18",key:"18ai8t"}],["path",{d:"M6 15h8",key:"1y8f6l"}]],r=(0,u.Z)("russian-ruble",a)}}]);

@@ -1,0 +1,1 @@
+"use strict";exports.id=12559,exports.ids=[12559],exports.modules={12559:(e,d,t)=>{t.r(d),t.d(d,{__iconNode:()=>o,default:()=>p});var s=t(15709);let o=[["path",{d:"M13 4v16",key:"8vvj80"}],["path",{d:"M17 4v16",key:"7dpous"}],["path",{d:"M19 4H9.5a4.5 4.5 0 0 0 0 9H13",key:"sh4n9v"}]],p=(0,s.Z)("pilcrow",o)}};

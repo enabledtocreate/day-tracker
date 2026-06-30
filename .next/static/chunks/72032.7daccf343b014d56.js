@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[72032],{72032:function(a,e,n){n.r(e),n.d(e,{__iconNode:function(){return u},default:function(){return c}});var t=n(47411);let u=[["path",{d:"M2 13a2 2 0 0 0 2-2V7a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0V4a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0v-4a2 2 0 0 1 2-2",key:"57tc96"}]],c=(0,t.Z)("audio-waveform",u)}}]);

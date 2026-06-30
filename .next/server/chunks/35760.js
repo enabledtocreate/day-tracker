@@ -1,0 +1,1 @@
+"use strict";exports.id=35760,exports.ids=[35760],exports.modules={35760:(e,t,p)=>{p.r(t),p.d(t,{__iconNode:()=>d,default:()=>i});var a=p(15709);let d=[["path",{d:"M20 11H4",key:"6ut86h"}],["path",{d:"M20 7H4",key:"zbl0bi"}],["path",{d:"M7 21V4a1 1 0 0 1 1-1h4a1 1 0 0 1 0 12H7",key:"1ana5r"}]],i=(0,a.Z)("philippine-peso",d)}};

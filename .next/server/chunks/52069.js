@@ -1,0 +1,1 @@
+"use strict";exports.id=52069,exports.ids=[52069],exports.modules={52069:(e,t,r)=>{r.r(t),r.d(t,{__iconNode:()=>i,default:()=>o});var d=r(15709);let i=[["rect",{width:"16",height:"20",x:"4",y:"2",rx:"2",ry:"2",key:"76otgf"}],["line",{x1:"12",x2:"12.01",y1:"18",y2:"18",key:"1dp563"}]],o=(0,d.Z)("tablet",i)}};

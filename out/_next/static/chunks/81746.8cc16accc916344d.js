@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[81746],{81746:function(c,e,n){n.r(e),n.d(e,{__iconNode:function(){return u},default:function(){return r}});var t=n(47411);let u=[["path",{d:"M10 16c0-4-3-4.5-3-8a5 5 0 0 1 10 0c0 3.466-3 6.196-3 10a3 3 0 0 0 6 0",key:"1qj6nb"}],["circle",{cx:"7",cy:"16",r:"3",key:"yyv3zl"}]],r=(0,t.Z)("zodiac-leo",u)}}]);

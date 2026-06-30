@@ -1,0 +1,1 @@
+"use strict";exports.id=7809,exports.ids=[7809],exports.modules={7809:(e,t,d)=>{d.r(t),d.d(t,{__iconNode:()=>o,default:()=>r});var i=d(15709);let o=[["path",{d:"M12 20h.01",key:"zekei9"}]],r=(0,i.Z)("wifi-zero",o)}};

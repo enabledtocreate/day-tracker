@@ -1,4 +1,9 @@
 import type { ScheduledSlot } from '@/lib/api';
+import {
+  latestStartMinForDuration,
+  MINUTES_PER_DAY,
+  storedEndTimeFromDuration,
+} from '@/lib/overnightSlotTimes';
 
 export function timeToMinutes(time: string | null | undefined): number {
   if (time == null || time === '') return 0;
@@ -126,7 +131,9 @@ export function slotRangeIntervalCount(
   minIntervals = 1
 ): number {
   const step = Math.max(1, slotDurationMinutes);
-  return Math.max(minIntervals, Math.round((endMin - startMin) / step));
+  let span = endMin - startMin;
+  if (span <= 0) span += MINUTES_PER_DAY;
+  return Math.max(minIntervals, Math.round(span / step));
 }
 
 /**
@@ -183,13 +190,24 @@ export function calcMovedSlotTimes(params: {
   originalDurationMin: number;
   startHour: number;
   endHour: number;
-}): { newStartMin: number; newEndMin: number; preservedDurationMin: number } {
+  allowOvernight?: boolean;
+}): { newStartMin: number; newEndMin: number; preservedDurationMin: number; end_time: string } {
   const preservedDurationMin = Math.max(0, Math.max(params.originalDurationMin, params.slotDurationMinutes));
-  const latestStartMin = params.viewEndMin - preservedDurationMin;
+  const allowOvernight = params.allowOvernight !== false;
+  const latestStartMin = latestStartMinForDuration(
+    preservedDurationMin,
+    params.startHour,
+    params.endHour,
+    params.slotDurationMinutes,
+    allowOvernight
+  );
   const candidateStartMin = Math.min(params.scheduleDropStartMin, latestStartMin);
   const snappedStartMin = snapToSlot(candidateStartMin, params.startHour, params.endHour, params.slotDurationMinutes);
   const newStartMin = Math.min(snappedStartMin, latestStartMin);
-  return { newStartMin, newEndMin: newStartMin + preservedDurationMin, preservedDurationMin };
+  const end_time = storedEndTimeFromDuration(newStartMin, preservedDurationMin);
+  const overnight = newStartMin + preservedDurationMin > MINUTES_PER_DAY;
+  const newEndMin = overnight ? MINUTES_PER_DAY : newStartMin + preservedDurationMin;
+  return { newStartMin, newEndMin, preservedDurationMin, end_time };
 }
 
 export function buildGroupSegmentHeightsPx(params: {

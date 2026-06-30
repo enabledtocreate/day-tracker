@@ -41,6 +41,14 @@ if (array_key_exists('user', $payload) && $payload['user'] === null) {
     $_SESSION = [];
 } elseif (is_array($payload['user'] ?? null)) {
     setTestSessionUser($payload['user']);
+    if (array_key_exists('session_expires_at', $payload)) {
+        $_SESSION['daytracker_expiry_init'] = true;
+        if ($payload['session_expires_at'] === null) {
+            unset($_SESSION['daytracker_expires_at']);
+        } else {
+            $_SESSION['daytracker_expires_at'] = (int) $payload['session_expires_at'];
+        }
+    }
 } else {
     fwrite(STDERR, "missing user (or null for no session)\n");
     exit(2);

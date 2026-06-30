@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[17494],{17494:function(n,e,u){u.r(e),u.d(e,{__iconNode:function(){return r},default:function(){return a}});var t=u(47411);let r=[["path",{d:"M6 4v6a6 6 0 0 0 12 0V4",key:"9kb039"}],["line",{x1:"4",x2:"20",y1:"20",y2:"20",key:"nun2al"}]],a=(0,t.Z)("underline",r)}}]);

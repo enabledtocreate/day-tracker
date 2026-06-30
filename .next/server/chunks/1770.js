@@ -1,0 +1,1 @@
+"use strict";exports.id=1770,exports.ids=[1770],exports.modules={1770:(e,t,s)=>{s.r(t),s.d(t,{__iconNode:()=>r,default:()=>a});var d=s(15709);let r=[["path",{d:"M6 11h8a4 4 0 0 0 0-8H9v18",key:"18ai8t"}],["path",{d:"M6 15h8",key:"1y8f6l"}]],a=(0,d.Z)("russian-ruble",r)}};

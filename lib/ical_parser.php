@@ -119,7 +119,7 @@ function parseExdates(array $lines): array {
  * @return array<array{uid: string, title: string, start: string, end: string, allDay: bool}>
  */
 function parseOneVevent(array $lines, string $fromDate, string $toDate): array {
-    $uid = $summary = $dtStart = $dtEnd = $rrule = null;
+    $uid = $summary = $dtStart = $dtEnd = $rrule = $location = null;
     $allDay = false;
 
     foreach ($lines as $line) {
@@ -127,6 +127,8 @@ function parseOneVevent(array $lines, string $fromDate, string $toDate): array {
             $uid = unescapeIcalText(trim(substr($line, $idx + 1)));
         } elseif (stripos($line, 'SUMMARY') === 0 && ($idx = strrpos($line, ':')) !== false) {
             $summary = unescapeIcalText(trim(substr($line, $idx + 1)));
+        } elseif (stripos($line, 'LOCATION') === 0 && ($idx = strrpos($line, ':')) !== false) {
+            $location = unescapeIcalText(trim(substr($line, $idx + 1)));
         } elseif (stripos($line, 'DTSTART') === 0) {
             $pair = parseIcalDateTimeLine($line, 'DTSTART');
             $dtStart = $pair['value'];
@@ -153,7 +155,7 @@ function parseOneVevent(array $lines, string $fromDate, string $toDate): array {
     $events = [];
     if ($rrule !== null) {
         // Recurring events: delegate to RRULE expansion with proper range handling.
-        $events = expandRrule($startIso, $endIso ?? $startIso, $allDay, $rrule, $fromDate, $toDate, $uid, $title, $exdates);
+        $events = expandRrule($startIso, $endIso ?? $startIso, $allDay, $rrule, $fromDate, $toDate, $uid, $title, $exdates, $location);
     } else {
         // Non-recurring events: include if they overlap [fromDate, toDate] (inclusive).
         $startDate = substr($startIso, 0, 10);
@@ -161,16 +163,24 @@ function parseOneVevent(array $lines, string $fromDate, string $toDate): array {
         if ($endDate < $fromDate || $startDate > $toDate) {
             return [];
         }
-        $events[] = [
-            'uid' => $uid,
-            'title' => $title,
-            'start' => $startIso,
-            'end' => $endIso ?? $startIso,
-            'allDay' => $allDay,
-            'event_type' => 'event',
-        ];
+        $events[] = icalParsedEventRow($uid, $title, $startIso, $endIso ?? $startIso, $allDay, 'event', $location);
     }
     return $events;
+}
+
+function icalParsedEventRow(string $uid, string $title, string $start, string $end, bool $allDay, string $eventType, ?string $location = null): array {
+    $row = [
+        'uid' => $uid,
+        'title' => $title,
+        'start' => $start,
+        'end' => $end,
+        'allDay' => $allDay,
+        'event_type' => $eventType,
+    ];
+    if ($location !== null && $location !== '') {
+        $row['location'] = $location;
+    }
+    return $row;
 }
 
 /**
@@ -178,13 +188,15 @@ function parseOneVevent(array $lines, string $fromDate, string $toDate): array {
  * @return array<array{uid: string, title: string, start: string, end: string, allDay: bool, event_type: string}>
  */
 function parseOneVtodo(array $lines, string $fromDate, string $toDate): array {
-    $uid = $summary = $dtStart = $due = $dtEnd = null;
+    $uid = $summary = $dtStart = $due = $dtEnd = $location = null;
     $allDay = false;
     foreach ($lines as $line) {
         if (stripos($line, 'UID') === 0 && ($idx = strrpos($line, ':')) !== false) {
             $uid = unescapeIcalText(trim(substr($line, $idx + 1)));
         } elseif (stripos($line, 'SUMMARY') === 0 && ($idx = strrpos($line, ':')) !== false) {
             $summary = unescapeIcalText(trim(substr($line, $idx + 1)));
+        } elseif (stripos($line, 'LOCATION') === 0 && ($idx = strrpos($line, ':')) !== false) {
+            $location = unescapeIcalText(trim(substr($line, $idx + 1)));
         } elseif (stripos($line, 'DTSTART') === 0) {
             $pair = parseIcalDateTimeLine($line, 'DTSTART');
             $dtStart = $pair['value'];
@@ -207,34 +219,191 @@ function parseOneVtodo(array $lines, string $fromDate, string $toDate): array {
     $endDate = substr($endIso, 0, 10);
     if ($endDate < $fromDate || $startDate > $toDate) return [];
     $title = $summary !== null && $summary !== '' ? $summary : 'To-do';
-    return [[
-        'uid' => $uid,
-        'title' => $title,
-        'start' => $startIso,
-        'end' => $endIso,
-        'allDay' => $allDay,
-        'event_type' => 'todo',
-    ]];
+    return [icalParsedEventRow($uid, $title, $startIso, $endIso, $allDay, 'todo', $location)];
 }
 
 /** Map BYDAY abbreviation to PHP date('w') Sunday=0. Handles "MO", "2MO", "-1FR" etc. */
 function icalBydayToDow(string $byday): ?int {
-    $map = ['SU' => 0, 'MO' => 1, 'TU' => 2, 'WE' => 3, 'TH' => 4, 'FR' => 5, 'SA' => 6];
-    $s = strtoupper(trim($byday));
-    $key = strlen($s) >= 2 ? substr($s, -2) : $s;
-    return isset($map[$key]) ? $map[$key] : null;
+    $rule = icalParseBydayRule($byday);
+    return $rule !== null ? $rule['dow'] : null;
 }
 
 /**
- * Simple RRULE expansion. Supports FREQ=DAILY, WEEKLY (with BYDAY), MONTHLY (with BYMONTHDAY), YEARLY. Others: show first occurrence only if in range.
+ * Parse RFC 5545 BYDAY token: TU, 1TU (first Tuesday), -1FR (last Friday).
+ *
+ * @return array{dow: int, ordinal: int|null}|null  ordinal 1–5, -1 for last, null = every matching weekday in month
+ */
+function icalParseBydayRule(string $token): ?array {
+    $s = strtoupper(trim($token));
+    if (!preg_match('/^(-?\d+)?(SU|MO|TU|WE|TH|FR|SA)$/', $s, $m)) {
+        return null;
+    }
+    $map = ['SU' => 0, 'MO' => 1, 'TU' => 2, 'WE' => 3, 'TH' => 4, 'FR' => 5, 'SA' => 6];
+    $dow = $map[$m[2]];
+    $ordStr = $m[1] ?? '';
+    $ordinal = $ordStr === '' ? null : (int) $ordStr;
+    return ['dow' => $dow, 'ordinal' => $ordinal];
+}
+
+/**
+ * Day-of-month for one BYDAY rule in a calendar month, or null if it does not occur.
+ */
+function icalMonthBydayDate(int $year, int $month, int $dow, ?int $ordinal): ?int {
+    $lastDom = (int) date('t', mktime(12, 0, 0, $month, 1, $year));
+    if ($ordinal === null) {
+        return null;
+    }
+    if ($ordinal === -1) {
+        for ($dom = $lastDom; $dom >= 1; $dom--) {
+            if ((int) date('w', mktime(12, 0, 0, $month, $dom, $year)) === $dow) {
+                return $dom;
+            }
+        }
+        return null;
+    }
+    if ($ordinal >= 1) {
+        $seen = 0;
+        for ($dom = 1; $dom <= $lastDom; $dom++) {
+            if ((int) date('w', mktime(12, 0, 0, $month, $dom, $year)) === $dow) {
+                $seen++;
+                if ($seen === $ordinal) {
+                    return $dom;
+                }
+            }
+        }
+        return null;
+    }
+    return null;
+}
+
+/** All days in a month matching a weekday (MONTHLY BYDAY without ordinal prefix). */
+function icalMonthAllBydayDates(int $year, int $month, int $dow): array {
+    $out = [];
+    $lastDom = (int) date('t', mktime(12, 0, 0, $month, 1, $year));
+    for ($dom = 1; $dom <= $lastDom; $dom++) {
+        if ((int) date('w', mktime(12, 0, 0, $month, $dom, $year)) === $dow) {
+            $out[] = $dom;
+        }
+    }
+    return $out;
+}
+
+/**
+ * Expand MONTHLY RRULE with BYDAY (e.g. FREQ=MONTHLY;BYDAY=1TU).
+ *
+ * @param array<int, array{dow: int, ordinal: int|null}> $bydayRules
+ * @param array<string> $exdates
+ * @return array<int, array{uid: string, title: string, start: string, end: string, allDay: bool, event_type: string}>
+ */
+function icalExpandMonthlyByday(
+    string $startIso,
+    string $endIso,
+    bool $allDay,
+    int $interval,
+    ?int $count,
+    ?string $until,
+    array $bydayRules,
+    string $fromDate,
+    string $toDate,
+    string $uid,
+    string $title,
+    array $exdates,
+    ?string $location
+): array {
+    $startTs = strtotime($startIso);
+    $endTs = strtotime($endIso);
+    $duration = $endTs - $startTs;
+    $fromTs = strtotime($fromDate . ' 00:00:00');
+    $toTs = strtotime($toDate . ' 23:59:59');
+    $exdatesSet = array_flip($exdates);
+    $hasTime = (strpos($startIso, 'T') !== false);
+    $startTimeSuffix = $hasTime ? substr($startIso, 10) : '';
+    $endTimeSuffix = (strpos($endIso, 'T') !== false) ? substr($endIso, 10) : '';
+
+    $untilTs = null;
+    if ($until !== null) {
+        $untilTs = (strlen($until) <= 8)
+            ? strtotime($until . ' 23:59:59')
+            : strtotime(str_replace('Z', ' UTC', $until));
+    }
+
+    $events = [];
+    $startYear = (int) date('Y', $startTs);
+    $startMonth = (int) date('n', $startTs);
+    $monthCursor = mktime(12, 0, 0, $startMonth, 1, $startYear);
+    $monthsFromStart = 0;
+    $maxMonths = 1500;
+
+    while ($monthsFromStart < $maxMonths) {
+        $year = (int) date('Y', $monthCursor);
+        $month = (int) date('n', $monthCursor);
+        if (mktime(12, 0, 0, $month, 1, $year) > $toTs + 86400 * 31) {
+            break;
+        }
+
+        if ($monthsFromStart % $interval === 0) {
+            $monthDays = [];
+            foreach ($bydayRules as $rule) {
+                if ($rule['ordinal'] !== null) {
+                    $dom = icalMonthBydayDate($year, $month, $rule['dow'], $rule['ordinal']);
+                    if ($dom !== null) {
+                        $monthDays[$dom] = true;
+                    }
+                } else {
+                    foreach (icalMonthAllBydayDates($year, $month, $rule['dow']) as $dom) {
+                        $monthDays[$dom] = true;
+                    }
+                }
+            }
+            ksort($monthDays, SORT_NUMERIC);
+            foreach (array_keys($monthDays) as $dom) {
+                $occStart = sprintf('%04d-%02d-%02d', $year, $month, $dom) . $startTimeSuffix;
+                $occTs = strtotime($occStart);
+                if ($occTs === false || $occTs < $startTs) {
+                    continue;
+                }
+                if ($untilTs !== null && $occTs > $untilTs) {
+                    return $events;
+                }
+                $occStartDate = substr($occStart, 0, 10);
+                if (isset($exdatesSet[$occStartDate])) {
+                    continue;
+                }
+                if ($occTs + $duration < $fromTs) {
+                    continue;
+                }
+                if ($occTs > $toTs + 86400) {
+                    continue;
+                }
+                $occEnd = date('Y-m-d', $occTs + $duration) . $endTimeSuffix;
+                if (!$hasTime) {
+                    $occEnd = date('Y-m-d', $occTs + $duration);
+                }
+                $events[] = icalParsedEventRow($uid, $title, $occStart, $occEnd, $allDay, 'event', $location);
+                if ($count !== null && count($events) >= $count) {
+                    return $events;
+                }
+            }
+        }
+
+        $monthCursor = strtotime('+1 month', $monthCursor);
+        $monthsFromStart++;
+    }
+
+    return $events;
+}
+
+/**
+ * RRULE expansion: DAILY, WEEKLY (BYDAY), MONTHLY (BYMONTHDAY or BYDAY e.g. 1TU), YEARLY.
  * @param array<string> $exdates Excluded dates (Y-m-d) from EXDATE; these occurrences are skipped.
  */
-function expandRrule(string $startIso, string $endIso, bool $allDay, string $rrule, string $fromDate, string $toDate, string $uid, string $title, array $exdates = []): array {
+function expandRrule(string $startIso, string $endIso, bool $allDay, string $rrule, string $fromDate, string $toDate, string $uid, string $title, array $exdates = [], ?string $location = null): array {
     $freq = null;
     $count = null;
     $until = null;
     $interval = 1;
     $byday = [];
+    $bydayRules = [];
     $bymonthday = [];
     foreach (explode(';', $rrule) as $part) {
         $kv = explode('=', $part, 2);
@@ -247,8 +416,13 @@ function expandRrule(string $startIso, string $endIso, bool $allDay, string $rru
         elseif ($k === 'INTERVAL') $interval = max(1, (int) $v);
         elseif ($k === 'BYDAY') {
             foreach (explode(',', $v) as $d) {
-                $dow = icalBydayToDow($d);
-                if ($dow !== null) $byday[] = $dow;
+                $rule = icalParseBydayRule($d);
+                if ($rule !== null) {
+                    $bydayRules[] = $rule;
+                    if (!in_array($rule['dow'], $byday, true)) {
+                        $byday[] = $rule['dow'];
+                    }
+                }
             }
             $byday = array_values(array_unique($byday));
         }
@@ -271,16 +445,27 @@ function expandRrule(string $startIso, string $endIso, bool $allDay, string $rru
     if ($freq !== 'DAILY' && $freq !== 'WEEKLY' && $freq !== 'MONTHLY' && $freq !== 'YEARLY') {
         $startDate = substr($startIso, 0, 10);
         if (($startTs <= $toTs && $endTs >= $fromTs) && !isset($exdatesSet[$startDate])) {
-            return [[
-                'uid' => $uid,
-                'title' => $title,
-                'start' => $startIso,
-                'end' => $endIso,
-                'allDay' => $allDay,
-                'event_type' => 'event',
-            ]];
+            return [icalParsedEventRow($uid, $title, $startIso, $endIso, $allDay, 'event', $location)];
         }
         return [];
+    }
+
+    if ($freq === 'MONTHLY' && !empty($bydayRules) && empty($bymonthday)) {
+        return icalExpandMonthlyByday(
+            $startIso,
+            $endIso,
+            $allDay,
+            $interval,
+            $count,
+            $until,
+            $bydayRules,
+            $fromDate,
+            $toDate,
+            $uid,
+            $title,
+            $exdates,
+            $location
+        );
     }
 
     $events = [];
@@ -322,14 +507,7 @@ function expandRrule(string $startIso, string $endIso, bool $allDay, string $rru
         if ($match && $intervalMatch && !$excluded && $current + $duration >= $fromTs) {
             $occEnd = date('Y-m-d', $current + $duration) . $endTimeSuffix;
             if (!$hasTime) $occEnd = date('Y-m-d', $current + $duration);
-            $events[] = [
-                'uid' => $uid,
-                'title' => $title,
-                'start' => $occStart,
-                'end' => $occEnd,
-                'allDay' => $allDay,
-                'event_type' => 'event',
-            ];
+            $events[] = icalParsedEventRow($uid, $title, $occStart, $occEnd, $allDay, 'event', $location);
         }
         if ($count !== null && count($events) >= $count) break;
         if ($until !== null) {

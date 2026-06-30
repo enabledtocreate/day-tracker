@@ -1,0 +1,1 @@
+"use strict";exports.id=19058,exports.ids=[19058],exports.modules={19058:(t,e,a)=>{a.r(e),a.d(e,{__iconNode:()=>h,default:()=>r});var d=a(15709);let h=[["rect",{width:"18",height:"18",x:"3",y:"3",rx:"2",key:"afitv7"}],["path",{d:"M9 8h7",key:"kbo1nt"}],["path",{d:"M8 12h6",key:"ikassy"}],["path",{d:"M11 16h5",key:"oq65wt"}]],r=(0,d.Z)("square-chart-gantt",h)}};

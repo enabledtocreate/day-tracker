@@ -74,16 +74,16 @@ function createTestEnvironment(): array {
  * @param mixed $body Request body for POST/PATCH/PUT (array is JSON-encoded).
  * @return array{body: mixed, code: int}
  */
-function runApiRequestHarness(string $dataDir, ?array $sessionUser, string $scriptName, string $method, array $query, $body): array {
+function runApiRequestHarness(string $dataDir, ?array $sessionUser, string $scriptName, string $method, array $query, $body, array $extra = []): array {
     $root = dirname(__DIR__);
-    $payload = [
+    $payload = array_merge([
         'dataDir' => $dataDir,
         'user' => $sessionUser,
         'script' => $scriptName,
         'method' => $method,
         'query' => $query,
         'body' => $body,
-    ];
+    ], $extra);
     $tmp = tempnam(sys_get_temp_dir(), 'dt_req_');
     if ($tmp === false) {
         throw new RuntimeException('tempnam failed');

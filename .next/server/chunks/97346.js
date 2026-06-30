@@ -1,0 +1,1 @@
+"use strict";exports.id=97346,exports.ids=[97346],exports.modules={97346:(e,c,r)=>{r.r(c),r.d(c,{__iconNode:()=>t,default:()=>l});var i=r(15709);let t=[["circle",{cx:"6",cy:"12",r:"4",key:"1ehtga"}],["circle",{cx:"18",cy:"12",r:"4",key:"4vafl8"}],["line",{x1:"6",x2:"18",y1:"16",y2:"16",key:"pmt8us"}]],l=(0,i.Z)("voicemail",t)}};

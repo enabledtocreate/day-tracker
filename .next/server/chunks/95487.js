@@ -1,0 +1,1 @@
+"use strict";exports.id=95487,exports.ids=[95487],exports.modules={95487:(e,r,s)=>{s.r(r),s.d(r,{__iconNode:()=>t,default:()=>i});var d=s(15709);let t=[["ellipse",{cx:"12",cy:"5",rx:"9",ry:"3",key:"msslwz"}],["path",{d:"M3 5v14a9 3 0 0 0 18 0V5",key:"aqi0yr"}]],i=(0,d.Z)("cylinder",t)}};

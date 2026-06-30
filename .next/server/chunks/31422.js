@@ -1,0 +1,1 @@
+"use strict";exports.id=31422,exports.ids=[31422],exports.modules={31422:(t,e,d)=>{d.r(e),d.d(e,{__iconNode:()=>a,default:()=>i});var s=d(15709);let a=[["path",{d:"M15 3h6v6",key:"1q9fwt"}],["path",{d:"M21 3 3 21",key:"1011np"}],["path",{d:"m9 9 6 6",key:"z0biqf"}]],i=(0,s.Z)("zodiac-sagittarius",a)}};

@@ -1,0 +1,1 @@
+"use strict";exports.id=62845,exports.ids=[62845],exports.modules={62845:(t,e,s)=>{s.r(e),s.d(e,{__iconNode:()=>r,default:()=>a});var d=s(15709);let r=[["path",{d:"M15 4 5 9",key:"14bkc9"}],["path",{d:"m15 8.5-10 5",key:"1grtsx"}],["path",{d:"M18 12a9 9 0 0 1-9 9V3",key:"1sst7f"}]],a=(0,d.Z)("turkish-lira",r)}};

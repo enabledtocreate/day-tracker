@@ -1,0 +1,1 @@
+"use strict";exports.id=89685,exports.ids=[89685],exports.modules={89685:(e,d,t)=>{t.r(d),t.d(d,{__iconNode:()=>o,default:()=>s});var a=t(15709);let o=[["path",{d:"M8 19a4 4 0 0 1-2.24-7.32A3.5 3.5 0 0 1 9 6.03V6a3 3 0 1 1 6 0v.04a3.5 3.5 0 0 1 3.24 5.65A4 4 0 0 1 16 19Z",key:"oadzkq"}],["path",{d:"M12 19v3",key:"npa21l"}]],s=(0,a.Z)("tree-deciduous",o)}};

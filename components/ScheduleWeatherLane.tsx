@@ -7,7 +7,12 @@ import {
   type WeatherDailyPoint,
   type WeatherHourlyPoint,
 } from '@/lib/useScheduleWeather';
-import { buildDaylightLaneGradient, formatWeatherTemp, type WeatherTempUnit } from '@/lib/weatherDisplay';
+import {
+  buildDaylightLaneGradient,
+  formatWeatherTemp,
+  isNightAtMinutes,
+  type WeatherTempUnit,
+} from '@/lib/weatherDisplay';
 import { weatherCodeToIcon } from '@/lib/weatherCodes';
 
 type DayRowProps = {
@@ -40,13 +45,20 @@ export function ScheduleWeatherDayRows({
       aria-hidden
     >
       {slotLabels.map((_, i) => {
+        const slotMinutes = viewStartMinutes + i * slotDurationMinutes;
         const pt = pickHourlyForSlot(hourly, viewStartMinutes, i, slotDurationMinutes);
-        const { icon } = weatherCodeToIcon(pt?.weatherCode ?? 0);
+        const isNight = isNightAtMinutes(slotMinutes, daily?.sunriseMinutes, daily?.sunsetMinutes);
+        const { icon } = weatherCodeToIcon(pt?.weatherCode ?? 0, { isNight });
         const precip = pt?.precipPct;
         const temp = formatWeatherTemp(pt?.temp, tempUnit);
         const tip = precip != null ? `Precipitation: ${Math.round(precip)}%` : 'No precipitation data';
         return (
-          <div key={i} className="schedule-weather-row" style={{ height: rowHeightPx }} title={tip}>
+          <div
+            key={i}
+            className={`schedule-weather-row${isNight ? ' schedule-weather-row--night' : ''}`}
+            style={{ height: rowHeightPx }}
+            title={tip}
+          >
             <DynamicIcon name={icon as IconName} size={11} className="schedule-weather-row-icon" aria-hidden />
             {temp ? <span className="schedule-weather-row-temp">{temp}</span> : null}
           </div>

@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[28553],{28553:function(e,t,n){n.r(t),n.d(t,{__iconNode:function(){return u},default:function(){return c}});var r=n(47411);let u=[["rect",{width:"16",height:"20",x:"4",y:"2",rx:"2",ry:"2",key:"76otgf"}],["line",{x1:"12",x2:"12.01",y1:"18",y2:"18",key:"1dp563"}]],c=(0,r.Z)("tablet",u)}}]);

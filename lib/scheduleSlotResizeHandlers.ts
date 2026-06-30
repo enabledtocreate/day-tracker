@@ -1,6 +1,11 @@
 import type { Dispatch, SetStateAction } from 'react';
 import type { ScheduledSlot } from '@/lib/api';
 import {
+  durationFromStoredTimes,
+  MINUTES_PER_DAY,
+  storedEndTimeFromDuration,
+} from '@/lib/overnightSlotTimes';
+import {
   clampBottomResizeEndForMinGroupDuration,
   clampTopResizeStartForMinGroupDuration,
   distributeGroupMemberTimes,
@@ -186,10 +191,28 @@ export function bindScheduleSlotBottomResize(deps: ScheduleSlotResizeDeps): (e: 
     const slotDur = Math.max(1, deps.slotDurationMinutes);
     const memberCount = 1 + childSlots.length;
     const recurring = !!(slot.recurring || slot.is_recurring_occurrence);
+    const initialDuration = durationFromStoredTimes(slot.start_time, slot.end_time);
+    let lastDuration = Math.max(slotDur, initialDuration);
 
     const move = (ev: PointerEvent) => {
       const dy = ev.clientY - startY;
       const delta = Math.round(dy / deps.rowHeightPx) * slotDur;
+      if (memberCount === 1) {
+        let newDuration = Math.max(slotDur, initialDuration + delta);
+        newDuration = Math.min(MINUTES_PER_DAY, newDuration);
+        lastDuration = newDuration;
+        const layoutEnd = startMin + newDuration > MINUTES_PER_DAY ? MINUTES_PER_DAY : startMin + newDuration;
+        const end_time = storedEndTimeFromDuration(startMin, newDuration);
+        if (recurring) {
+          blockEl.style.height =
+            Math.max(deps.rowHeightPx, ((layoutEnd - startMin) / slotDur) * deps.rowHeightPx) + 'px';
+          return;
+        }
+        deps.setSlots((prev) =>
+          prev.map((s) => (s.id === slot.id ? { ...s, start_time: minutesToTime(startMin), end_time } : s))
+        );
+        return;
+      }
       let newEnd = snapToSlot(endMin + delta, deps.startHour, deps.endHour, slotDur, 'end');
       newEnd = clampBottomResizeEndForMinGroupDuration({
         startMin,
@@ -225,6 +248,27 @@ export function bindScheduleSlotBottomResize(deps: ScheduleSlotResizeDeps): (e: 
     const up = () => {
       if (finished) return;
       finished = true;
+      if (memberCount === 1) {
+        const end_time = storedEndTimeFromDuration(startMin, lastDuration);
+        const storedEnd = slot.end_time ?? '';
+        if (end_time !== storedEnd || lastDuration !== initialDuration) {
+          if (recurring) {
+            deps.onRecurringResize({
+              slot,
+              childSlots,
+              newStartTime: slot.start_time ?? undefined,
+              newEndTime: end_time,
+            });
+          } else {
+            void deps
+              .patchSlots([{ id: slot.id, start_time: minutesToTime(startMin), end_time }])
+              .then(() => deps.onCommit())
+              .catch((err) => deps.onError(err));
+          }
+        }
+        cleanup();
+        return;
+      }
       const clampedEnd = clampBottomResizeEndForMinGroupDuration({
         startMin,
         candidateEndMin: lastEnd,

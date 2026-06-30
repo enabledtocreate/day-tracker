@@ -86,6 +86,10 @@ if ($method === 'GET') {
     if ($hasAutoCompleteEod) {
         $columns .= ', auto_complete_eod';
     }
+    $hasExcludeFromPlannedHours = in_array('exclude_from_planned_hours', array_column($cols, 'name'), true);
+    if ($hasExcludeFromPlannedHours) {
+        $columns .= ', exclude_from_planned_hours';
+    }
     $hasFavoriteFolderId = in_array('favorite_folder_id', array_column($cols, 'name'), true);
     if ($hasFavoriteFolderId) {
         $columns .= ', favorite_folder_id';
@@ -317,6 +321,9 @@ if ($method === 'POST') {
         if (in_array('auto_complete_eod', $colNamesPost, true)) {
             $selCols .= ', auto_complete_eod';
         }
+        if (in_array('exclude_from_planned_hours', $colNamesPost, true)) {
+            $selCols .= ', exclude_from_planned_hours';
+        }
         if (in_array('auto_priority_enabled', $colNamesPost, true)) {
             $selCols .= ', auto_priority_enabled';
         }
@@ -394,6 +401,9 @@ if ($method === 'POST') {
         }
         if (in_array('auto_complete_eod', $colNamesPost, true) && isset($src['auto_complete_eod'])) {
             $pdo->prepare('UPDATE tasks SET auto_complete_eod = ? WHERE id = ?')->execute([(int) $src['auto_complete_eod'], $newId]);
+        }
+        if (in_array('exclude_from_planned_hours', $colNamesPost, true) && isset($src['exclude_from_planned_hours'])) {
+            $pdo->prepare('UPDATE tasks SET exclude_from_planned_hours = ? WHERE id = ?')->execute([(int) $src['exclude_from_planned_hours'], $newId]);
         }
         if (in_array('auto_priority_enabled', $colNamesPost, true) && isset($src['auto_priority_enabled'])) {
             $pdo->prepare('UPDATE tasks SET auto_priority_enabled = ? WHERE id = ?')->execute([(int) $src['auto_priority_enabled'], $newId]);
@@ -623,6 +633,13 @@ if ($method === 'PATCH') {
     if (array_key_exists('auto_complete_eod', $in) && $hasAutoCompleteEodPatch) {
         $v = !empty($in['auto_complete_eod']) ? 1 : 0;
         $updates[] = 'auto_complete_eod = ?';
+        $params[] = $v;
+    }
+
+    $hasExcludeFromPlannedHoursPatch = in_array('exclude_from_planned_hours', $colNames, true);
+    if (array_key_exists('exclude_from_planned_hours', $in) && $hasExcludeFromPlannedHoursPatch) {
+        $v = !empty($in['exclude_from_planned_hours']) ? 1 : 0;
+        $updates[] = 'exclude_from_planned_hours = ?';
         $params[] = $v;
     }
 

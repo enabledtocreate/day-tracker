@@ -1,0 +1,1 @@
+"use strict";exports.id=91655,exports.ids=[91655],exports.modules={91655:(e,c,r)=>{r.r(c),r.d(c,{__iconNode:()=>d,default:()=>i});var t=r(15709);let d=[["circle",{cx:"12",cy:"10",r:"8",key:"1gshiw"}],["circle",{cx:"12",cy:"10",r:"3",key:"ilqhr7"}],["path",{d:"M7 22h10",key:"10w4w3"}],["path",{d:"M12 22v-4",key:"1utk9m"}]],i=(0,t.Z)("webcam",d)}};

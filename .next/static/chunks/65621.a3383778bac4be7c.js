@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[65621],{65621:function(e,t,n){n.r(t),n.d(t,{__iconNode:function(){return u},default:function(){return a}});var h=n(47411);let u=[["path",{d:"M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8",key:"1357e3"}],["path",{d:"M3 3v5h5",key:"1xhq8a"}],["path",{d:"M12 7v5l4 2",key:"1fdv2h"}]],a=(0,h.Z)("history",u)}}]);

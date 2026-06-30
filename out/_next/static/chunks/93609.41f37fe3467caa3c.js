@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[93609],{93609:function(e,n,t){t.r(n),t.d(n,{__iconNode:function(){return u},default:function(){return r}});var c=t(47411);let u=[["path",{d:"M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z",key:"c7niix"}]],r=(0,c.Z)("droplet",u)}}]);

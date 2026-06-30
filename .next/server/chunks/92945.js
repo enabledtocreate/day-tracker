@@ -1,0 +1,1 @@
+"use strict";exports.id=92945,exports.ids=[92945],exports.modules={92945:(e,t,d)=>{d.r(t),d.d(t,{__iconNode:()=>p,default:()=>r});var a=d(15709);let p=[["path",{d:"M3 5v14",key:"1nt18q"}],["path",{d:"M8 5v14",key:"1ybrkv"}],["path",{d:"M12 5v14",key:"s699le"}],["path",{d:"M17 5v14",key:"ycjyhj"}],["path",{d:"M21 5v14",key:"nzette"}]],r=(0,a.Z)("barcode",p)}};

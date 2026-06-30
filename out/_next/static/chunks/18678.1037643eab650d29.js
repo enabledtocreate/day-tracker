@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[18678],{18678:function(e,t,r){r.r(t),r.d(t,{__iconNode:function(){return h},default:function(){return c}});var n=r(47411);let h=[["rect",{width:"20",height:"6",x:"2",y:"4",rx:"2",key:"qdearl"}],["rect",{width:"20",height:"6",x:"2",y:"14",rx:"2",key:"1xrn6j"}]],c=(0,n.Z)("stretch-horizontal",h)}}]);

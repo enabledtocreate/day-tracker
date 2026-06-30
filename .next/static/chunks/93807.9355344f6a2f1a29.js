@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[93807],{93807:function(e,t,n){n.r(t),n.d(t,{__iconNode:function(){return c},default:function(){return r}});var u=n(47411);let c=[["rect",{width:"18",height:"18",x:"3",y:"3",rx:"2",key:"afitv7"}],["path",{d:"M12 3v18",key:"108xh3"}]],r=(0,u.Z)("columns-2",c)}}]);

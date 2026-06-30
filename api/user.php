@@ -19,7 +19,7 @@ logMessage('INFO', 'user.php branch', ['method' => $method, 'user_id' => $userId
 
 if ($method === 'GET') {
     logMessage('INFO', 'user GET profile');
-    $stmt = $master->prepare('SELECT id, username, db_name, is_admin FROM users WHERE id = ?');
+    $stmt = $master->prepare('SELECT id, username, db_name, is_admin, session_lifetime_days FROM users WHERE id = ?');
     $stmt->execute([$user['id']]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$row) {
@@ -36,6 +36,10 @@ if ($method === 'GET') {
             'username' => $row['username'],
             'db_name' => $row['db_name'],
             'is_admin' => (bool) $row['is_admin'],
+            'session_lifetime_days' => normalizeSessionLifetimeDays(
+                $row['session_lifetime_days'] !== null ? (int) $row['session_lifetime_days'] : null
+            ),
+            'session_expires_at' => sessionExpiresAtIso(),
             'sso' => $sso,
         ],
     ]);
@@ -96,6 +100,28 @@ if ($method === 'PATCH' || $method === 'POST') {
             ->execute([$hash, $user['id']]);
         logMessage('INFO', 'user disconnect_sso ok');
         jsonResponse(['ok' => true]);
+        exit;
+    }
+
+    if (array_key_exists('session_lifetime_days', $in)) {
+        logMessage('INFO', 'user PATCH session_lifetime_days');
+        $stmt = $master->prepare('SELECT username FROM users WHERE id = ?');
+        $stmt->execute([$user['id']]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($row && ($row['username'] ?? '') === 'demo') {
+            jsonError('Session settings cannot be changed for the demo account.', 400);
+            exit;
+        }
+        $days = normalizeSessionLifetimeDays((int) $in['session_lifetime_days']);
+        $master->prepare('UPDATE users SET session_lifetime_days = ? WHERE id = ?')
+            ->execute([$days, $user['id']]);
+        applySessionExpiryForUser((int) $user['id']);
+        logMessage('INFO', 'user session_lifetime_days updated', ['days' => $days]);
+        jsonResponse([
+            'ok' => true,
+            'session_lifetime_days' => $days,
+            'session_expires_at' => sessionExpiresAtIso(),
+        ]);
         exit;
     }
 }

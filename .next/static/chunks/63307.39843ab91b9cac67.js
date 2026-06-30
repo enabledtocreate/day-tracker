@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[63307],{63307:function(n,e,t){t.r(e),t.d(e,{__iconNode:function(){return a},default:function(){return k}});var u=t(47411);let a=[["path",{d:"M5 3v14",key:"9nsxs2"}],["path",{d:"M12 3v8",key:"1h2ygw"}],["path",{d:"M19 3v18",key:"1sk56x"}]],k=(0,u.Z)("kanban",a)}}]);

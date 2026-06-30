@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[54537],{54537:function(e,n,t){t.r(n),t.d(n,{__iconNode:function(){return a},default:function(){return c}});var u=t(47411);let a=[["path",{d:"M2 20h.01",key:"4haj6o"}],["path",{d:"M7 20v-4",key:"j294jx"}]],c=(0,u.Z)("signal-low",a)}}]);

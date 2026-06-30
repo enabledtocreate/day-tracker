@@ -1,0 +1,1 @@
+"use strict";exports.id=66318,exports.ids=[66318],exports.modules={66318:(e,a,t)=>{t.r(a),t.d(a,{__iconNode:()=>s,default:()=>p});var d=t(15709);let s=[["path",{d:"M2.5 16.88a1 1 0 0 1-.32-1.43l9-13.02a1 1 0 0 1 1.64 0l9 13.01a1 1 0 0 1-.32 1.44l-8.51 4.86a2 2 0 0 1-1.98 0Z",key:"aenxs0"}],["path",{d:"M12 2v20",key:"t6zp3m"}]],p=(0,d.Z)("pyramid",s)}};

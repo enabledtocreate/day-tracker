@@ -1,0 +1,1 @@
+"use strict";exports.id=90141,exports.ids=[90141],exports.modules={90141:(e,c,r)=>{r.r(c),r.d(c,{__iconNode:()=>d,default:()=>t});var a=r(15709);let d=[["path",{d:"M11 21a3 3 0 0 0 3-3V6.5a1 1 0 0 0-7 0",key:"1kkncs"}],["path",{d:"M7 19V6a3 3 0 0 0-3-3h0",key:"1jg5y1"}],["circle",{cx:"17",cy:"17",r:"3",key:"18b49y"}]],t=(0,a.Z)("zodiac-capricorn",d)}};

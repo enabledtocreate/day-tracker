@@ -284,9 +284,7 @@ if ($method === 'GET') {
     if ($settings['task_schedule_layout'] !== 'stacked' && $settings['task_schedule_layout'] !== 'split') {
         $settings['task_schedule_layout'] = 'stacked';
     }
-    $ut = isset($rows['ui_theme']) ? (string) $rows['ui_theme'] : 'dark';
-    $settings['ui_theme'] = ($ut === 'light') ? 'light' : 'dark';
-    $ut = isset($rows['ui_theme']) ? (string) $rows['ui_theme'] : 'dark';
+    $ut = isset($rows['ui_theme']) ? (string) $rows['ui_theme'] : 'light';
     $settings['ui_theme'] = ($ut === 'light') ? 'light' : 'dark';
     if (isset($rows['priority_theme_json']) && $rows['priority_theme_json'] !== '') {
         $settings['priority_theme_json'] = (string) $rows['priority_theme_json'];

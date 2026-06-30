@@ -1,0 +1,1 @@
+"use strict";exports.id=91625,exports.ids=[91625],exports.modules={91625:(a,e,t)=>{t.r(e),t.d(e,{__iconNode:()=>d,default:()=>r});var s=t(15709);let d=[["path",{d:"M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v3a1 1 0 0 0 1 1h3a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2v-3a1 1 0 0 0-1-1z",key:"17jnth"}]],r=(0,s.Z)("squares-unite",d)}};

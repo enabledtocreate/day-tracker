@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[33747],{33747:function(e,n,t){t.r(n),t.d(n,{__iconNode:function(){return i},default:function(){return r}});var u=t(47411);let i=[["path",{d:"M12 20h.01",key:"zekei9"}]],r=(0,u.Z)("wifi-zero",i)}}]);

@@ -1,0 +1,1 @@
+"use strict";exports.id=30216,exports.ids=[30216],exports.modules={30216:(t,e,a)=>{a.r(e),a.d(e,{__iconNode:()=>o,default:()=>p});var d=a(15709);let o=[["path",{d:"M12 13h.01",key:"y0uutt"}],["path",{d:"M12 6v3",key:"1m4b9j"}],["path",{d:"M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20",key:"k3hazp"}]],p=(0,d.Z)("book-alert",o)}};

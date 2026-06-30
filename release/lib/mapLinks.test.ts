@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isMapsUrl, linkGlyph, MAP_LINK_GLYPH } from './mapLinks';
+import { isMapsUrl, linkGlyph, MAP_LINK_GLYPH, icalLocationToMapsUrl } from './mapLinks';
 
 describe('isMapsUrl', () => {
   it('detects Google Maps variants', () => {
@@ -44,5 +44,18 @@ describe('linkGlyph', () => {
   it('returns the map glyph for map links and chain glyph otherwise', () => {
     expect(linkGlyph('https://maps.apple.com/?ll=1,2')).toBe(MAP_LINK_GLYPH);
     expect(linkGlyph('https://example.com')).toBe('🔗');
+  });
+});
+
+describe('icalLocationToMapsUrl', () => {
+  it('wraps plain addresses in Google Maps search', () => {
+    const url = icalLocationToMapsUrl('123 Main St, Springfield');
+    expect(url).toContain('google.com/maps/search');
+    expect(url).toContain(encodeURIComponent('123 Main St, Springfield'));
+    expect(isMapsUrl(url)).toBe(true);
+  });
+
+  it('passes through existing map URLs', () => {
+    expect(icalLocationToMapsUrl('https://maps.apple.com/?ll=1,2')).toBe('https://maps.apple.com/?ll=1,2');
   });
 });

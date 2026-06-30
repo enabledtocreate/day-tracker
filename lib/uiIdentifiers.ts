@@ -32,4 +32,5 @@ export const DT = {
   taskListSections: 'dt-task-list-sections',
   taskListSection: 'dt-task-list-section',
   modalCompletedSummary: 'dt-modal-completed-summary',
+  modalPlannedSummary: 'dt-modal-planned-summary',
 } as const;
